@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "foamy.github",
+  "name": "Foamy GitHub",
+  "version": "1.0.0",
+  "author": "foamrider",
+  "description": "Local Git repository status with per-repository actions.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "GitHub repositories",
+    "description": "Fetch remotes, refresh repository status, and push, pull, or open individual repositories.",
+    "category": "Development",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "fetchIntervalSec": 900,
+      "repositoryFolders": []
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Local refresh interval (seconds)",
+        "min": 10,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "fetchIntervalSec",
+        "type": "integer",
+        "label": "Remote fetch interval (seconds)",
+        "min": 300,
+        "max": 86400,
+        "step": 300,
+        "defaultValue": 900
+      }
+    ]
+  },
+  "license": "MIT"
+}
