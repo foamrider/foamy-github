@@ -639,14 +639,27 @@ Panel {
               wrapMode: Text.WordWrap
               Accessible.role: Accessible.AlertMessage
             }
+            Toggle {
+              width: parent.width
+              implicitHeight: Style.space(36)
+              color: "transparent"
+              borderSpec: activeFocus ? Border.flat(root.accent, 1) : Border.none()
+              radius: root.controlRadius
+              fontFamily: "sans-serif"
+              titleSize: Style.space(12)
+              label: root.tr("Detect changes automatically (Recommended)")
+              checked: github.inotifyEnabled
+              onClicked: root.savePreference("inotifyEnabled", !checked)
+              Keys.onEscapePressed: root.closeSettings()
+            }
             GithubDropdown {
               cornerRadius: root.controlRadius
               id: localInterval
               width: parent.width
-              label: root.tr("Local status refresh")
+              label: root.tr(github.inotifyEnabled ? "Fallback interval" : "Interval")
               fontFamily: "sans-serif"
               value: String(github.refreshIntervalSec)
-              options: [{value:"10",label:root.tr("Every 10 seconds")},{value:"30",label:root.tr("Every 30 seconds")},{value:"60",label:root.tr("Every minute")},{value:"300",label:root.tr("Every 5 minutes")}]
+              options: [{value:"0",label:root.tr("Disabled")},{value:"10",label:root.tr("Every 10 seconds")},{value:"30",label:root.tr("Every 30 seconds")},{value:"60",label:root.tr("Every minute")},{value:"300",label:root.tr("Every 5 minutes")}]
               onChanged: function(value) { root.savePreference("refreshIntervalSec", Number(value)) }
               Keys.onEscapePressed: root.closeSettings()
             }

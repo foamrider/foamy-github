@@ -21,7 +21,8 @@
       "refreshIntervalSec": 30,
       "fetchIntervalSec": 900,
       "repositoryFolders": [],
-      "language": "system"
+      "language": "system",
+      "inotifyEnabled": true
     },
     "schema": [
       {
@@ -36,10 +37,16 @@
         ]
       },
       {
+        "key": "inotifyEnabled",
+        "type": "boolean",
+        "label": "Detect changes automatically (Recommended)",
+        "defaultValue": true
+      },
+      {
         "key": "refreshIntervalSec",
         "type": "integer",
-        "label": "Local refresh interval (seconds)",
-        "min": 10,
+        "label": "Local refresh interval (seconds; 0 disables polling)",
+        "min": 0,
         "max": 3600,
         "step": 5,
         "defaultValue": 30

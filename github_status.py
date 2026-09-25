@@ -151,7 +151,8 @@ def run_git(repo: Repository, arguments: list[str], timeout: int = 8) -> subproc
     capture_output=True,
     text=True,
     timeout=timeout,
-    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    # Read-only status must not rewrite the index and wake our own watcher.
+    env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"},
   )
 
 
@@ -213,6 +214,10 @@ def status_payload(folders: list[str | FolderConfig] | None = None) -> dict[str,
   # responsive without turning it into a disk-I/O burst.
   with concurrent.futures.ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as executor:
     rows = list(executor.map(repository_status, repositories))
+  return payload_from_rows(rows, folders)
+
+
+def payload_from_rows(rows: list[dict[str, Any]], folders: list[str | FolderConfig] | None = None) -> dict[str, Any]:
   rows.sort(key=lambda row: (not row["affected"], row["label"].lower()))
 
   state = read_sync_state()
