@@ -2,7 +2,9 @@ import QtQuick
 import QtQuick.Dialogs
 
 Window {
-  title: "Choose a repository folder"
+  id: root
+  readonly property var labels: Qt.application.arguments.slice(-2)
+  title: labels[0]
   width: 875
   height: 600
   visible: true
@@ -12,8 +14,8 @@ Window {
 
   FolderDialog {
     id: picker
-    title: "Choose a repository folder"
-    acceptLabel: "Choose"
+    title: root.title
+    acceptLabel: root.labels[1]
     onAccepted: {
       console.log("GITHUB_FOLDER=" + String(selectedFolder))
       Qt.quit()

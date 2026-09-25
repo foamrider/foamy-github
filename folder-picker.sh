@@ -4,7 +4,8 @@ set -euo pipefail
 
 script_dir="$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")"
 picker_qml="$script_dir/FolderPicker.qml"
-picker_title="Choose a repository folder"
+picker_title="${1:-Choose a repository folder}"
+picker_accept="${2:-Choose}"
 
 float_picker() {
   local address attempt client float_command floating place_command selector
@@ -66,7 +67,7 @@ main() {
   if output="$(
     cd "$HOME"
     env -u QT_QPA_PLATFORMTHEME QT_FORCE_STDERR_LOGGING=1 \
-      qml6 -f "$picker_qml" 2>&1
+      qml6 -f "$picker_qml" -- "$picker_title" "$picker_accept" 2>&1
   )"; then
     status=0
   else

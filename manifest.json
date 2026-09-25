@@ -20,9 +20,21 @@
     "defaults": {
       "refreshIntervalSec": 30,
       "fetchIntervalSec": 900,
-      "repositoryFolders": []
+      "repositoryFolders": [],
+      "language": "system"
     },
     "schema": [
+      {
+        "key": "language",
+        "type": "enum",
+        "label": "Language",
+        "defaultValue": "system",
+        "options": [
+          "system",
+          "en",
+          "nb"
+        ]
+      },
       {
         "key": "refreshIntervalSec",
         "type": "integer",

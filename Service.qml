@@ -3,11 +3,14 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Networking
 import "Model.js" as Model
+import "Preferences.js" as Preferences
 
 Item {
   id: root
 
   property var settings: ({})
+  property string language: "en"
+  function tr(label, values) { return Preferences.text(label, language, values) }
   property var status: Model.defaultStatus()
   property double lastChecked: 0
   property string scannedFolders: ""
@@ -15,7 +18,14 @@ Item {
   property bool syncing: false
   property bool repositoryActionRunning: false
   property bool scheduledFetchPending: false
-  property string actionStatus: ""
+  // Keep message data so an in-flight operation follows language changes.
+  property var actionMessages: []
+  readonly property string actionStatus: actionMessages.map(function(message) {
+    return root.tr(message.label, message.values)
+  }).join(" · ")
+  function setActionStatus(label, values) {
+    actionMessages = label ? [{label: label, values: values || []}] : []
+  }
   property string lastError: ""
 
   readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("github_status.py").toString().replace(/^file:\/\//, ""))
@@ -95,7 +105,7 @@ Item {
   function synchronize(mode) {
     if (root.busy) return
     if (!root.networkReady) {
-      actionStatus = "Waiting for network…"
+      setActionStatus("Waiting for network…")
       actionMessageTimer.restart()
       return
     }
@@ -103,7 +113,7 @@ Item {
     lastError = ""
     // An earlier completion timer must not clear the new progress title.
     actionMessageTimer.stop()
-    actionStatus = mode === "update" ? "Fetching and safely updating…" : "Fetching repositories…"
+    setActionStatus(mode === "update" ? "Fetching and safely updating…" : "Fetching repositories…")
     syncProcess.command = ["python3", helperPath, mode, "--folders-json", folderArguments]
     syncProcess.running = true
   }
@@ -121,8 +131,8 @@ Item {
     repositoryActionRunning = true
     lastError = ""
     actionMessageTimer.stop()
-    actionStatus = (mode === "push" ? "Pushing " : "Pulling ")
-      + String(repo.label || repo.name || "repository") + "…"
+    setActionStatus(mode === "push" ? "Pushing %1…" : "Pulling %1…",
+      [String(repo.label || repo.name || "repository")])
     repositoryActionProcess.command = [
       "python3", helperPath, mode, String(repo.path), "--folders-json", folderArguments
     ]
@@ -185,7 +195,7 @@ Item {
     id: actionMessageTimer
     interval: 5000
     repeat: false
-    onTriggered: root.actionStatus = ""
+    onTriggered: root.setActionStatus("")
   }
 
   Process {
@@ -214,16 +224,17 @@ Item {
       var result = null
       try { result = JSON.parse(String(syncOutput.text || "{}")) } catch (e) {}
       if (result && result.busy) {
-        root.actionStatus = result.message || "Repository synchronization is already running"
+        root.setActionStatus(result.message || "Repository synchronization is already running")
       } else if (result) {
         var summary = []
-        if ((result.updated || []).length > 0) summary.push("Updated " + result.updated.length)
-        if ((result.skipped || []).length > 0) summary.push("Skipped " + result.skipped.length)
-        if ((result.failures || []).length > 0) summary.push("Failed " + result.failures.length)
-        root.actionStatus = summary.length > 0 ? summary.join(" · ") : (result.mode === "update" ? "Everything already current" : "Fetch complete")
+        if ((result.updated || []).length > 0) summary.push({label: "Updated %1", values: [result.updated.length]})
+        if ((result.skipped || []).length > 0) summary.push({label: "Skipped %1", values: [result.skipped.length]})
+        if ((result.failures || []).length > 0) summary.push({label: "Failed %1", values: [result.failures.length]})
+        if (summary.length > 0) root.actionMessages = summary
+        else root.setActionStatus(result.mode === "update" ? "Everything already current" : "Fetch complete")
         if (exitCode !== 0) root.lastError = "Some repositories could not be synchronized"
       } else {
-        root.actionStatus = ""
+        root.setActionStatus("")
         root.lastError = String(syncError.text || "Repository synchronization failed").trim()
       }
       actionMessageTimer.restart()
@@ -242,13 +253,13 @@ Item {
         result = JSON.parse(String(repositoryActionOutput.text || "{}"))
       } catch (e) {}
       if (result && (result.ok || result.busy)) {
-        root.actionStatus = String(result.message || "Repository action complete")
+        root.setActionStatus(String(result.message || "Repository action complete"))
         root.lastError = ""
       } else if (result) {
-        root.actionStatus = ""
+        root.setActionStatus("")
         root.lastError = String(result.message || "Repository action failed")
       } else {
-        root.actionStatus = ""
+        root.setActionStatus("")
         root.lastError = String(repositoryActionError.text
           || "Repository action failed").trim()
       }

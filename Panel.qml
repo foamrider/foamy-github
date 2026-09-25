@@ -7,12 +7,16 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "Preferences.js" as Preferences
 
 Panel {
   id: root
   moduleName: "foamy.github"
   ipcTarget: "foamy.github"
   manageIpc: false
+
+  readonly property string language: Preferences.language(Preferences.languageSetting(settings), Qt.locale().name)
+  function tr(label, values) { return Preferences.text(label, language, values) }
 
   readonly property real controlRadius: Style.space(6)
   property int repoIndex: 0
@@ -30,16 +34,18 @@ Panel {
   readonly property var displayedRepos: github.affectedRepos
   readonly property bool hasFailures: github.sync.failures.length > 0
   readonly property string healthText: {
-    if (github.syncing) return "Synchronizing repositories"
-    if (github.lastError !== "") return "Repository check needs attention"
-    if (github.lastChecked === 0) return "Checking repositories…"
-    if (github.status.repoCount === 0) return "No repositories found"
-    if (github.status.affectedCount === 0 && !github.sync.stale && !root.hasFailures) return "Everything is in sync"
-    if (github.status.affectedCount === 0) return "Working trees are clean"
-    return github.status.affectedCount + " repositor" + (github.status.affectedCount === 1 ? "y needs" : "ies need") + " attention"
+    if (github.syncing) return root.tr("Synchronizing repositories")
+    if (github.lastError !== "") return root.tr("Repository check needs attention")
+    if (github.lastChecked === 0) return root.tr("Checking repositories…")
+    if (github.status.repoCount === 0) return root.tr("No repositories found")
+    if (github.status.affectedCount === 0 && !github.sync.stale && !root.hasFailures) return root.tr("Everything is in sync")
+    if (github.status.affectedCount === 0) return root.tr("Working trees are clean")
+    return root.tr(github.status.affectedCount === 1 ? "%1 repository needs attention" : "%1 repositories need attention", [github.status.affectedCount])
   }
-  readonly property string lastSyncText: "Last remote sync " + Model.relativeTime(github.sync.lastSuccess)
-  readonly property string tooltipText: healthText + "\nLeft: details · Middle: refresh"
+  readonly property string lastSyncText: root.tr("Last remote sync %1", [Model.relativeTime(github.sync.lastSuccess, undefined, root.tr)])
+  readonly property string tooltipText: healthText + "\n" + root.tr("Left: details · Middle: refresh")
+  readonly property string updatedText: Model.updatedText(github.lastChecked, footerClock.date.getTime(), root.tr)
+  SystemClock { id: footerClock; precision: SystemClock.Minutes }
 
   property bool editingSettings: false
   property string settingsError: ""
@@ -104,7 +110,7 @@ Panel {
 
   Process {
     id: folderPicker
-    command: ["bash", decodeURIComponent(Qt.resolvedUrl("folder-picker.sh").toString().replace(/^file:\/\//, ""))]
+    command: ["bash", decodeURIComponent(Qt.resolvedUrl("folder-picker.sh").toString().replace(/^file:\/\//, "")), root.tr("Choose a repository folder"), root.tr("Choose")]
     stdout: StdioCollector { id: folderPickerOutput; waitForEnd: true }
     onExited: function(exitCode) { root.finishFolderBrowser(exitCode, folderPickerOutput.text) }
   }
@@ -256,6 +262,7 @@ Panel {
   Service {
     id: github
     settings: root.settings
+    language: root.language
   }
 
   IpcHandler {
@@ -470,7 +477,7 @@ Panel {
                 GithubAction {
                   visible: !root.editingSettings
                   iconName: "settings"
-                  tooltipText: "Settings (S)"
+                  tooltipText: root.tr("Settings (S)")
                   foreground: root.dim
                   implicitWidth: Style.space(32)
                   implicitHeight: Style.space(32)
@@ -490,10 +497,10 @@ Panel {
               Flow {
                 width: parent.width
                 spacing: Style.space(18)
-                SummaryCount { value: github.totals.aheadRepos; label: "ahead"; symbol: "↑"; tint: root.success }
-                SummaryCount { value: github.totals.behindRepos; label: "behind"; symbol: "↓"; tint: root.accent }
-                SummaryCount { value: github.totals.dirtyRepos; label: "changed"; symbol: "•"; tint: root.warning }
-                SummaryCount { visible: value > 0; value: github.totals.failedRepos; label: "failed"; symbol: "!"; tint: root.urgent }
+                SummaryCount { value: github.totals.aheadRepos; label: root.tr("ahead"); symbol: "↑"; tint: root.success }
+                SummaryCount { value: github.totals.behindRepos; label: root.tr("behind"); symbol: "↓"; tint: root.accent }
+                SummaryCount { value: github.totals.dirtyRepos; label: root.tr("changed"); symbol: "•"; tint: root.warning }
+                SummaryCount { visible: value > 0; value: github.totals.failedRepos; label: root.tr("failed"); symbol: "!"; tint: root.urgent }
               }
             }
           }
@@ -510,19 +517,30 @@ Panel {
               GithubAction {
                 id: settingsBack
                 iconName: "arrow-left"
-                tooltipText: "Back"
+                tooltipText: root.tr("Back")
                 foreground: root.dim
                 onClicked: root.closeSettings()
               }
-              GithubLabel { text: "Settings"; color: root.dim; anchors.verticalCenter: parent.verticalCenter }
+              GithubLabel { text: root.tr("Settings"); color: root.dim; anchors.verticalCenter: parent.verticalCenter }
+            }
+            GithubDropdown {
+              cornerRadius: root.controlRadius
+              width: parent.width
+              label: root.tr("Language")
+              fontFamily: "sans-serif"
+              value: Preferences.languageSetting(root.settings)
+              options: [{value: "system", label: root.tr("Default (system language)")},
+                {value: "en", label: "English"}, {value: "nb", label: "Norsk bokmål"}]
+              onChanged: function(value) { root.savePreference("language", value) }
+              Keys.onEscapePressed: root.closeSettings()
             }
             RowLayout {
               width: parent.width
-              GithubLabel { text: "Repository folders"; Layout.fillWidth: true }
+              GithubLabel { text: root.tr("Repository folders"); Layout.fillWidth: true }
               GithubAction {
                 id: addFolderButton
                 iconName: "plus"
-                tooltipText: folderRows.count >= 32 ? "You can add up to 32 directories." : "Add folder"
+                tooltipText: folderRows.count >= 32 ? root.tr("You can add up to 32 directories.") : root.tr("Add folder")
                 foreground: root.dim
                 actionEnabled: folderRows.count < 32 && !folderPicker.running
                 onClicked: root.addFolder()
@@ -546,7 +564,7 @@ Panel {
                   function focusPath() { folderPath.forceActiveFocus() }
                   GithubAction {
                     iconName: "folder"
-                    tooltipText: "Browse for folder"
+                    tooltipText: root.tr("Browse for folder")
                     foreground: root.dim
                     onClicked: root.browseFolder(folderRow.index)
                     Keys.onEscapePressed: root.closeSettings()
@@ -562,7 +580,7 @@ Panel {
                     font.pixelSize: Style.space(12)
                     padding: Style.space(8)
                     selectByMouse: true
-                    Accessible.name: "Repository folder " + (folderRow.index + 1)
+                    Accessible.name: root.tr("Repository folder %1", [folderRow.index + 1])
                     placeholderText: "~/Projects"
                     placeholderTextColor: root.dim
                     background: Rectangle {
@@ -584,11 +602,11 @@ Panel {
                     cornerRadius: root.controlRadius
                     Layout.preferredWidth: Style.space(96)
                     showLabel: false
-                    label: "Scan levels for " + folderRow.path
+                    label: root.tr("Scan levels for %1", [folderRow.path])
                     fontFamily: "sans-serif"
                     value: String(folderRow.depth)
                     options: [0,1,2,3,4,5].map(function(depth) {
-                      return {value: String(depth), label: depth + (depth === 1 ? " level" : " levels")}
+                      return {value: String(depth), label: root.tr(depth === 1 ? "%1 level" : "%1 levels", [depth])}
                     })
                     onChanged: function(value) {
                       folderRows.setProperty(folderRow.index, "depth", Number(value))
@@ -599,7 +617,7 @@ Panel {
                   }
                   GithubAction {
                     iconName: "trash"
-                    tooltipText: "Remove folder"
+                    tooltipText: root.tr("Remove folder")
                     foreground: root.dim
                     onClicked: {
                       folderRows.remove(folderRow.index)
@@ -616,7 +634,7 @@ Panel {
             GithubLabel {
               visible: root.settingsError !== ""
               width: parent.width
-              text: root.settingsError
+              text: root.tr(root.settingsError)
               color: root.dim
               wrapMode: Text.WordWrap
               Accessible.role: Accessible.AlertMessage
@@ -625,10 +643,10 @@ Panel {
               cornerRadius: root.controlRadius
               id: localInterval
               width: parent.width
-              label: "Local status refresh"
+              label: root.tr("Local status refresh")
               fontFamily: "sans-serif"
               value: String(github.refreshIntervalSec)
-              options: [{value:"10",label:"Every 10 seconds"},{value:"30",label:"Every 30 seconds"},{value:"60",label:"Every minute"},{value:"300",label:"Every 5 minutes"}]
+              options: [{value:"10",label:root.tr("Every 10 seconds")},{value:"30",label:root.tr("Every 30 seconds")},{value:"60",label:root.tr("Every minute")},{value:"300",label:root.tr("Every 5 minutes")}]
               onChanged: function(value) { root.savePreference("refreshIntervalSec", Number(value)) }
               Keys.onEscapePressed: root.closeSettings()
             }
@@ -636,10 +654,10 @@ Panel {
               cornerRadius: root.controlRadius
               id: remoteInterval
               width: parent.width
-              label: "Remote fetch"
+              label: root.tr("Remote fetch")
               fontFamily: "sans-serif"
               value: String(github.fetchIntervalSec)
-              options: [{value:"300",label:"Every 5 minutes"},{value:"900",label:"Every 15 minutes"},{value:"1800",label:"Every 30 minutes"},{value:"3600",label:"Every hour"}]
+              options: [{value:"300",label:root.tr("Every 5 minutes")},{value:"900",label:root.tr("Every 15 minutes")},{value:"1800",label:root.tr("Every 30 minutes")},{value:"3600",label:root.tr("Every hour")}]
               onChanged: function(value) { root.savePreference("fetchIntervalSec", Number(value)) }
               Keys.onEscapePressed: root.closeSettings()
             }
@@ -657,8 +675,8 @@ Panel {
             GithubLabel {
               visible: github.lastError !== "" || github.sync.stale
               width: parent.width
-              text: github.lastError !== "" ? github.lastError
-                : root.lastSyncText + " · remote state may be stale"
+              text: github.lastError !== "" ? root.tr(github.lastError)
+                : root.lastSyncText + " · " + root.tr("remote state may be stale")
               color: github.lastError !== "" ? root.urgent : github.sync.stale ? root.warning : root.dim
               font.pixelSize: Style.space(12)
               wrapMode: Text.WordWrap
@@ -696,10 +714,10 @@ Panel {
               }
               GithubLabel {
                 width: parent.width
-                text: github.lastError !== "" ? "Repository status is unavailable. Try Refresh again."
-                  : github.lastChecked === 0 ? "Checking local repositories…"
-                  : github.status.repoCount === 0 ? "No local repositories are being tracked."
-                  : "All local repositories are clean and aligned with their cached upstream state."
+                text: github.lastError !== "" ? root.tr("Repository status is unavailable. Try Refresh again.")
+                  : github.lastChecked === 0 ? root.tr("Checking local repositories…")
+                  : github.status.repoCount === 0 ? root.tr("No local repositories are being tracked.")
+                  : root.tr("All local repositories are clean and aligned with their cached upstream state.")
                 color: root.dim
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
@@ -710,14 +728,14 @@ Panel {
               visible: root.hasFailures
               width: parent.width
               spacing: Style.space(8)
-              GithubLabel { text: "Last sync issues"; color: root.urgent }
+              GithubLabel { text: root.tr("Last sync issues"); color: root.urgent }
               Repeater {
                 model: github.sync.failures.slice(0, 4)
                 GithubLabel {
                   required property var modelData
                   width: parent.width
-                  text: String(modelData.label || modelData.name || "Repository") + "\n"
-                    + String(modelData.message || "Synchronization failed")
+                  text: String(modelData.label || modelData.name || root.tr("Repository")) + "\n"
+                    + root.tr(String(modelData.message || "Synchronization failed"))
                   color: root.urgent
                   font.pixelSize: Style.space(12)
                   wrapMode: Text.WordWrap
@@ -730,22 +748,22 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
               GithubLabel {
-                text: github.status.repoCount + " repositories"
+                text: root.tr(github.status.repoCount === 1 ? "%1 repository" : "%1 repositories", [github.status.repoCount])
                 color: root.dim
                 font.pixelSize: Style.space(12)
                 Layout.fillWidth: true
                 elide: Text.ElideRight
               }
               GithubLabel {
-                text: github.lastChecked > 0 ? "Checked " + Model.relativeTime(github.lastChecked).toLowerCase() : "Not checked yet"
+                text: root.updatedText
                 color: root.dim
                 font.pixelSize: Style.space(12)
               }
               PanelActionButton {
                 id: refreshButton
-                tooltipText: github.syncing ? "Fetching repositories…"
-                  : github.refreshing ? "Refreshing local status"
-                  : "Fetch remotes and refresh status (R)\n" + root.lastSyncText
+                tooltipText: github.syncing ? root.tr("Fetching repositories…")
+                  : github.refreshing ? root.tr("Refreshing local status")
+                  : root.tr("Fetch remotes and refresh status (R)") + "\n" + root.lastSyncText
                 enabled: !github.busy
                 foreground: root.dim
                 fontFamily: root.fontFamily
@@ -815,13 +833,13 @@ Panel {
         spacing: Style.space(3)
         GithubLabel {
           Layout.fillWidth: true
-          text: String(repoRow.repo ? repoRow.repo.label : "Repository")
+          text: String(repoRow.repo ? repoRow.repo.label : root.tr("Repository"))
           font.pixelSize: Style.space(15)
           elide: Text.ElideRight
         }
         GithubLabel {
           Layout.fillWidth: true
-          text: Model.repositoryMeta(repoRow.repo)
+          text: Model.repositoryMeta(repoRow.repo, root.tr)
           color: root.dim
           font.pixelSize: Style.space(12)
           elide: Text.ElideRight
@@ -831,7 +849,7 @@ Panel {
         spacing: Style.space(2)
         PanelActionButton {
           iconText: "\uf062"
-          tooltipText: "Push " + String(repoRow.repo ? repoRow.repo.label : "repository")
+          tooltipText: root.tr("Push %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
           enabled: !github.busy && repoRow.repo && repoRow.repo.ahead > 0
           foreground: root.dim
           hoverColor: root.success
@@ -842,7 +860,7 @@ Panel {
         }
         PanelActionButton {
           iconText: "\uf063"
-          tooltipText: "Pull " + String(repoRow.repo ? repoRow.repo.label : "repository")
+          tooltipText: root.tr("Pull %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
           enabled: !github.busy && repoRow.repo && repoRow.repo.behind > 0
           foreground: root.dim
           hoverColor: root.accent
@@ -853,7 +871,7 @@ Panel {
         }
         PanelActionButton {
           iconText: "\uf06e"
-          tooltipText: "View in lazygit"
+          tooltipText: root.tr("View in lazygit")
           enabled: repoRow.repo !== null
           foreground: root.dim
           fontFamily: root.fontFamily

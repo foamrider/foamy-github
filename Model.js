@@ -52,28 +52,45 @@ function failedStatus(message) {
   return status
 }
 
-function relativeTime(timestampSec, nowMs) {
-  var timestamp = Number(timestampSec || 0)
-  if (!isFinite(timestamp) || timestamp <= 0) return "Never"
-  var now = nowMs === undefined ? Date.now() : Number(nowMs)
-  var seconds = Math.max(0, Math.floor((now - timestamp * 1000) / 1000))
-  if (seconds < 45) return "Just now"
-  var minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return minutes + "m ago"
-  var hours = Math.floor(minutes / 60)
-  if (hours < 24) return hours + "h ago"
-  var days = Math.floor(hours / 24)
-  return days + "d ago"
+function translate(label, values) {
+  return label.replace(/%([1-9][0-9]*)/g, function(token, index) {
+    return values && Number(index) <= values.length ? String(values[Number(index) - 1]) : token
+  })
 }
 
-function repositoryMeta(repo) {
+function relativeTime(timestampSec, nowMs, tr) {
+  tr = tr || translate
+  var timestamp = Number(timestampSec || 0)
+  if (!isFinite(timestamp) || timestamp <= 0) return tr("Never")
+  var now = nowMs === undefined ? Date.now() : Number(nowMs)
+  var seconds = Math.max(0, Math.floor((now - timestamp * 1000) / 1000))
+  if (seconds < 45) return tr("Just now")
+  var minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return tr("%1m ago", [minutes])
+  var hours = Math.floor(minutes / 60)
+  if (hours < 24) return tr("%1h ago", [hours])
+  var days = Math.floor(hours / 24)
+  return tr("%1d ago", [days])
+}
+
+function updatedText(timestampSec, nowMs, tr) {
+  tr = tr || translate
+  if (!isFinite(timestampSec) || timestampSec <= 0) return ""
+  var minutes = Math.max(0, Math.floor((nowMs - timestampSec * 1000) / 60000))
+  if (minutes === 0) return tr("Updated just now")
+  if (minutes === 1) return tr("Updated 1 minute ago")
+  return tr("Updated %1 minutes ago", [minutes])
+}
+
+function repositoryMeta(repo, tr) {
+  tr = tr || translate
   if (!repo) return ""
   var parts = []
-  var branch = String(repo.branch || "detached")
+  var branch = String(repo.branch || tr("detached"))
   parts.push(branch)
-  if (repo.ahead > 0) parts.push("↑" + repo.ahead + " commit" + (repo.ahead === 1 ? "" : "s"))
-  if (repo.behind > 0) parts.push("↓" + repo.behind + " commit" + (repo.behind === 1 ? "" : "s"))
-  if (repo.dirtyCount > 0) parts.push(repo.dirtyCount + " changed")
+  if (repo.ahead > 0) parts.push("↑" + tr(repo.ahead === 1 ? "%1 commit" : "%1 commits", [repo.ahead]))
+  if (repo.behind > 0) parts.push("↓" + tr(repo.behind === 1 ? "%1 commit" : "%1 commits", [repo.behind]))
+  if (repo.dirtyCount > 0) parts.push(tr("%1 changed", [repo.dirtyCount]))
   return parts.join(" · ")
 }
 
@@ -138,6 +155,7 @@ if (typeof module !== "undefined") {
     defaultStatus: defaultStatus,
     parseStatus: parseStatus,
     relativeTime: relativeTime,
+    updatedText: updatedText,
     repositoryMeta: repositoryMeta,
     repositoryState: repositoryState,
     barText: barText,

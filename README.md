@@ -41,6 +41,10 @@ All preferences live on the `foamy.github` widget entry in Omarchy's
 through Omarchy's `setBarWidget` IPC method, which updates both live settings and
 shell.json. It does not maintain a separate preferences file.
 
+- **Language:** system language (default), English, or Norsk bokmål. System
+  language uses Norwegian for `nb`, `nn`, or `no` locales and English otherwise.
+  Labels update when the setting is saved. Repository names, paths, and messages
+  from Git and the repository helper keep their original text.
 - **Repository folders:** use **+** to add a row. Browse with the folder icon or
   enter an absolute path or `~/` path. Choose how many levels below the folder
   to search: **0** checks only that folder, **1** includes immediate children,
@@ -51,7 +55,8 @@ shell.json. It does not maintain a separate preferences file.
 - **Local status refresh:** defaults to 30 seconds.
 - **Remote fetch:** defaults to 15 minutes. Manual refresh fetches immediately.
 
-The advanced settings keys are `repositoryFolders` (an array of
+The advanced settings keys are `language` (`system`, `en`, or `nb`),
+`repositoryFolders` (an array of
 `{ "path": "~/Projects", "depth": 2 }`, default `[]`), `refreshIntervalSec`
 (10–3600 seconds), and `fetchIntervalSec` (300–86400 seconds). Legacy string
 folder entries use two levels. Interval dropdowns offer common presets.
@@ -84,7 +89,7 @@ after source edits before live checks. IPC is available through
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
-node --test tests/model.test.js
+node --test tests/*.test.js
 bash -n folder-picker.sh
 qmllint -I /usr/share/omarchy/shell Panel.qml Service.qml Github*.qml FolderPicker.qml
 omarchy plugin validate .
