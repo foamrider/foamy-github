@@ -2,9 +2,12 @@
 
 Local Git repository status, fetch, push, and pull.
 
-![Foamy GitHub screenshot](screenshot.png)
+![Foamy GitHub screenshot](preview.png)
 
 ## Install
+
+Requires Omarchy Quattro, Git, Python 3, Bash, and `jq`. Opening a repository
+from the eye button also requires `lazygit` and Omarchy's terminal launcher.
 
 ```sh
 omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
@@ -34,6 +37,18 @@ schedule remains separate. No extra package is required.
 
 Uses your existing Git authentication. Pull requires a clean, non-diverged
 branch with an upstream and uses fast-forward only. Works with any Git host.
+
+## Remove
+
+```sh
+omarchy plugin remove foamy.github
+```
+
+Removal stops repository monitoring and scheduled fetches. Your repositories,
+Git configuration, authentication, and cached status remain on disk.
+
+Omarchy manages the plugin entry in `shell.json`. Packages and data outside
+the plugin directory are retained unless you remove them separately.
 
 ## License
 
