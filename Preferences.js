@@ -1,5 +1,7 @@
 // Match the language choices used by the other Foamy plugins.
 var norwegian = {
+  "Status unavailable": "Status utilgjengelig",
+  "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh.": "Noen prosjektkontroller er ufullstendige. Åpne det berørte prosjektet i lazygit, og oppdater deretter.",
   "Language": "Språk",
   "Default (system language)": "Standard (systemspråk)",
   "Settings": "Innstillinger",

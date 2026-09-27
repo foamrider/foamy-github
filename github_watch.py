@@ -7,7 +7,6 @@ import argparse
 import concurrent.futures
 import ctypes
 import errno
-import json
 import os
 from pathlib import Path
 import select
@@ -57,6 +56,8 @@ class Inotify:
     os.close(self.fd)
 
   def reconcile(self, paths: set[Path]):
+    if len(paths) > status.MAX_WATCHES:
+      raise status.InspectionError("Directory watch limit reached. Use timed refresh or select narrower repository folders.")
     existing = set(self.paths.values())
     for path in sorted(paths - existing):
       descriptor = self.libc.inotify_add_watch(self.fd, os.fsencode(path), MASK | ONLYDIR | DONT_FOLLOW)
@@ -72,13 +73,13 @@ class Inotify:
         self.libc.inotify_rm_watch(self.fd, descriptor)
         del self.paths[descriptor]
 
-  def read(self) -> list[tuple[Path | None, str, int]]:
-    events = []
-    while True:
+  def read(self):
+    # Yield events directly and return after a bounded batch, even during a storm.
+    for _ in range(4):
       try:
         data = os.read(self.fd, 256 * 1024)
       except BlockingIOError:
-        return events
+        return
       offset = 0
       while offset < len(data):
         descriptor, mask, _cookie, length = EVENT.unpack_from(data, offset)
@@ -88,49 +89,54 @@ class Inotify:
         path = self.paths.get(descriptor)
         if mask & IGNORED:
           self.paths.pop(descriptor, None)
-        events.append((path, name, mask))
-
-
-def git_paths(repo: status.Repository, arguments: list[str]) -> list[str]:
-  result = status.run_git(repo, arguments, timeout=30)
-  if result.returncode:
-    raise OSError(status.concise_error(result, f"Could not inspect {repo.path}"))
-  return result.stdout.rstrip("\0").split("\0") if result.stdout else []
+        yield path, name, mask
 
 
 def repository_directories(repo: status.Repository) -> set[Path]:
   root = Path(repo.path)
   # Git identifies ignored trees in one call; never recurse into dependency/build
   # trees, but retain directories containing tracked files even if now ignored.
-  ignored = {root / name.rstrip("/") for name in git_paths(repo,
-    ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
-    if name.endswith("/")}
+  ignored: set[Path] = set()
+  def ignore(record: bytes):
+    if record.endswith(b"/"):
+      ignored.add(root / os.fsdecode(record.rstrip(b"/")))
+      if len(ignored) > status.MAX_WATCHES:
+        raise status.InspectionError("Ignored directory limit reached. Use timed refresh or select narrower repository folders.")
+  status.git_records(repo, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], ignore)
   paths: set[Path] = set()
+  budget = status.ScanBudget()
 
   def walk(base: Path, metadata=False):
-    def fail(error: OSError):
-      raise error
-    for directory, children, _files in os.walk(base, onerror=fail):
-      path = Path(directory)
+    pending = [base]
+    while pending:
+      budget.check()
+      path = pending.pop()
       paths.add(path)
-      children[:] = [name for name in children
-        if not (path / name).is_symlink()
-        and (path / name) not in ignored
-        and name not in (("objects", "logs", "hooks", "worktrees") if metadata else (".git",))]
+      if len(paths) > status.MAX_WATCHES:
+        raise status.InspectionError("Directory watch limit reached. Use timed refresh or select narrower repository folders.")
+      with os.scandir(path) as children:
+        for child in children:
+          budget.check()
+          if child.is_dir(follow_symlinks=False) and Path(child.path) not in ignored and child.name not in (
+              ("objects", "logs", "hooks", "worktrees") if metadata else (".git",)):
+            pending.append(Path(child.path))
+            if len(pending) + len(paths) > status.MAX_WATCHES:
+              raise status.InspectionError("Directory watch limit reached. Use timed refresh or select narrower repository folders.")
 
   walk(root)
   for option in ("--git-dir", "--git-common-dir"):
-    result = status.run_git(repo, ["rev-parse", "--path-format=absolute", option])
-    if result.returncode:
-      raise OSError(status.concise_error(result, f"Could not locate Git metadata for {repo.path}"))
-    walk(Path(result.stdout.strip()), metadata=True)
+    walk(Path(status.checked_text(repo, ["rev-parse", "--path-format=absolute", option])), metadata=True)
   return paths
 
 
 def discovery_directories(folders: list[status.FolderConfig]) -> set[Path]:
   paths: set[Path] = set()
+  budget = status.ScanBudget()
 
   def visit(path: Path, depth: int):
+    budget.check()
+    if len(paths) >= status.MAX_WATCHES:
+      raise status.InspectionError("Discovery watch limit reached. Select narrower repository folders.")
     if not path.is_dir():
       # Watch the nearest existing ancestor so a missing configured root can appear.
       parent = path.parent
@@ -141,9 +147,11 @@ def discovery_directories(folders: list[status.FolderConfig]) -> set[Path]:
     paths.add(path)
     if (path / ".git").exists() or depth == 0:
       return
-    for child in path.iterdir():
-      if child.is_dir() and not child.is_symlink() and not child.name.startswith(".") and child.name != "node_modules":
-        visit(child, depth - 1)
+    with os.scandir(path) as children:
+      for child in children:
+        budget.check()
+        if child.is_dir(follow_symlinks=False) and not child.name.startswith(".") and child.name != "node_modules":
+          visit(Path(child.path), depth - 1)
 
   for folder in folders:
     root = Path(folder["path"]).expanduser().resolve()
@@ -179,6 +187,8 @@ class RepositoryWatcher:
       self.plans = {path: plan for path, plan in self.plans.items() if path in current}
     for path in rebuild & self.repositories.keys():
       self.plans[path] = repository_directories(self.repositories[path])
+      if sum(len(plan) for plan in self.plans.values()) > status.MAX_WATCH_LINKS:
+        raise status.InspectionError("Total directory monitoring limit reached. Use timed refresh or select fewer repositories.")
     self.owners = {}
     for repo, paths in self.plans.items():
       for path in paths:
@@ -219,7 +229,7 @@ class RepositoryWatcher:
 
   def run(self):
     def emit(payload):
-      print(json.dumps(payload, separators=(",", ":")), flush=True)
+      print(status.encode_payload(payload), flush=True)
 
     emit(self.refresh(set(), set(), discover=True))
     dirty: set[str] = set()
@@ -259,7 +269,8 @@ def main() -> int:
     watcher = RepositoryWatcher(status.parse_folders(args.folders_json))
     watcher.run()
   except (OSError, ValueError) as error:
-    print(f"Filesystem monitoring stopped: {error}. Falling back to timed refresh.", file=sys.stderr)
+    # The QML service decides whether polling is enabled and explains recovery.
+    print(f"Filesystem monitoring stopped: {error}", file=sys.stderr)
     return 1
   finally:
     if watcher is not None:

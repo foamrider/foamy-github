@@ -27,7 +27,7 @@ Panel {
   readonly property bool lightTheme: Color.popups.background.r + Color.popups.background.g + Color.popups.background.b > 1.5
   readonly property color success: lightTheme ? "#3b6b30" : "#a6e3a1"
   readonly property color warning: lightTheme ? "#886000" : "#f9e2af"
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color urgent: lightTheme ? "#a8203a" : bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.tint(Color.popups.background, Qt.rgba(foreground.r, foreground.g, foreground.b, 0.76))
   readonly property color outlineColor: Qt.tint(Color.popups.background, Qt.rgba(foreground.r, foreground.g, foreground.b, 0.22))
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -348,8 +348,9 @@ Panel {
 
       Text {
         textFormat: Text.PlainText
-        visible: !button.vertical && !github.syncing && github.sync.stale && github.totals.failedRepos === 0
-        text: "?"
+        visible: !button.vertical && !github.syncing
+          && (github.totals.unavailableRepos > 0 || (github.sync.stale && github.totals.failedRepos === 0))
+        text: github.totals.unavailableRepos > 0 ? github.totals.unavailableRepos + "?" : "?"
         color: root.urgent
         font.family: button.fontFamily
         font.pixelSize: button.fontSize
@@ -819,7 +820,7 @@ Panel {
     id: repoRow
     property var repo: null
     property int rowIndex: 0
-    readonly property color stateColor: repo && repo.dirtyCount > 0 ? root.warning
+    readonly property color stateColor: repo && repo.complete === false ? root.urgent : repo && repo.dirtyCount > 0 ? root.warning
       : (repo && repo.behind > 0 ? root.accent : root.success)
 
     implicitHeight: repoContent.implicitHeight + Style.space(24)
@@ -855,7 +856,8 @@ Panel {
           text: Model.repositoryMeta(repoRow.repo, root.tr)
           color: root.dim
           font.pixelSize: Style.space(12)
-          elide: Text.ElideRight
+          wrapMode: repoRow.repo && repoRow.repo.complete === false ? Text.WordWrap : Text.NoWrap
+          elide: repoRow.repo && repoRow.repo.complete === false ? Text.ElideNone : Text.ElideRight
         }
       }
       RowLayout {
@@ -863,7 +865,8 @@ Panel {
         PanelActionButton {
           iconText: "\uf062"
           tooltipText: root.tr("Push %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
-          enabled: !github.busy && repoRow.repo && repoRow.repo.ahead > 0
+          enabled: !github.busy && repoRow.repo && repoRow.repo.complete === true && repoRow.repo.ahead > 0
+          opacity: enabled ? 1 : 0.4
           foreground: root.dim
           hoverColor: root.success
           fontFamily: root.fontFamily
@@ -874,7 +877,9 @@ Panel {
         PanelActionButton {
           iconText: "\uf063"
           tooltipText: root.tr("Pull %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
-          enabled: !github.busy && repoRow.repo && repoRow.repo.behind > 0
+          enabled: !github.busy && repoRow.repo && repoRow.repo.complete === true && repoRow.repo.behind > 0
+            && repoRow.repo.dirtyCount === 0 && repoRow.repo.ahead === 0
+          opacity: enabled ? 1 : 0.4
           foreground: root.dim
           hoverColor: root.accent
           fontFamily: root.fontFamily

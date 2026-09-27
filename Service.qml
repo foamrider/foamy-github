@@ -31,7 +31,9 @@ Item {
   readonly property string watchError: !inotifyEnabled || !watchFailed ? ""
     : refreshIntervalSec > 0 ? "Live monitoring unavailable; using timed refresh."
     : "Live monitoring unavailable; automatic local refresh is disabled."
-  readonly property string lastError: watchError || operationError
+  property string watchDetail: ""
+  readonly property string lastError: operationError || (watchError ? watchError + (watchDetail ? " " + watchDetail : "") : "")
+    || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
   property bool monitoring: false
   property bool watchRestartRequested: false
   property string watchedFolders: ""
@@ -83,6 +85,7 @@ Item {
     }
     root.watchRestartRequested = false
     root.watchFailed = false
+    root.watchDetail = ""
     if (!root.inotifyEnabled) {
       root.refresh()
       return
@@ -163,7 +166,7 @@ Item {
   }
 
   function runRepositoryAction(mode, repo) {
-    if (root.busy || !repo || !repo.path) return
+    if (root.busy || !repo || !repo.path || repo.complete !== true) return
     repositoryActionRunning = true
     operationError = ""
     actionMessageTimer.stop()
@@ -178,12 +181,18 @@ Item {
   function applyStatus(raw) {
     var next = Model.parseStatus(raw)
     if (!next.ok) {
-      operationError = next.error || "Failed to read repository status"
-      return
+      failStatus(next.error || "Failed to read repository status")
+      return false
     }
     status = next
     lastChecked = Date.now() / 1000
     operationError = ""
+    return true
+  }
+
+  function failStatus(message) {
+    operationError = message
+    status = Model.unavailableStatus(status, message)
   }
 
   function openRepository(repo) {
@@ -218,7 +227,10 @@ Item {
     stdout: SplitParser {
       onRead: function(line) {
         if (!root.inotifyEnabled || root.watchRestartRequested || root.watchedFolders !== root.folderArguments) return
-        root.applyStatus(line)
+        if (!root.applyStatus(line)) {
+          watchProcess.running = false
+          return
+        }
         root.monitoring = true
         root.watchFailed = false
         root.refreshing = false
@@ -234,6 +246,7 @@ Item {
         return
       }
       root.watchFailed = true
+      root.watchDetail = String(watchOutput.text || "Filesystem watcher exited").trim().slice(0, 240)
       console.warn("foamy.github:", String(watchOutput.text || "Filesystem watcher exited").trim())
       root.refresh()
       root.retryScheduledFetch()
@@ -283,7 +296,7 @@ Item {
       }
       if (root.monitoring) return
       if (exitCode === 0) root.applyStatus(statusOutput.text)
-      else root.operationError = String(statusError.text || "Repository status failed").trim()
+      else root.failStatus(String(statusError.text || "Repository status failed").trim().slice(0, 240))
       root.retryScheduledFetch()
     }
   }

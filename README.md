@@ -38,6 +38,23 @@ schedule remains separate. No extra package is required.
 Uses your existing Git authentication. Pull requires a clean, non-diverged
 branch with an upstream and uses fast-forward only. Works with any Git host.
 
+Repository checks stream Git status without retaining file lists. Completed
+checks show exact Git status entry counts (untracked directories count as one
+entry). A timeout, resource limit, or Git error shows **Status unavailable** for
+that repository and disables push/pull until a fresh check succeeds. Other
+repositories continue to update. An incomplete folder scan reports an error;
+it never silently lists a subset as a successful scan.
+
+To keep background work bounded, checks allow 16 MiB of Git output and 15 seconds
+per status command, with at most four commands running concurrently per helper.
+Folder discovery allows 256 repositories and 100,000 directory entries within
+five seconds per traversal. Monitoring allows 8,192 watches and 32,768
+repository-to-directory associations. Oversized monitoring plans use the normal
+fallback interval; choose narrower folders, reduce scan depth, or disable
+automatic detection if a limit persists. Shell messages and cached sync state
+are limited to 8 MiB. These limits bound plugin buffers and work; Git itself
+still needs memory to inspect its index.
+
 ## Remove
 
 ```sh

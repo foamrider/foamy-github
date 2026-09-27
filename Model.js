@@ -10,7 +10,8 @@ function defaultStatus() {
       failedRepos: 0,
       aheadCommits: 0,
       behindCommits: 0,
-      dirtyFiles: 0
+      dirtyFiles: 0,
+      unavailableRepos: 0
     },
     repos: [],
     sync: {
@@ -27,6 +28,7 @@ function defaultStatus() {
 }
 
 function parseStatus(raw) {
+  if (String(raw || "").length > 8 * 1024 * 1024) return failedStatus("Repository summary is too large. Select fewer repository folders.")
   var text = String(raw || "").trim()
   if (text === "") return failedStatus("No repository status received")
   try {
@@ -35,6 +37,19 @@ function parseStatus(raw) {
     var fallback = defaultStatus()
     parsed.totals = Object.assign({}, fallback.totals, parsed.totals || {})
     parsed.repos = Array.isArray(parsed.repos) ? parsed.repos : []
+    if (parsed.repos.length > 256) return failedStatus("Too many repositories. Select fewer repository folders.")
+    for (var repo of parsed.repos) {
+      if (!repo || typeof repo.complete !== "boolean" || typeof repo.affected !== "boolean")
+        return failedStatus("Invalid repository status")
+      for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error"]) {
+        if (typeof repo[field] !== "string" || repo[field].length > 4096)
+          return failedStatus("Invalid repository status")
+      }
+      for (var count of ["ahead", "behind", "dirtyCount"]) {
+        if (!Number.isSafeInteger(repo[count]) || repo[count] < 0)
+          return failedStatus("Invalid repository status")
+      }
+    }
     parsed.sync = Object.assign({}, fallback.sync, parsed.sync || {})
     parsed.sync.failures = Array.isArray(parsed.sync.failures) ? parsed.sync.failures : []
     parsed.sync.updated = Array.isArray(parsed.sync.updated) ? parsed.sync.updated : []
@@ -49,6 +64,19 @@ function failedStatus(message) {
   var status = defaultStatus()
   status.ok = false
   status.error = message
+  return status
+}
+
+function unavailableStatus(previous, message) {
+  var status = failedStatus(message)
+  // Preserve repository identities for recovery, but never reuse stale safety checks.
+  status.repos = (previous.repos || []).map(function(repo) {
+    return Object.assign({}, repo, {complete: false, affected: true, error: message,
+      ahead: 0, behind: 0, dirty: null, dirtyCount: 0})
+  })
+  status.repoCount = status.repos.length
+  status.affectedCount = status.repos.length
+  status.totals.unavailableRepos = status.repos.length
   return status
 }
 
@@ -85,6 +113,7 @@ function updatedText(timestampSec, nowMs, tr) {
 function repositoryMeta(repo, tr) {
   tr = tr || translate
   if (!repo) return ""
+  if (repo.complete === false) return tr("Status unavailable") + " · " + String(repo.error || "")
   var parts = []
   var branch = String(repo.branch || tr("detached"))
   parts.push(branch)
@@ -96,6 +125,7 @@ function repositoryMeta(repo, tr) {
 
 function repositoryState(repo) {
   if (!repo) return "Clean"
+  if (repo.complete === false) return "unavailable"
   var states = []
   if (repo.ahead > 0) states.push("ahead")
   if (repo.behind > 0) states.push("behind")
@@ -111,6 +141,7 @@ function barText(status, vertical) {
   if (status.totals.behindRepos > 0) parts.push(status.totals.behindRepos + "↓")
   if (status.totals.dirtyRepos > 0) parts.push(status.totals.dirtyRepos + "*")
   if (status.totals.failedRepos > 0) parts.push(status.totals.failedRepos + "!")
+  if (status.totals.unavailableRepos > 0) parts.push(status.totals.unavailableRepos + "?")
   if (status.sync.stale && status.totals.failedRepos === 0) parts.push("?")
   return parts.join(" ")
 }
@@ -154,6 +185,7 @@ if (typeof module !== "undefined") {
     parseFolderRows: parseFolderRows,
     defaultStatus: defaultStatus,
     parseStatus: parseStatus,
+    unavailableStatus: unavailableStatus,
     relativeTime: relativeTime,
     updatedText: updatedText,
     repositoryMeta: repositoryMeta,
