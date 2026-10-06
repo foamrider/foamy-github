@@ -15,7 +15,7 @@ Rectangle {
   signal clicked()
   implicitWidth: label ? content.implicitWidth + Style.space(12) : Style.space(26)
   implicitHeight: Style.space(28)
-  radius: Style.space(6)
+  radius: Style.cornerRadius * 2
   opacity: enabled && actionEnabled ? 1 : 0.4
   color: actionEnabled && (mouse.containsMouse || activeFocus) ? Qt.rgba(foreground.r, foreground.g, foreground.b, 0.08) : "transparent"
   activeFocusOnTab: actionEnabled

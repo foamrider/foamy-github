@@ -21,7 +21,7 @@ import qs.Ui
 Item {
   id: root
 
-  property real cornerRadius: Style.space(6)
+  property real cornerRadius: Style.cornerRadius * 2
   property string label: ""
   property string value: ""
   property var options: []
@@ -215,6 +215,7 @@ Item {
             required property int index
             width: optionList.width
             height: root.popupRowHeight
+            radius: Math.max(0, root.cornerRadius - popup.leftPadding)
             color: index === optionList.currentIndex
               ? Style.hoverFillFor(root.foreground, root.accent)
               : "transparent"

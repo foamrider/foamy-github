@@ -18,7 +18,7 @@ Panel {
   readonly property string language: Preferences.language(Preferences.languageSetting(settings), Qt.locale().name)
   function tr(label, values) { return Preferences.text(label, language, values) }
 
-  readonly property real controlRadius: Style.space(6)
+  readonly property real controlRadius: Style.cornerRadius * 2
   property int repoIndex: 0
   property bool cursorActive: false
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -430,13 +430,15 @@ Panel {
             // Use the same static, theme-derived header wash as clock and weather.
             Canvas {
               id: headerBackground
+              readonly property real cornerRadius: Math.max(0, Math.min(width / 2, height, panel.cornerRadius - Border.top(panel.borderSpec)))
+              onCornerRadiusChanged: requestPaint()
               anchors.fill: parent
               onWidthChanged: requestPaint()
               onHeightChanged: requestPaint()
               onPaint: {
                 var ctx = getContext("2d")
                 ctx.reset()
-                var radius = Style.space(13)
+                var radius = cornerRadius
                 ctx.beginPath()
                 ctx.moveTo(radius, 0); ctx.lineTo(width - radius, 0)
                 ctx.quadraticCurveTo(width, 0, width, radius)
@@ -482,7 +484,7 @@ Panel {
                   foreground: root.dim
                   implicitWidth: Style.space(32)
                   implicitHeight: Style.space(32)
-                  radius: Style.space(7)
+                  radius: Style.cornerRadius * 2
                   iconSize: Style.space(16)
                   keyTarget: keyCatcher
                   onClicked: root.openSettings()
@@ -774,6 +776,7 @@ Panel {
                 font.pixelSize: Style.space(12)
               }
               PanelActionButton {
+                radius: Style.cornerRadius * 2
                 id: refreshButton
                 tooltipText: github.syncing ? root.tr("Fetching repositories…")
                   : github.refreshing ? root.tr("Refreshing local status")
@@ -863,6 +866,7 @@ Panel {
       RowLayout {
         spacing: Style.space(2)
         PanelActionButton {
+          radius: Style.cornerRadius * 2
           iconText: "\uf062"
           tooltipText: root.tr("Push %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
           enabled: !github.busy && repoRow.repo && repoRow.repo.complete === true && repoRow.repo.ahead > 0
@@ -875,6 +879,7 @@ Panel {
           onClicked: github.pushRepository(repoRow.repo)
         }
         PanelActionButton {
+          radius: Style.cornerRadius * 2
           iconText: "\uf063"
           tooltipText: root.tr("Pull %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
           enabled: !github.busy && repoRow.repo && repoRow.repo.complete === true && repoRow.repo.behind > 0
@@ -888,6 +893,7 @@ Panel {
           onClicked: github.pullRepository(repoRow.repo)
         }
         PanelActionButton {
+          radius: Style.cornerRadius * 2
           iconText: "\uf06e"
           tooltipText: root.tr("View in lazygit")
           enabled: repoRow.repo !== null
