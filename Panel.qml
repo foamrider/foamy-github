@@ -441,9 +441,9 @@ Panel {
                 var radius = cornerRadius
                 ctx.beginPath()
                 ctx.moveTo(radius, 0); ctx.lineTo(width - radius, 0)
-                ctx.quadraticCurveTo(width, 0, width, radius)
+                ctx.arcTo(width, 0, width, radius, radius)
                 ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.lineTo(0, radius)
-                ctx.quadraticCurveTo(0, 0, radius, 0); ctx.closePath(); ctx.clip()
+                ctx.arcTo(0, 0, radius, 0, radius); ctx.closePath(); ctx.clip()
                 var gradient = ctx.createLinearGradient(0, 0, width * 0.5, height)
                 gradient.addColorStop(0, Qt.tint(Color.popups.background, Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.08)))
                 gradient.addColorStop(1, Color.popups.background)
