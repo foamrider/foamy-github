@@ -6,7 +6,7 @@ Local Git repository status, fetch, push, and pull.
 
 ## Install
 
-Requires Omarchy Quattro, Git, Python 3, Bash, and `jq`. Opening a repository
+Requires Omarchy Quattro, Git, Python 3, Bash, `jq`, and `wl-clipboard`. Opening a repository
 from the eye button also requires `lazygit` and Omarchy's terminal launcher.
 
 ```sh
@@ -54,6 +54,10 @@ fallback interval; choose narrower folders, reduce scan depth, or disable
 automatic detection if a limit persists. Shell messages and cached sync state
 are limited to 8 MiB. These limits bound plugin buffers and work; Git itself
 still needs memory to inspect its index.
+
+Repository-folder paste reads at most 16 KiB and has a two-second deadline.
+Oversized or unavailable clipboard text leaves the field unchanged and shows an
+error. Keyboard paste, the edit menu, and middle-click use the same bounded reader.
 
 ## Remove
 

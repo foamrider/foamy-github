@@ -670,7 +670,7 @@ Panel {
                           Keys.onEscapePressed: root.closeSettings()
                         }
 
-                        Controls.TextField {
+                        SafeTextField {
                           id: folderPath
 
                           Layout.fillWidth: true
@@ -680,11 +680,13 @@ Panel {
                           color: root.foreground
                           font.family: "sans-serif"
                           font.pixelSize: Style.space(12)
-                          padding: Style.space(8)
-                          selectByMouse: true
+                          leftPadding: Style.space(8)
+                          rightPadding: Style.space(8)
+                          translate: root.tr
                           Accessible.name: root.tr("Repository folder %1", [folderRow.index + 1])
                           placeholderText: "~/Projects"
                           placeholderTextColor: root.dim
+                          onPasteErrorChanged: if (pasteError !== "") root.settingsError = pasteError
                           onTextEdited: {
                             folderRows.setProperty(folderRow.index, "path", text);
                             root.foldersDirty = true;
@@ -695,8 +697,8 @@ Panel {
                               root.saveFolders();
                             }
                           }
-                          onActiveFocusChanged: {
-                            if (activeFocus) {
+                          onInputActiveFocusChanged: {
+                            if (inputActiveFocus) {
                               root.showFolderRow(folderRow);
                             }
                           }
@@ -706,7 +708,7 @@ Panel {
                             radius: root.controlRadius
                             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.055)
                             border.width: 1
-                            border.color: folderPath.activeFocus ? root.accent : root.outlineColor
+                            border.color: folderPath.inputActiveFocus ? root.accent : root.outlineColor
                           }
 
                         }
