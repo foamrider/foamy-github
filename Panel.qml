@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls as Controls
@@ -11,6 +12,8 @@ import "Preferences.js" as Preferences
 
 Panel {
   id: root
+
+  function open() { preparePopup(); controller.show() }
   moduleName: "foamy.github"
   ipcTarget: "foamy.github"
   manageIpc: false
@@ -19,6 +22,7 @@ Panel {
   function tr(label, values) { return Preferences.text(label, language, values) }
 
   readonly property real controlRadius: Style.cornerRadius * 2
+  property bool resetScrollPending: false
   property int repoIndex: 0
   property bool cursorActive: false
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -72,8 +76,8 @@ Panel {
     ensureFolderRow()
     settingsError = result.error || ""
     editingSettings = true
-    panelFlick.contentY = 0
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    resetScrollPending = true; panelFlick.positionViewAtBeginning()
+    Qt.callLater(function() { if (root.opened && keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
   ListModel { id: folderRows }
@@ -102,7 +106,7 @@ Panel {
     root.open()
     Qt.callLater(function() {
       returningFromBrowser = false
-      var row = folderRepeater.itemAt(browsingRow)
+      var row = folderRepeater ? folderRepeater.itemAt(browsingRow) : null
       if (row) row.focusPath()
       browsingRow = -1
     })
@@ -118,7 +122,7 @@ Panel {
   function showFolderRow(row) {
     // Newly added rows and keyboard focus can move below the scroll viewport.
     Qt.callLater(function() {
-      if (!row) return
+      if (!root.opened || !panelFlick || !row) return
       var top = row.mapToItem(panelFlick.contentItem, 0, 0).y
       var bottom = top + row.height
       if (top < panelFlick.contentY) panelFlick.contentY = top
@@ -132,7 +136,7 @@ Panel {
     folderRows.append({path: "", depth: 2})
     settingsError = ""
     Qt.callLater(function() {
-      var row = folderRepeater.itemAt(folderRows.count - 1)
+      var row = folderRepeater ? folderRepeater.itemAt(folderRows.count - 1) : null
       if (row) row.focusPath()
     })
   }
@@ -140,8 +144,8 @@ Panel {
   function closeSettings() {
     if (foldersDirty) saveFolders()
     editingSettings = false
-    panelFlick.contentY = 0
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    resetScrollPending = true; panelFlick.positionViewAtBeginning()
+    Qt.callLater(function() { if (root.opened && keyCatcher) keyCatcher.forceActiveFocus() })
   }
 
   function savePreference(key, value) {
@@ -229,18 +233,19 @@ Panel {
     github.openRepository(repo)
   }
 
+  readonly property var folderRepeater: panelFlick.headerItem ? panelFlick.headerItem.folderRepeater : null
+
   function scrollCursorIntoView() {
-    if (!repoColumn || repoIndex < 0 || repoIndex >= repoColumn.children.length) return
     Qt.callLater(function() {
-      var item = repoColumn.children[root.repoIndex]
-      if (!item) return
-      var point = item.mapToItem(panelFlick.contentItem, 0, 0)
-      var top = point.y
-      var bottom = top + item.height
-      var margin = Style.space(6)
-      if (top < panelFlick.contentY + margin) panelFlick.contentY = Math.max(0, top - margin)
-      else if (bottom > panelFlick.contentY + panelFlick.height - margin)
-        panelFlick.contentY = Math.min(panelFlick.contentHeight - panelFlick.height, bottom + margin - panelFlick.height)
+      if (root.opened && panelFlick && !root.editingSettings)
+        {
+          var item = panelFlick.itemAtIndex(root.repoIndex)
+          if (item) {
+            var top = item.mapToItem(panelFlick, 0, 0).y
+            if (top >= 0 && top + item.height <= panelFlick.height) return
+          }
+          panelFlick.positionViewAtIndex(root.repoIndex, ListView.Contain)
+        }
     })
   }
 
@@ -253,7 +258,7 @@ Panel {
       editingSettings = false
       cursorActive = false
       repoIndex = 0
-      panelFlick.contentY = 0
+      resetScrollPending = true; panelFlick.positionViewAtBeginning()
       github.refresh()
     }
   }
@@ -366,6 +371,31 @@ Panel {
     font.pixelSize: Style.space(13)
   }
 
+  // Keep the controller alive; release only the view after close animations finish.
+  property bool popupContentActive: false
+  property bool settingsContentActive: false
+  function preparePopup() {
+    popupUnload.stop()
+    popupContentActive = true
+  }
+  Connections {
+    target: root
+    function onEditingSettingsChanged() {
+      if (root.editingSettings) root.settingsContentActive = true
+    }
+    function onOpenedChanged() {
+      if (root.opened) root.preparePopup()
+      else popupUnload.restart()
+    }
+  }
+  Timer {
+    id: popupUnload
+    interval: 1000
+    onTriggered: {
+      if (!root.opened && !panel.visible)
+        { root.popupContentActive = false; root.settingsContentActive = false }
+    }
+  }
   GithubPopup {
     id: panel
     anchorItem: button
@@ -376,15 +406,14 @@ Panel {
     padding: 0
     borderSpec: Border.flat(root.outlineColor, 1)
     contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(620))
-
+    contentHeight: panel.fittedContentHeight(panelFlick.contentHeight, Style.space(620))
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       blocked: root.editingSettings
       Keys.onEscapePressed: root.editingSettings ? root.closeSettings() : root.close()
       Keys.onTabPressed: function(event) {
-        if (root.editingSettings && keyCatcher.activeFocus) settingsBack.forceActiveFocus()
+        if (root.editingSettings && keyCatcher.activeFocus) panelFlick.headerItem.settingsBack.forceActiveFocus()
         else event.accepted = false
       }
       onMoveRequested: function(dx, dy) {
@@ -399,18 +428,37 @@ Panel {
         if ((text === "r" || text === "R") && !github.busy) github.fetch()
       }
 
-      Flickable {
+      ListView {
         id: panelFlick
         anchors.fill: parent
-        contentWidth: width
-        contentHeight: contentColumn.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        // A successful refresh may shorten the list while it is scrolled.
-        onContentHeightChanged: contentY = Math.max(0, Math.min(contentY, contentHeight - height))
-        onHeightChanged: contentY = Math.max(0, Math.min(contentY, contentHeight - height))
+        model: root.popupContentActive && !root.editingSettings ? root.displayedRepos : []
+        cacheBuffer: 0
+        // Keep offscreen rows uninstantiated while scrolling the header and footer together.
+        delegate: Item {
+          required property var modelData
+          required property int index
+          width: panelFlick.width
+          height: repositoryRow.implicitHeight
+          RepositoryRow {
+            id: repositoryRow
+            x: Style.space(20)
+            width: parent.width - Style.space(40)
+            repo: parent.modelData
+            rowIndex: parent.index
+          }
+        }
+        FrameAnimation {
+          running: root.opened && root.resetScrollPending
+          onTriggered: {
+            // Header geometry settles during polish, after the model is attached.
+            panelFlick.positionViewAtBeginning()
+            root.resetScrollPending = false
+          }
+        }
         ScrollBar.vertical: ScrollBar {
           visible: panelFlick.interactive
           width: Style.space(4)
@@ -418,11 +466,11 @@ Panel {
           contentItem: Rectangle { implicitWidth: Style.space(4); radius: width / 2; color: root.dim }
           background: Item {}
         }
-
-        Column {
+        header: Column {
           id: contentColumn
+          readonly property var folderRepeater: githubSettings.item ? githubSettings.item.folderRepeater : null
+          readonly property var settingsBack: githubSettings.item ? githubSettings.item.settingsBack : null
           width: panelFlick.width
-
           Item {
             width: parent.width
             height: heroContent.implicitHeight + Style.space(42)
@@ -507,212 +555,314 @@ Panel {
               }
             }
           }
+            Loader {
+              id: githubSettings
 
-          Column {
-            visible: root.editingSettings
-            width: parent.width - Style.space(40)
-            anchors.horizontalCenter: parent.horizontalCenter
-            topPadding: Style.space(16)
-            bottomPadding: Style.space(20)
-            spacing: Style.space(12)
-            Row {
-              spacing: Style.space(10)
-              GithubAction {
-                id: settingsBack
-                iconName: "arrow-left"
-                tooltipText: root.tr("Back")
-                foreground: root.dim
-                onClicked: root.closeSettings()
-              }
-              GithubLabel { text: root.tr("Settings"); color: root.dim; anchors.verticalCenter: parent.verticalCenter }
-            }
-            GithubDropdown {
-              cornerRadius: root.controlRadius
-              width: parent.width
-              label: root.tr("Language")
-              fontFamily: "sans-serif"
-              value: Preferences.languageSetting(root.settings)
-              options: [{value: "system", label: root.tr("Default (system language)")},
-                {value: "en", label: "English"}, {value: "nb", label: "Norsk bokmål"}]
-              onChanged: function(value) { root.savePreference("language", value) }
-              Keys.onEscapePressed: root.closeSettings()
-            }
-            RowLayout {
-              width: parent.width
-              GithubLabel { text: root.tr("Repository folders"); Layout.fillWidth: true }
-              GithubAction {
-                id: addFolderButton
-                iconName: "plus"
-                tooltipText: folderRows.count >= 32 ? root.tr("You can add up to 32 directories.") : root.tr("Add folder")
-                foreground: root.dim
-                actionEnabled: folderRows.count < 32 && !folderPicker.running
-                onClicked: root.addFolder()
-                Keys.onEscapePressed: root.closeSettings()
-              }
-            }
-            Column {
-              width: parent.width
-              spacing: Style.space(8)
-              Repeater {
-                id: folderRepeater
-                model: folderRows
-                RowLayout {
-                  id: folderRow
-                  required property int index
-                  required property string path
-                  required property int depth
+              width: parent.width - Style.space(40)
+              anchors.horizontalCenter: parent.horizontalCenter
+              active: root.settingsContentActive
+              visible: root.editingSettings
+
+              sourceComponent: Component {
+                Column {
+                  property alias folderRepeater: folderRepeater
+                  property alias settingsBack: settingsBack
+
+                  visible: root.editingSettings
                   width: parent.width
-                  spacing: Style.space(8)
-                  enabled: !folderPicker.running
-                  function focusPath() { folderPath.forceActiveFocus() }
-                  GithubAction {
-                    iconName: "folder"
-                    tooltipText: root.tr("Browse for folder")
-                    foreground: root.dim
-                    onClicked: root.browseFolder(folderRow.index)
-                    Keys.onEscapePressed: root.closeSettings()
-                  }
-                  Controls.TextField {
-                    id: folderPath
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    implicitHeight: Style.spacing.controlHeight
-                    text: folderRow.path
-                    color: root.foreground
-                    font.family: "sans-serif"
-                    font.pixelSize: Style.space(12)
-                    padding: Style.space(8)
-                    selectByMouse: true
-                    Accessible.name: root.tr("Repository folder %1", [folderRow.index + 1])
-                    placeholderText: "~/Projects"
-                    placeholderTextColor: root.dim
-                    background: Rectangle {
-                      radius: root.controlRadius
-                      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.055)
-                      border.width: 1
-                      border.color: folderPath.activeFocus ? root.accent : root.outlineColor
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  topPadding: Style.space(16)
+                  bottomPadding: Style.space(20)
+                  spacing: Style.space(12)
+
+                  Row {
+                    spacing: Style.space(10)
+
+                    GithubAction {
+                      id: settingsBack
+
+                      iconName: "arrow-left"
+                      tooltipText: root.tr("Back")
+                      foreground: root.dim
+                      onClicked: root.closeSettings()
                     }
-                    onTextEdited: {
-                      folderRows.setProperty(folderRow.index, "path", text)
-                      root.foldersDirty = true
-                      root.settingsError = ""
+
+                    GithubLabel {
+                      text: root.tr("Settings")
+                      color: root.dim
+                      anchors.verticalCenter: parent.verticalCenter
                     }
-                    onEditingFinished: if (root.foldersDirty) root.saveFolders()
-                    onActiveFocusChanged: if (activeFocus) root.showFolderRow(folderRow)
-                    Keys.onEscapePressed: root.closeSettings()
+
                   }
+
                   GithubDropdown {
                     cornerRadius: root.controlRadius
-                    Layout.preferredWidth: Style.space(96)
-                    showLabel: false
-                    label: root.tr("Scan levels for %1", [folderRow.path])
+                    width: parent.width
+                    label: root.tr("Language")
                     fontFamily: "sans-serif"
-                    value: String(folderRow.depth)
-                    options: [0,1,2,3,4,5].map(function(depth) {
-                      return {value: String(depth), label: root.tr(depth === 1 ? "%1 level" : "%1 levels", [depth])}
-                    })
+                    value: Preferences.languageSetting(root.settings)
+                    options: [{
+                      "value": "system",
+                      "label": root.tr("Default (system language)")
+                    }, {
+                      "value": "en",
+                      "label": "English"
+                    }, {
+                      "value": "nb",
+                      "label": "Norsk bokmål"
+                    }]
                     onChanged: function(value) {
-                      folderRows.setProperty(folderRow.index, "depth", Number(value))
-                      root.foldersDirty = true
-                      root.saveFolders()
+                      root.savePreference("language", value);
                     }
                     Keys.onEscapePressed: root.closeSettings()
                   }
-                  GithubAction {
-                    iconName: "trash"
-                    tooltipText: root.tr("Remove folder")
-                    foreground: root.dim
-                    onClicked: {
-                      folderRows.remove(folderRow.index)
-                      root.ensureFolderRow()
-                      root.foldersDirty = true
-                      root.saveFolders()
-                      addFolderButton.forceActiveFocus()
+
+                  RowLayout {
+                    width: parent.width
+
+                    GithubLabel {
+                      text: root.tr("Repository folders")
+                      Layout.fillWidth: true
+                    }
+
+                    GithubAction {
+                      id: addFolderButton
+
+                      iconName: "plus"
+                      tooltipText: folderRows.count >= 32 ? root.tr("You can add up to 32 directories.") : root.tr("Add folder")
+                      foreground: root.dim
+                      actionEnabled: folderRows.count < 32 && !folderPicker.running
+                      onClicked: root.addFolder()
+                      Keys.onEscapePressed: root.closeSettings()
+                    }
+
+                  }
+
+                  Column {
+                    width: parent.width
+                    spacing: Style.space(8)
+
+                    Repeater {
+                      id: folderRepeater
+
+                      model: folderRows
+
+                      RowLayout {
+                        id: folderRow
+
+                        required property int index
+                        required property string path
+                        required property int depth
+
+                        function focusPath() {
+                          folderPath.forceActiveFocus();
+                        }
+
+                        width: parent.width
+                        spacing: Style.space(8)
+                        enabled: !folderPicker.running
+
+                        GithubAction {
+                          iconName: "folder"
+                          tooltipText: root.tr("Browse for folder")
+                          foreground: root.dim
+                          onClicked: root.browseFolder(folderRow.index)
+                          Keys.onEscapePressed: root.closeSettings()
+                        }
+
+                        Controls.TextField {
+                          id: folderPath
+
+                          Layout.fillWidth: true
+                          Layout.minimumWidth: 0
+                          implicitHeight: Style.spacing.controlHeight
+                          text: folderRow.path
+                          color: root.foreground
+                          font.family: "sans-serif"
+                          font.pixelSize: Style.space(12)
+                          padding: Style.space(8)
+                          selectByMouse: true
+                          Accessible.name: root.tr("Repository folder %1", [folderRow.index + 1])
+                          placeholderText: "~/Projects"
+                          placeholderTextColor: root.dim
+                          onTextEdited: {
+                            folderRows.setProperty(folderRow.index, "path", text);
+                            root.foldersDirty = true;
+                            root.settingsError = "";
+                          }
+                          onEditingFinished: {
+                            if (root.foldersDirty) {
+                              root.saveFolders();
+                            }
+                          }
+                          onActiveFocusChanged: {
+                            if (activeFocus) {
+                              root.showFolderRow(folderRow);
+                            }
+                          }
+                          Keys.onEscapePressed: root.closeSettings()
+
+                          background: Rectangle {
+                            radius: root.controlRadius
+                            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.055)
+                            border.width: 1
+                            border.color: folderPath.activeFocus ? root.accent : root.outlineColor
+                          }
+
+                        }
+
+                        GithubDropdown {
+                          cornerRadius: root.controlRadius
+                          Layout.preferredWidth: Style.space(96)
+                          showLabel: false
+                          label: root.tr("Scan levels for %1", [folderRow.path])
+                          fontFamily: "sans-serif"
+                          value: String(folderRow.depth)
+                          options: [0, 1, 2, 3, 4, 5].map(function(depth) {
+                            return {
+                              "value": String(depth),
+                              "label": root.tr(depth === 1 ? "%1 level" : "%1 levels", [depth])
+                            };
+                          })
+                          onChanged: function(value) {
+                            folderRows.setProperty(folderRow.index, "depth", Number(value));
+                            root.foldersDirty = true;
+                            root.saveFolders();
+                          }
+                          Keys.onEscapePressed: root.closeSettings()
+                        }
+
+                        GithubAction {
+                          iconName: "trash"
+                          tooltipText: root.tr("Remove folder")
+                          foreground: root.dim
+                          onClicked: {
+                            folderRows.remove(folderRow.index);
+                            root.ensureFolderRow();
+                            root.foldersDirty = true;
+                            root.saveFolders();
+                            addFolderButton.forceActiveFocus();
+                          }
+                          Keys.onEscapePressed: root.closeSettings()
+                        }
+
+                      }
+
+                    }
+
+                  }
+
+                  GithubLabel {
+                    visible: root.settingsError !== ""
+                    width: parent.width
+                    text: root.tr(root.settingsError)
+                    color: root.dim
+                    wrapMode: Text.WordWrap
+                    Accessible.role: Accessible.AlertMessage
+                  }
+
+                  Toggle {
+                    width: parent.width
+                    implicitHeight: Style.space(36)
+                    color: "transparent"
+                    borderSpec: activeFocus ? Border.flat(root.accent, 1) : Border.none()
+                    radius: root.controlRadius
+                    fontFamily: "sans-serif"
+                    titleSize: Style.space(12)
+                    label: root.tr("Detect changes automatically (Recommended)")
+                    checked: github.inotifyEnabled
+                    onClicked: root.savePreference("inotifyEnabled", !checked)
+                    Keys.onEscapePressed: root.closeSettings()
+                  }
+
+                  GithubDropdown {
+                    id: localInterval
+
+                    cornerRadius: root.controlRadius
+                    width: parent.width
+                    label: root.tr(github.inotifyEnabled ? "Fallback interval" : "Interval")
+                    fontFamily: "sans-serif"
+                    value: String(github.refreshIntervalSec)
+                    options: [{
+                      "value": "0",
+                      "label": root.tr("Disabled")
+                    }, {
+                      "value": "10",
+                      "label": root.tr("Every 10 seconds")
+                    }, {
+                      "value": "30",
+                      "label": root.tr("Every 30 seconds")
+                    }, {
+                      "value": "60",
+                      "label": root.tr("Every minute")
+                    }, {
+                      "value": "300",
+                      "label": root.tr("Every 5 minutes")
+                    }]
+                    onChanged: function(value) {
+                      root.savePreference("refreshIntervalSec", Number(value));
                     }
                     Keys.onEscapePressed: root.closeSettings()
                   }
+
+                  GithubDropdown {
+                    id: remoteInterval
+
+                    cornerRadius: root.controlRadius
+                    width: parent.width
+                    label: root.tr("Remote fetch")
+                    fontFamily: "sans-serif"
+                    value: String(github.fetchIntervalSec)
+                    options: [{
+                      "value": "300",
+                      "label": root.tr("Every 5 minutes")
+                    }, {
+                      "value": "900",
+                      "label": root.tr("Every 15 minutes")
+                    }, {
+                      "value": "1800",
+                      "label": root.tr("Every 30 minutes")
+                    }, {
+                      "value": "3600",
+                      "label": root.tr("Every hour")
+                    }]
+                    onChanged: function(value) {
+                      root.savePreference("fetchIntervalSec", Number(value));
+                    }
+                    Keys.onEscapePressed: root.closeSettings()
+                  }
+
                 }
+
               }
+
             }
+          Item {
+            width: parent.width
+            height: root.editingSettings ? 0 : statusWarning.visible ? statusWarning.implicitHeight + Style.space(20) : Style.space(8)
             GithubLabel {
-              visible: root.settingsError !== ""
-              width: parent.width
-              text: root.tr(root.settingsError)
-              color: root.dim
-              wrapMode: Text.WordWrap
-              Accessible.role: Accessible.AlertMessage
-            }
-            Toggle {
-              width: parent.width
-              implicitHeight: Style.space(36)
-              color: "transparent"
-              borderSpec: activeFocus ? Border.flat(root.accent, 1) : Border.none()
-              radius: root.controlRadius
-              fontFamily: "sans-serif"
-              titleSize: Style.space(12)
-              label: root.tr("Detect changes automatically (Recommended)")
-              checked: github.inotifyEnabled
-              onClicked: root.savePreference("inotifyEnabled", !checked)
-              Keys.onEscapePressed: root.closeSettings()
-            }
-            GithubDropdown {
-              cornerRadius: root.controlRadius
-              id: localInterval
-              width: parent.width
-              label: root.tr(github.inotifyEnabled ? "Fallback interval" : "Interval")
-              fontFamily: "sans-serif"
-              value: String(github.refreshIntervalSec)
-              options: [{value:"0",label:root.tr("Disabled")},{value:"10",label:root.tr("Every 10 seconds")},{value:"30",label:root.tr("Every 30 seconds")},{value:"60",label:root.tr("Every minute")},{value:"300",label:root.tr("Every 5 minutes")}]
-              onChanged: function(value) { root.savePreference("refreshIntervalSec", Number(value)) }
-              Keys.onEscapePressed: root.closeSettings()
-            }
-            GithubDropdown {
-              cornerRadius: root.controlRadius
-              id: remoteInterval
-              width: parent.width
-              label: root.tr("Remote fetch")
-              fontFamily: "sans-serif"
-              value: String(github.fetchIntervalSec)
-              options: [{value:"300",label:root.tr("Every 5 minutes")},{value:"900",label:root.tr("Every 15 minutes")},{value:"1800",label:root.tr("Every 30 minutes")},{value:"3600",label:root.tr("Every hour")}]
-              onChanged: function(value) { root.savePreference("fetchIntervalSec", Number(value)) }
-              Keys.onEscapePressed: root.closeSettings()
-            }
-
-          }
-
-          Column {
-            visible: !root.editingSettings
-            width: parent.width - Style.space(40)
-            anchors.horizontalCenter: parent.horizontalCenter
-            topPadding: Style.space(8)
-            bottomPadding: Style.space(16)
-            spacing: Style.space(12)
-
-            GithubLabel {
+              id: statusWarning
               visible: github.lastError !== "" || github.sync.stale
-              width: parent.width
+              width: parent.width - Style.space(40)
+              x: Style.space(20)
+              y: Style.space(8)
               text: github.lastError !== "" ? root.tr(github.lastError)
                 : root.lastSyncText + " · " + root.tr("remote state may be stale")
               color: github.lastError !== "" ? root.urgent : github.sync.stale ? root.warning : root.dim
               font.pixelSize: Style.space(12)
               wrapMode: Text.WordWrap
             }
+          }
+        }
+        footer: Column {
+          visible: !root.editingSettings
+          width: panelFlick.width - Style.space(40)
+          x: Style.space(20)
+          height: visible ? implicitHeight : 0
+          topPadding: Style.space(12)
+          bottomPadding: Style.space(16)
+          spacing: Style.space(12)
 
-            Column {
-              id: repoColumn
-              visible: root.displayedRepos.length > 0
-              width: parent.width
-              Repeater {
-                model: root.displayedRepos
-                RepositoryRow {
-                  required property var modelData
-                  required property int index
-                  width: repoColumn.width
-                  repo: modelData
-                  rowIndex: index
-                }
-              }
-            }
 
             Column {
               visible: root.displayedRepos.length === 0
@@ -803,11 +953,11 @@ Panel {
                 }
               }
             }
-          }
         }
       }
     }
   }
+
 
   component SummaryCount: Row {
     property int value: 0
