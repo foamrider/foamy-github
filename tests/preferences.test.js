@@ -1,33 +1,13 @@
+const I18n = require('./i18n.cjs');
 const assert = require('node:assert/strict')
 const test = require('node:test')
-const Preferences = require('../Preferences.js')
 const Model = require('../Model.js')
 const manifest = require('../manifest.json')
-const nb = (label, values) => Preferences.text(label, 'nb', values)
-
-test('language follows the system unless English or Norwegian is selected', () => {
-  for (const locale of ['nb_NO', 'nn-NO', 'no', 'NB_no']) {
-    assert.equal(Preferences.language('system', locale), 'nb')
-    assert.equal(Preferences.language('en', locale), 'en')
-  }
-  for (const locale of ['en_US', 'de_DE', 'nobody', '', undefined]) {
-    assert.equal(Preferences.language('system', locale), 'en')
-    assert.equal(Preferences.language('nb', locale), 'nb')
-  }
-  for (const language of [undefined, null, 'invalid', 1, {}, 'system'])
-    assert.equal(Preferences.languageSetting({language}), 'system')
-  assert.equal(Preferences.languageSetting(undefined), 'system')
-  for (const language of ['en', 'nb'])
-    assert.equal(Preferences.languageSetting({language}), language)
-  const field = manifest.barWidget.schema.find(field => field.key === 'language')
-  assert.equal(field.defaultValue, 'system')
-  assert.equal(manifest.barWidget.defaults.language, 'system')
-  assert.deepEqual(field.options, ['system', 'en', 'nb'])
-})
+const nb = (label, values) => I18n.text(label, 'nb', values)
 
 test('labels translate without changing unknown diagnostics or substituted repository names', () => {
-  assert.equal(nb('Language'), 'Språk')
-  assert.equal(Preferences.text('Language', 'en'), 'Language')
+  assert.equal(nb('Settings'), 'Innstillinger')
+  assert.equal(I18n.text('Language', 'en'), 'Language')
   assert.equal(nb('fatal: origin is unavailable'), 'fatal: origin is unavailable')
   assert.equal(nb('constructor'), 'constructor')
   assert.equal(nb('Push %1', ['my-%1-$&-repo']), 'Send my-%1-$&-repo')

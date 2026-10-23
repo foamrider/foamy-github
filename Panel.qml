@@ -8,7 +8,6 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
-import "Preferences.js" as Preferences
 
 Panel {
   id: root
@@ -18,8 +17,8 @@ Panel {
   ipcTarget: "foamy.github"
   manageIpc: false
 
-  readonly property string language: Preferences.language(Preferences.languageSetting(settings), Qt.locale().name)
-  function tr(label, values) { return Preferences.text(label, language, values) }
+  readonly property string language: FoamyI18n.language
+  function tr(label, values) { return FoamyI18n.t(label, values) }
 
   readonly property real controlRadius: Style.cornerRadius * 2
   property bool resetScrollPending: false
@@ -595,27 +594,6 @@ Panel {
 
                   }
 
-                  GithubDropdown {
-                    cornerRadius: root.controlRadius
-                    width: parent.width
-                    label: root.tr("Language")
-                    fontFamily: "sans-serif"
-                    value: Preferences.languageSetting(root.settings)
-                    options: [{
-                      "value": "system",
-                      "label": root.tr("Default (system language)")
-                    }, {
-                      "value": "en",
-                      "label": "English"
-                    }, {
-                      "value": "nb",
-                      "label": "Norsk bokmål"
-                    }]
-                    onChanged: function(value) {
-                      root.savePreference("language", value);
-                    }
-                    Keys.onEscapePressed: root.closeSettings()
-                  }
 
                   RowLayout {
                     width: parent.width
