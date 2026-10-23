@@ -21,21 +21,9 @@
       "refreshIntervalSec": 30,
       "fetchIntervalSec": 900,
       "repositoryFolders": [],
-      "language": "system",
       "inotifyEnabled": true
     },
     "schema": [
-      {
-        "key": "language",
-        "type": "enum",
-        "label": "Language",
-        "defaultValue": "system",
-        "options": [
-          "system",
-          "en",
-          "nb"
-        ]
-      },
       {
         "key": "inotifyEnabled",
         "type": "boolean",

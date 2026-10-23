@@ -16,7 +16,7 @@ omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
 ## Use
 
 1. Left-click the widget, open the cog, and add your repository folders.
-2. Choose the folder search depth, refresh intervals, and language.
+2. Choose the folder search depth, and refresh intervals.
 3. Use refresh (or middle-click the widget) to fetch remotes and update status.
 4. Use a repository's arrows to push or pull, or its eye button to open lazygit.
 
@@ -77,3 +77,7 @@ Licensed under [MIT](LICENSE), with [Omarchy](LICENSE-OMARCHY) and
 [Lucide](LICENSE-LUCIDE) notices.
 
 Provided **as is**, without warranty or guaranteed support. Use at your own risk.
+
+Language follows **Omarchy → Setup → Language** on Omarchy 4.5. Plugin language overrides are no longer used. Omarchy 4.0 displays the plugin in English. Missing translations fall back to English.
+
+Translation checks: `python3 tests/i18n-runtime.py` uses the installed shell. Set `OMARCHY_PATH` to a 4.5 source tree to check live language switching against that version.

@@ -1,9 +1,6 @@
-// Match the language choices used by the other Foamy plugins.
-var norwegian = {
+{
   "Status unavailable": "Status utilgjengelig",
   "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh.": "Noen prosjektkontroller er ufullstendige. Åpne det berørte prosjektet i lazygit, og oppdater deretter.",
-  "Language": "Språk",
-  "Default (system language)": "Standard (systemspråk)",
   "Settings": "Innstillinger",
   "Settings (S)": "Innstillinger (S)",
   "Back": "Tilbake",
@@ -100,26 +97,4 @@ var norwegian = {
   "Failed to parse repository status": "Kunne ikke tolke prosjektstatus",
   "Choose a repository folder": "Velg en prosjektmappe",
   "Choose": "Velg"
-}
-
-function languageSetting(settings) {
-  var mode = settings ? settings.language : undefined
-  return mode === "en" || mode === "nb" ? mode : "system"
-}
-
-function language(mode, locale) {
-  return mode === "en" || mode === "nb" ? mode
-    : /^(nb|nn|no)(_|-|$)/i.test(String(locale || "")) ? "nb" : "en"
-}
-
-function text(label, lang, values) {
-  var translated = lang === "nb" && Object.prototype.hasOwnProperty.call(norwegian, label) ? norwegian[label] : label
-  // Replace placeholders once so repository names containing %1 or $ stay literal.
-  return translated.replace(/%([1-9][0-9]*)/g, function(token, index) {
-    return values && Number(index) <= values.length ? String(values[Number(index) - 1]) : token
-  })
-}
-
-if (typeof module !== "undefined") module.exports = {
-  languageSetting: languageSetting, language: language, text: text
 }

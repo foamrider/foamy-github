@@ -3,14 +3,13 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Networking
 import "Model.js" as Model
-import "Preferences.js" as Preferences
 
 Item {
   id: root
 
   property var settings: ({})
   property string language: "en"
-  function tr(label, values) { return Preferences.text(label, language, values) }
+  function tr(label, values) { return FoamyI18n.t(label, values) }
   property var status: Model.defaultStatus()
   property double lastChecked: 0
   property string scannedFolders: ""
