@@ -6,8 +6,9 @@ Local Git repository status, fetch, push, and pull.
 
 ## Install
 
-Requires Omarchy Quattro, Git, Python 3, Bash, `jq`, and `wl-clipboard`. Opening a repository
-from the eye button also requires `lazygit` and Omarchy's terminal launcher.
+Requires Omarchy 4.5 (also loads on 4.0.6, in English), Git, Python 3, Bash,
+`jq` and `wl-clipboard`. Opening a repository requires `lazygit` and Omarchy's
+terminal launcher; **Browse for folder** uses `qml6` and `hyprctl`.
 
 ```sh
 omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
@@ -15,49 +16,93 @@ omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
 
 ## Use
 
-1. Left-click the widget, open the cog, and add your repository folders.
-2. Choose the folder search depth, and refresh intervals.
-3. Use refresh (or middle-click the widget) to fetch remotes and update status.
-4. Use a repository's arrows to push or pull, or its eye button to open lazygit.
+1. Left-click the widget, open **Settings** (cog or `s`) and add your repository folders.
+2. Choose how many levels deep to search each folder, and the refresh intervals.
+3. Refresh (header button, `r`, or middle-click the widget) fetches remotes and updates status.
+4. A repository's arrows push or pull; the terminal button (or Enter) opens it in lazygit.
 
-**Detect changes automatically (Recommended)** is enabled by default. Local
-changes update through filesystem notifications. Changes saved close together
-are grouped over 300 ms. Only affected repositories are checked. Ignored
-dependency/build directories and Git object stores are excluded from monitoring;
-Git worktrees and newly created repositories within the configured scan depth
-are supported. Remote fetching still uses its separate timer.
+The popup lists repositories that need attention: ahead, behind, changed, or
+whose last fetch failed. A failed fetch is shown on the repository's row, in
+red after its status line (for example `main · 10 changed · No origin remote
+configured…`); hover it for the full message.
 
-If monitoring fails (for example, the system watch limit is reached), the panel
-reports it and uses **Fallback interval** until monitoring recovers. Turning off
-automatic change detection stops the watcher and relabels that setting to
-**Interval**, which controls regular polling. **Disabled** turns off polling in
-either mode; automatic change detection still works when enabled. Opening the
-panel or completing a Git action still refreshes status, and the remote fetch
-schedule remains separate. No extra package is required.
+Keyboard: arrows or `hjkl` move one cursor through the rows, Refresh and
+Settings (hovering moves the same cursor); Enter activates; `r` refreshes;
+`s` opens Settings; Esc closes (or leaves Settings); Tab and Shift+Tab move to
+the next bar panel.
 
-Uses your existing Git authentication. Pull requires a clean, non-diverged
-branch with an upstream and uses fast-forward only. Works with any Git host.
+## Settings
 
-Repository checks stream Git status without retaining file lists. Completed
-checks show exact Git status entry counts (untracked directories count as one
-entry). A timeout, resource limit, or Git error shows **Status unavailable** for
-that repository and disables push/pull until a fresh check succeeds. Other
-repositories continue to update. An incomplete folder scan reports an error;
-it never silently lists a subset as a successful scan.
+| Setting | Default | |
+|---|---|---|
+| Repository folders | none | Folders to search, each with a search depth of 0 to 5 levels (up to 32 folders) |
+| Detect changes automatically | on | Updates through filesystem notifications (inotify); recommended |
+| Refresh every | 30 seconds | Timed refresh; with automatic detection it is only the fallback. **Off** turns polling off |
+| Fetch remotes every | 15 minutes | Background `git fetch` of every repository |
+| Trust repository config | off | See [Trust model](#trust-model) |
 
-To keep background work bounded, checks allow 16 MiB of Git output and 15 seconds
-per status command, with at most four commands running concurrently per helper.
-Folder discovery allows 256 repositories and 100,000 directory entries within
-five seconds per traversal. Monitoring allows 8,192 watches and 32,768
-repository-to-directory associations. Oversized monitoring plans use the normal
-fallback interval; choose narrower folders, reduce scan depth, or disable
-automatic detection if a limit persists. Shell messages and cached sync state
-are limited to 8 MiB. These limits bound plugin buffers and work; Git itself
-still needs memory to inspect its index.
+Settings save in place (`bar.shell.updateEntryInline`, else `omarchy bar set`).
 
-Repository-folder paste reads at most 16 KiB and has a two-second deadline.
-Oversized or unavailable clipboard text leaves the field unchanged and shows an
-error. Keyboard paste, the edit menu, and middle-click use the same bounded reader.
+**Detect changes automatically** groups changes saved close together over
+300 ms and checks only the affected repositories. Ignored dependency/build
+directories and Git object stores aren't watched; Git worktrees and new
+repositories within the search depth are picked up. Opening the popup doesn't
+rescan while monitoring is live. If monitoring fails (for example, the system
+watch limit is reached), the panel says so, uses the timed refresh, and
+retries monitoring after 30 seconds, then 1, 2, 4… up to 30 minutes while it
+keeps failing.
+
+On Omarchy 4.5, which draws a bar on every monitor, the status helper,
+filesystem watcher, timers and IPC target run once per shell, not once per
+monitor.
+
+## Trust model
+
+The widget runs Git by itself, in every repository it finds: status on every
+change and a fetch on a timer. A repository's own Git config (`.git/config`
+and anything it includes) can name commands Git executes, so a repository
+unpacked from an untrusted archive into one of your folders could otherwise
+run code just by being there. By default:
+
+- **Status checks** run with `core.fsmonitor`, the untracked cache and hooks
+  turned off, ignore clean/smudge filters defined by the repository (your
+  global filters, such as Git LFS, still apply), and don't look inside
+  submodule worktrees.
+- **Automatic fetches** (the timer and the Refresh button) also turn off hooks,
+  the `ext::` transport and submodule recursion, and never prompt: no askpass
+  window and SSH in batch mode, so a locked key fails quietly instead of
+  asking every 15 minutes. A repository whose own config sets a command Git
+  would run for a fetch is skipped, with a message on its row: anything other
+  than a plain `ssh -i key`-style `core.sshCommand` or a stock credential
+  helper (`store`, `cache`, `libsecret`, `manager`, …), or `core.gitProxy`,
+  `protocol.*`, `remote.*.uploadpack`/`vcs`. Fetch those in lazygit.
+- **Push and pull** are explicit actions on one repository and run with its
+  normal Git config and hooks, exactly like `git push` in a terminal.
+
+Your global Git config, credential helpers (for example `gh auth
+git-credential`) and SSH agent keep working. Your global `core.hooksPath`
+hooks don't run for status checks and automatic fetches.
+
+Turn on **Trust repository config** only if you trust every repository in
+these folders: the widget then uses each repository's config as is, like
+before 1.1.
+
+## Limits
+
+Repository checks stream Git status without retaining file lists. A timeout,
+resource limit or Git error shows **Status unavailable** for that repository
+and disables push/pull until a fresh check succeeds; other repositories keep
+updating. An incomplete folder scan reports an error; it never silently lists a
+subset.
+
+Checks allow 16 MiB of Git output and 15 seconds per status command, with at
+most four commands at once. Folder discovery allows 256 repositories and
+100,000 directory entries within five seconds per traversal. Monitoring allows
+8,192 watches and 32,768 repository-to-directory associations. Shell messages
+and cached sync state are limited to 8 MiB. Pull requires a clean, non-diverged
+branch with an upstream and is fast-forward only. Works with any Git host.
+
+Repository-folder paste reads at most 16 KiB with a two-second deadline.
 
 ## Remove
 
@@ -65,7 +110,8 @@ error. Keyboard paste, the edit menu, and middle-click use the same bounded read
 omarchy plugin remove foamy.github
 ```
 
-Removal stops repository monitoring and scheduled fetches. Your repositories,
+Removal stops repository monitoring and scheduled fetches (the helpers stop
+their Git processes when the shell stops them). Your repositories,
 Git configuration, authentication, and cached status remain on disk.
 
 Omarchy manages the plugin entry in `shell.json`. Packages and data outside
@@ -78,6 +124,22 @@ Licensed under [MIT](LICENSE), with [Omarchy](LICENSE-OMARCHY) and
 
 Provided **as is**, without warranty or guaranteed support. Use at your own risk.
 
-Language follows **Omarchy → Setup → Language** on Omarchy 4.5. Plugin language overrides are no longer used. Omarchy 4.0 displays the plugin in English. Missing translations fall back to English.
+## Language
 
-Translation checks: `python3 tests/i18n-runtime.py` uses the installed shell. Set `OMARCHY_PATH` to a 4.5 source tree to check live language switching against that version.
+Language follows **Omarchy → Setup → Language** on Omarchy 4.5 (English and
+Norwegian catalogs; other languages fall back to English). Omarchy 4.0 shows
+the plugin in English.
+
+## Development
+
+```sh
+node --test tests/model.test.js tests/preferences.test.js && node tests/i18n.test.cjs
+python3 -m unittest discover -s tests -p 'test_*.py'
+bash tests/kit-check.sh
+python3 tests/i18n-runtime.py                     # OMARCHY_PATH=<4.5 tree> for 4.5
+python3 tests/runtime-panel.py                     # offscreen, needs foamy-kit
+~/GitHub/Personal/foamy-kit/preview/render.py . --host both
+```
+
+Shared components in `kit/` come from [foamy-kit](https://github.com/foamrider/foamy-kit);
+don't edit them here.
