@@ -512,13 +512,19 @@ PanelKeyCatcher {
         }
         // Status line, then the last fetch error inline in the error colour:
         // "main · 3 changed · No origin remote configured…" (full text on hover).
-        Row {
+        // The error keeps at least 40% of the line, else it gets its own
+        // line, so a long branch never hides it.
+        Flow {
           id: statusLine
           Layout.fillWidth: true
           Layout.minimumWidth: 0
+          readonly property bool hasError: repoRow.syncError !== "" && !repoRow.unavailable
+          readonly property bool errorInline: hasError
+            && metaText.implicitWidth + Math.min(errorMetrics.advanceWidth, width * 0.4) <= width
+          TextMetrics { id: errorMetrics; font: errorText.font; text: " · " + repoRow.syncError }
           Text {
             id: metaText
-            width: errorText.visible ? Math.min(implicitWidth, statusLine.width) : statusLine.width
+            width: statusLine.errorInline ? implicitWidth : statusLine.width
             text: repoRow.meta
             textFormat: Text.PlainText
             wrapMode: repoRow.unavailable ? Text.WordWrap : Text.NoWrap
@@ -530,9 +536,9 @@ PanelKeyCatcher {
           }
           Text {
             id: errorText
-            visible: repoRow.syncError !== "" && !repoRow.unavailable
-            width: Math.max(0, statusLine.width - metaText.width)
-            text: " · " + repoRow.syncError
+            visible: statusLine.hasError
+            width: statusLine.errorInline ? Math.max(0, statusLine.width - metaText.width) : statusLine.width
+            text: (statusLine.errorInline ? " · " : "") + repoRow.syncError
             textFormat: Text.PlainText
             elide: Text.ElideRight
             maximumLineCount: 1

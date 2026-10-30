@@ -22,8 +22,8 @@ Item {
     row(".dotfiles", "main", 0, 0, 1),
     row("Personal/foamy-kit", "main", 0, 0, 10, { syncError: "No origin remote configured. Add one in lazygit, then refresh." }),
     row("Personal/foamy-weather", "fix/omarchy-4.5-review", 3, 0, 0),
-    row("Work/api-gateway", "main", 0, 2, 0, { syncError: "git@github.com: Permission denied (publickey)." }),
-    row("Work/infra", "main", 0, 0, 0, { syncError: "Automatic fetch skipped: this repository's Git config can run commands. Fetch it in lazygit, or trust repository config in Settings." })
+    row("Work/api-gateway", "feature/rate-limit-burst-handling", 0, 2, 4, { syncError: "git@github.com: Permission denied (publickey)." }),
+    row("Work/infra", "main", 0, 0, 0, { syncError: "fatal: unable to access 'https://git.example.com/infra.git/': Could not resolve host: git.example.com" })
   ]
 
   QtObject {
