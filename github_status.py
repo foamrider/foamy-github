@@ -8,15 +8,18 @@ import concurrent.futures
 import fcntl
 import json
 import os
+import re
 import selectors
+import shlex
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, Sequence, TypedDict
 
 
 FETCH_CONCURRENCY = 4
@@ -39,6 +42,186 @@ MAX_METADATA_BYTES = 4096
 
 class InspectionError(OSError):
   """An inspection could not produce a complete, trustworthy result."""
+
+
+# --- Trust model -------------------------------------------------------------
+# Git runs automatically in every repository found under the configured
+# folders (status on every change, fetch on a timer). A repository's own
+# config (.git/config, config.worktree and anything they include) can name
+# commands that Git executes: core.fsmonitor, clean/smudge filters, hooks,
+# core.sshCommand, credential helpers, remote helpers. A repository unpacked
+# from an archive must not be able to run code just by existing, so unless
+# the user trusts repository config:
+#   - read-only commands disable fsmonitor, the untracked cache, hooks and
+#     repository-defined filters, and don't recurse into submodule worktrees;
+#   - automatic fetches also disable hooks, the ext:: transport and submodule
+#     recursion, never prompt (no askpass, SSH BatchMode), and skip a
+#     repository whose own config sets a command Git would run for a fetch
+#     (anything but a plain `ssh -i key`-style sshCommand or a stock
+#     credential helper such as store/cache/libsecret).
+# Push and pull are explicit user actions on one repository and run with the
+# repository's normal Git config, exactly as in a terminal.
+READ_CONFIG = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null")
+FETCH_CONFIG = READ_CONFIG + ("-c", "protocol.ext.allow=never", "-c", "credential.interactive=false")
+LOCAL_SCOPES = ("local", "worktree")
+TRUSTED_SCOPES = ("system", "global", "command")
+# git-lfs as written by `git lfs install --local`.
+SAFE_FILTERS = {"git-lfs clean -- %f", "git-lfs smudge -- %f", "git-lfs filter-process"}
+SAFE_CREDENTIAL_HELPERS = {"store", "cache", "libsecret", "gnome-keyring", "manager", "manager-core", "oauth", "osxkeychain", "wincred"}
+SAFE_SSH_OPTIONS = {"identityfile", "identitiesonly", "identityagent", "certificatefile", "port", "user",
+                    "stricthostkeychecking", "userknownhostsfile", "hostkeyalias", "connecttimeout",
+                    "addkeystoagent", "batchmode", "preferredauthentications", "pubkeyauthentication",
+                    "passwordauthentication", "serveraliveinterval", "serveralivecountmax", "loglevel", "compression"}
+SHELL_META = re.compile(r"[;&|`$<>()\\\n\r]")
+RISKY_FETCH_KEYS = re.compile(r"^(core\.gitproxy|core\.alternaterefscommand|protocol\..*|remote\..*\.(vcs|uploadpack))$", re.IGNORECASE)
+SKIPPED_FETCH = ("Automatic fetch skipped: this repository's Git config can run commands. "
+                 "Fetch it in lazygit, or trust repository config in Settings.")
+
+
+def ssh_command_allowed(value: str) -> bool:
+  """A plain ssh with key/port/user style options: no shell, no ProxyCommand, no -F."""
+  if SHELL_META.search(value):
+    return False
+  try:
+    words = shlex.split(value)
+  except ValueError:
+    return False
+  if not words or words[0] not in ("ssh", "/usr/bin/ssh"):
+    return False
+  index = 1
+  while index < len(words):
+    word = words[index]
+    if word in ("-4", "-6", "-T", "-q", "-v", "-vv", "-vvv", "-C"):
+      index += 1
+    elif word in ("-i", "-p", "-l") and index + 1 < len(words):
+      index += 2
+    elif word == "-o" and index + 1 < len(words) and words[index + 1].split("=", 1)[0].strip().lower() in SAFE_SSH_OPTIONS:
+      index += 2
+    elif word.startswith("-o") and len(word) > 2 and word[2:].split("=", 1)[0].strip().lower() in SAFE_SSH_OPTIONS:
+      index += 1
+    else:
+      return False
+  return True
+
+
+def credential_helper_allowed(value: str) -> bool:
+  """Empty (reset) or a stock git-credential-<name> helper with plain arguments."""
+  if value == "":
+    return True
+  if SHELL_META.search(value) or value.startswith("!"):
+    return False
+  try:
+    words = shlex.split(value)
+  except ValueError:
+    return False
+  return bool(words) and words[0] in SAFE_CREDENTIAL_HELPERS
+
+
+@dataclass(frozen=True)
+class GitPolicy:
+  read: tuple[str, ...] = ()
+  status: tuple[str, ...] = ()
+  fetch: tuple[str, ...] = ()
+  fetch_env: tuple[tuple[str, str], ...] = ()
+  fetch_risk: str = ""
+
+
+TRUSTED_POLICY = GitPolicy()
+DEFAULT_POLICY = GitPolicy(read=READ_CONFIG, fetch=FETCH_CONFIG)
+
+
+def config_entries(repo: "Repository") -> list[tuple[str, str, str]]:
+  """(scope, key, value) for every config entry Git would read in repo, includes followed."""
+  output = bytearray()
+  def consume(chunk: bytes):
+    output.extend(chunk)
+  # Listing config runs nothing; the read flags only guard against future changes.
+  result = read_git(repo, ["config", "--show-scope", "--includes", "--list", "-z"], 8, consume, MAX_CAPTURE_BYTES * 4, READ_CONFIG)
+  if result.returncode:
+    raise InspectionError(concise_error(result, "Could not read the repository's Git config. Open it in lazygit."))
+  parts = bytes(output).split(b"\0")
+  entries = []
+  for index in range(0, len(parts) - 1, 2):
+    key, _, value = parts[index + 1].partition(b"\n")
+    entries.append((parts[index].decode("utf-8", "replace"), key.decode("utf-8", "replace"), value.decode("utf-8", "replace")))
+  return entries
+
+
+def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
+  if trusted:
+    return TRUSTED_POLICY
+  entries = config_entries(repo)
+  trusted_values: dict[str, str] = {}
+  for scope, key, value in entries:
+    if scope in TRUSTED_SCOPES:
+      trusted_values[key.lower()] = value
+  read: list[str] = list(READ_CONFIG)
+  risk = ""
+  overridden: set[str] = set()
+  for scope, key, value in entries:
+    if scope not in LOCAL_SCOPES:
+      continue
+    lower = key.lower()
+    section, _, rest = key.partition(".")
+    name, _, variable = rest.rpartition(".")
+    if section.lower() == "filter" and name and variable.lower() in ("clean", "smudge", "process"):
+      if value in SAFE_FILTERS or key in overridden:
+        continue
+      overridden.add(key)
+      read += ["-c", f"{key}={trusted_values.get(lower, '')}"]
+      if lower not in trusted_values:
+        read += ["-c", f"filter.{name}.required=false"]
+    elif lower == "core.sshcommand":
+      if "GIT_SSH_COMMAND" not in os.environ and not ssh_command_allowed(value):
+        risk = risk or "core.sshCommand"
+    elif section.lower() == "credential" and variable.lower() == "helper" or lower == "credential.helper":
+      if not credential_helper_allowed(value):
+        risk = risk or key
+    elif RISKY_FETCH_KEYS.match(lower):
+      risk = risk or key
+  env = {"SSH_ASKPASS_REQUIRE": "never"}
+  if "GIT_ASKPASS" not in os.environ:
+    # Empty wins over core.askPass and SSH_ASKPASS: unattended runs never prompt.
+    env["GIT_ASKPASS"] = ""
+  if not any(name in os.environ for name in ("GIT_SSH_COMMAND", "GIT_SSH")) and not any(
+      key.lower() == "core.sshcommand" for _, key, _ in entries):
+    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+  status = ("--ignore-submodules=dirty",)
+  return GitPolicy(read=tuple(read), status=status, fetch=tuple(read) + FETCH_CONFIG[len(READ_CONFIG):],
+                   fetch_env=tuple(sorted(env.items())), fetch_risk=risk)
+
+
+# --- Child processes -----------------------------------------------------------
+# Git runs in its own session so a timeout can kill git and its ssh/helpers as
+# a group. If Quickshell stops this helper (SIGTERM on plugin disable/reload),
+# kill those groups too instead of leaving fetches running orphaned.
+_children: set[subprocess.Popen] = set()
+_children_lock = threading.Lock()
+_terminating = False
+
+
+def kill_children() -> None:
+  for process in list(_children):
+    try:
+      os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+      pass
+
+
+def install_signal_handlers(cleanup: Callable[[], None] | None = None) -> None:
+  def terminate(signum, _frame):
+    global _terminating
+    _terminating = True
+    kill_children()
+    if cleanup is not None:
+      try:
+        cleanup()
+      except OSError:
+        pass
+    # Worker threads may still be inside Git calls; exit without waiting for them.
+    os._exit(128 + signum)
+  for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(signum, terminate)
 
 
 class ScanBudget:
@@ -97,8 +280,6 @@ def default_sync_state() -> dict[str, Any]:
     "lastSuccess": 0,
     "mode": "",
     "failures": [],
-    "updated": [],
-    "skipped": [],
   }
 
 
@@ -117,7 +298,7 @@ def read_sync_state() -> dict[str, Any]:
     return default_sync_state()
   state = default_sync_state()
   state.update(raw)
-  for key in ("failures", "updated", "skipped"):
+  for key in ("failures",):
     if not isinstance(state[key], list):
       state[key] = []
     if len(state[key]) > MAX_REPOSITORIES:
@@ -189,13 +370,17 @@ def collect_repositories(folders: list[str | FolderConfig] | None = None) -> lis
     if depth == 0:
       return
     # Respect each configured depth and avoid dependencies and symlink cycles.
-    with os.scandir(path) as children:
-      for child in children:
-        budget.check()
-        if child.name.startswith(".") or child.name == "node_modules" or child.is_symlink():
-          continue
-        if child.is_dir(follow_symlinks=False):
-          visit(Path(child.path), depth - 1, base)
+    try:
+      children = list(os.scandir(path))
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+      # Removed, replaced or unreadable since is_dir(): nothing to list here.
+      return
+    for child in children:
+      budget.check()
+      if child.name.startswith(".") or child.name == "node_modules" or child.is_symlink():
+        continue
+      if child.is_dir(follow_symlinks=False):
+        visit(Path(child.path), depth - 1, base)
 
   for folder in parse_folders(json.dumps(DEFAULT_FOLDERS if folders is None else folders)):
     base = Path(folder["path"]).expanduser()
@@ -204,15 +389,20 @@ def collect_repositories(folders: list[str | FolderConfig] | None = None) -> lis
 
 
 def read_git(repo: Repository, arguments: list[str], timeout: float,
-             consume: Callable[[bytes], None], output_limit: int | None) -> subprocess.CompletedProcess[str]:
+             consume: Callable[[bytes], None], output_limit: int | None,
+             config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = ()) -> subprocess.CompletedProcess[str]:
   deadline = time.monotonic() + timeout
-  process = subprocess.Popen(
-    ["git", "-C", repo.path, *arguments],
-    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    start_new_session=True,
-    # Read-only status must not rewrite the index and wake our own watcher.
-    env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"},
-  )
+  if _terminating:
+    raise InspectionError("Stopping.")
+  with _children_lock:
+    process = subprocess.Popen(
+      ["git", *config, "-C", repo.path, *arguments],
+      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+      start_new_session=True,
+      # Read-only status must not rewrite the index and wake our own watcher.
+      env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", **dict(env)},
+    )
+    _children.add(process)
   diagnostic = bytearray()
   size = 0
   finished = False
@@ -253,23 +443,26 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
       except ProcessLookupError:
         pass
     process.wait()
+    _children.discard(process)
     process.stdout.close()
     process.stderr.close()
 
 
-def run_git(repo: Repository, arguments: list[str], timeout: int = 8) -> subprocess.CompletedProcess[str]:
+def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Sequence[str] = READ_CONFIG,
+            env: Sequence[tuple[str, str]] = ()) -> subprocess.CompletedProcess[str]:
   output = bytearray()
   def consume(chunk: bytes):
     output.extend(chunk[:max(0, MAX_CAPTURE_BYTES - len(output))])
   # Mutating operations must not be interrupted just for verbose progress.
   # Retain bounded diagnostics while continuing to drain their output.
   mutating = arguments[0] in ("fetch", "push", "pull", "merge")
-  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES)
+  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env)
   result.stdout = output.decode("utf-8", "replace")
   return result
 
 
-def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes], None], timeout: int = 15):
+def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes], None], timeout: int = 15,
+                config: Sequence[str] = READ_CONFIG):
   pending = bytearray()
   def read(chunk: bytes):
     pending.extend(chunk)
@@ -282,14 +475,14 @@ def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes
     del pending[:start]
     if len(pending) > MAX_RECORD_BYTES:
       raise InspectionError("Git status entry is too long. Open the repository in lazygit.")
-  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES)
+  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES, config)
   if result.returncode:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   if pending:
     raise InspectionError("Git returned incomplete status. Try Refresh again.")
 
 
-def dirty_entries(repo: Repository) -> int:
+def dirty_entries(repo: Repository, policy: GitPolicy = DEFAULT_POLICY) -> int:
   count = 0
   rename_path = False
   def consume(record: bytes):
@@ -302,7 +495,8 @@ def dirty_entries(repo: Repository) -> int:
     count += 1
     # In porcelain v1 -z, a rename/copy has a second path, not a second entry.
     rename_path = b"R" in record[:2] or b"C" in record[:2]
-  git_records(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"], consume)
+  git_records(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", *policy.status], consume,
+              config=policy.read)
   if rename_path:
     raise InspectionError("Git returned an incomplete rename. Try Refresh again.")
   return count
@@ -316,33 +510,35 @@ def command_text(repo: Repository, arguments: list[str], timeout: int = 8) -> st
   return completed.stdout.strip() if completed.returncode == 0 else ""
 
 
-def checked_text(repo: Repository, arguments: list[str], allowed: tuple[int, ...] = ()) -> str:
-  result = run_git(repo, arguments)
+def checked_text(repo: Repository, arguments: list[str], allowed: tuple[int, ...] = (),
+                 policy: GitPolicy = DEFAULT_POLICY) -> str:
+  result = run_git(repo, arguments, config=policy.read)
   if result.returncode != 0 and result.returncode not in allowed:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   return metadata(result.stdout.strip()) if result.returncode == 0 else ""
 
 
-def repository_status(repo: Repository) -> dict[str, Any]:
+def repository_status(repo: Repository, trusted: bool = False) -> dict[str, Any]:
   row = {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0,
          "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": ""}
   try:
-    branch = checked_text(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], (1,))
+    policy = repository_policy(repo, trusted)
+    branch = checked_text(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], (1,), policy)
     if branch:
-      upstream = checked_text(repo, ["for-each-ref", "--format=%(upstream:short)", "--", "refs/heads/" + branch])
+      upstream = checked_text(repo, ["for-each-ref", "--format=%(upstream:short)", "--", "refs/heads/" + branch], policy=policy)
     else:
-      branch = checked_text(repo, ["rev-parse", "--verify", "--short", "HEAD"])
+      branch = checked_text(repo, ["rev-parse", "--verify", "--short", "HEAD"], policy=policy)
       upstream = ""
     ahead = behind = 0
     if upstream:
-      counts = checked_text(repo, ["rev-list", "--count", "--left-right", f"{upstream}...HEAD"])
+      counts = checked_text(repo, ["rev-list", "--count", "--left-right", f"{upstream}...HEAD"], policy=policy)
       try:
         behind, ahead = (int(part) for part in counts.split())
         if min(behind, ahead) < 0:
           raise ValueError("negative count")
       except ValueError as error:
         raise InspectionError("Git returned invalid commit counts. Try Refresh again.") from error
-    dirty_count = dirty_entries(repo)
+    dirty_count = dirty_entries(repo, policy)
     row.update(branch=branch, upstream=upstream, ahead=ahead, behind=behind,
                dirty=dirty_count > 0, dirtyCount=dirty_count,
                affected=ahead > 0 or behind > 0 or dirty_count > 0, complete=True)
@@ -368,19 +564,24 @@ def marker_is_running() -> bool:
   return True
 
 
-def status_payload(folders: list[str | FolderConfig] | None = None) -> dict[str, Any]:
+def status_payload(folders: list[str | FolderConfig] | None = None, trusted: bool = False) -> dict[str, Any]:
   repositories = collect_repositories(folders)
   # Git status can touch many worktrees; cap parallelism to keep the panel refresh
   # responsive without turning it into a disk-I/O burst.
   with concurrent.futures.ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as executor:
-    rows = list(executor.map(repository_status, repositories))
+    rows = list(executor.map(lambda repo: repository_status(repo, trusted), repositories))
   return payload_from_rows(rows, folders)
 
 
 def payload_from_rows(rows: list[dict[str, Any]], folders: list[str | FolderConfig] | None = None) -> dict[str, Any]:
-  rows.sort(key=lambda row: (not row["affected"], row["label"].lower()))
-
   state = read_sync_state()
+  # The last fetch failure belongs to its repository row (shown inline).
+  failures = {str(failure.get("path", "")): str(failure.get("message") or "Synchronization failed")[:240]
+              for failure in state["failures"] if isinstance(failure, dict)}
+  for row in rows:
+    row["syncError"] = failures.get(row["path"], "")
+  rows.sort(key=lambda row: (not (row["affected"] or row["syncError"]), row["label"].lower()))
+
   now = int(time.time())
   state["syncing"] = marker_is_running()
   state["stale"] = (state["lastSuccess"] <= 0
@@ -419,9 +620,18 @@ def concise_error(completed: subprocess.CompletedProcess[str] | None, fallback: 
   return message if len(message) <= 240 else message[:237] + "…"
 
 
-def fetch_repository(repo: Repository) -> dict[str, Any]:
+def fetch_repository(repo: Repository, trusted: bool = False) -> dict[str, Any]:
   try:
-    remote = run_git(repo, ["remote", "get-url", "origin"])
+    policy = repository_policy(repo, trusted)
+  except (OSError, subprocess.TimeoutExpired) as error:
+    return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
+            "operation": "fetch", "attempts": 0, "message": str(error)[:240]}
+  if policy.fetch_risk:
+    # Never run repository-defined commands unattended; say so on the row.
+    return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
+            "operation": "fetch", "attempts": 0, "skipped": True, "message": SKIPPED_FETCH}
+  try:
+    remote = run_git(repo, ["remote", "get-url", "origin"], config=policy.read)
   except (OSError, subprocess.TimeoutExpired):
     remote = None
   if remote is None or remote.returncode != 0:
@@ -438,7 +648,8 @@ def fetch_repository(repo: Repository) -> dict[str, Any]:
   for delay in (*FETCH_RETRY_DELAYS, None):
     attempts += 1
     try:
-      completed = run_git(repo, ["fetch", "--quiet", "--prune", "origin"], FETCH_TIMEOUT_SECONDS)
+      completed = run_git(repo, ["fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin"],
+                          FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env)
     except (OSError, subprocess.TimeoutExpired):
       completed = None
     if completed is not None and completed.returncode == 0:
@@ -456,35 +667,6 @@ def fetch_repository(repo: Repository) -> dict[str, Any]:
   }
 
 
-def update_repository(repo: Repository) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
-  row = repository_status(repo)
-  if not row["complete"]:
-    return None, None, {"path": repo.path, "name": repo.name, "label": repo.label,
-                        "ok": False, "operation": "update", "message": row["error"]}
-  if row["behind"] <= 0:
-    return None, None, None
-  if row["ahead"] > 0:
-    return None, {"path": repo.path, "name": repo.name, "label": repo.label, "reason": "diverged"}, None
-  if row["dirtyCount"] > 0:
-    return None, {"path": repo.path, "name": repo.name, "label": repo.label, "reason": "dirty worktree"}, None
-  if not row["upstream"]:
-    return None, {"path": repo.path, "name": repo.name, "label": repo.label, "reason": "no upstream"}, None
-  try:
-    completed = run_git(repo, ["merge", "--ff-only", row["upstream"]], 30)
-  except (OSError, subprocess.TimeoutExpired):
-    completed = None
-  if completed is not None and completed.returncode == 0:
-    return {"path": repo.path, "name": repo.name, "label": repo.label, "branch": row["branch"], "commits": row["behind"]}, None, None
-  return None, None, {
-    "path": repo.path,
-    "name": repo.name,
-    "label": repo.label,
-    "ok": False,
-    "operation": "update",
-    "message": concise_error(completed, "fast-forward failed"),
-  }
-
-
 def repository_for_path(path: str, folders: list[str | FolderConfig] | None = None) -> Repository | None:
   requested = os.path.realpath(path)
   for repo in collect_repositories(folders):
@@ -493,7 +675,8 @@ def repository_for_path(path: str, folders: list[str | FolderConfig] | None = No
   return None
 
 
-def repository_action(mode: str, path: str, folders: list[str | FolderConfig] | None = None) -> dict[str, Any]:
+def repository_action(mode: str, path: str, folders: list[str | FolderConfig] | None = None,
+                      trusted: bool = False) -> dict[str, Any]:
   repo = repository_for_path(path, folders)
   if repo is None:
     return {"ok": False, "message": "Repository is not tracked by this panel"}
@@ -507,7 +690,7 @@ def repository_action(mode: str, path: str, folders: list[str | FolderConfig] | 
 
     syncing_path().write_text(f"{os.getpid()}\n", encoding="utf-8")
     try:
-      row = repository_status(repo)
+      row = repository_status(repo, trusted)
       if not row["complete"]:
         return {"ok": False, "message": row["error"]}
       if not row["upstream"]:
@@ -530,7 +713,8 @@ def repository_action(mode: str, path: str, folders: list[str | FolderConfig] | 
         commits = 0
 
       try:
-        completed = run_git(repo, arguments, FETCH_TIMEOUT_SECONDS)
+        # An explicit push/pull runs with the repository's own config, as in a terminal.
+        completed = run_git(repo, arguments, FETCH_TIMEOUT_SECONDS, config=())
       except (OSError, subprocess.TimeoutExpired):
         completed = None
       if completed is None or completed.returncode != 0:
@@ -557,13 +741,10 @@ def repository_action(mode: str, path: str, folders: list[str | FolderConfig] | 
         "message": f"{verb} {commits} {suffix} for {repo.label}",
       }
     finally:
-      try:
-        syncing_path().unlink()
-      except FileNotFoundError:
-        pass
+      remove_marker()
 
 
-def synchronize(mode: str, folders: list[str | FolderConfig] | None = None) -> dict[str, Any]:
+def synchronize(folders: list[str | FolderConfig] | None = None, trusted: bool = False) -> dict[str, Any]:
   lock_path = cache_dir() / "sync.lock"
   with lock_path.open("w", encoding="utf-8") as lock:
     try:
@@ -577,58 +758,49 @@ def synchronize(mode: str, folders: list[str | FolderConfig] | None = None) -> d
       now = int(time.time())
       previous = read_sync_state()
       with concurrent.futures.ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as executor:
-        fetch_results = list(executor.map(fetch_repository, repositories))
+        fetch_results = list(executor.map(lambda repo: fetch_repository(repo, trusted), repositories))
       failures = [result for result in fetch_results if not result["ok"]]
-      fetched_paths = {result["path"] for result in fetch_results if result["ok"]}
-      updated: list[dict[str, Any]] = []
-      skipped: list[dict[str, Any]] = []
-
-      if mode == "update":
-        for repo in repositories:
-          if repo.path not in fetched_paths:
-            continue
-          update, skip, failure = update_repository(repo)
-          if update:
-            updated.append(update)
-          if skip:
-            skipped.append(skip)
-          if failure:
-            failures.append(failure)
-
       state = {
         "lastAttempt": now,
         "lastSuccess": now if not failures else previous["lastSuccess"],
-        "mode": mode,
+        "mode": "fetch",
         "folders": DEFAULT_FOLDERS if folders is None else folders,
         "failures": failures,
-        "updated": updated,
-        "skipped": skipped,
       }
       write_json_atomic(state_path(), state)
       return {"ok": not failures, **state}
     finally:
-      try:
-        syncing_path().unlink()
-      except FileNotFoundError:
-        pass
+      remove_marker()
+
+
+def remove_marker() -> None:
+  try:
+    if syncing_path().read_text(encoding="utf-8").strip() == str(os.getpid()):
+      syncing_path().unlink()
+  except (FileNotFoundError, ValueError):
+    pass
 
 
 def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("command", nargs="?", default="status", choices=["status", "fetch", "update", "push", "pull"])
+  parser.add_argument("command", nargs="?", default="status", choices=["status", "fetch", "push", "pull"])
   parser.add_argument("repository", nargs="?")
   parser.add_argument("--folders-json", default=json.dumps(DEFAULT_FOLDERS))
+  parser.add_argument("--trust-repository-config", action="store_true",
+                      help="let repositories' own Git config run commands during automatic checks and fetches")
   args = parser.parse_args()
+  install_signal_handlers(remove_marker)
   if (args.command in ("push", "pull")) != (args.repository is not None):
     parser.error("Only push and pull require a repository path")
   try:
     folders = parse_folders(args.folders_json)
+    trusted = args.trust_repository_config
     if args.command == "status":
-      payload = status_payload(folders)
-    elif args.command in ("fetch", "update"):
-      payload = synchronize(args.command, folders)
+      payload = status_payload(folders, trusted)
+    elif args.command == "fetch":
+      payload = synchronize(folders, trusted)
     else:
-      payload = repository_action(args.command, args.repository, folders)
+      payload = repository_action(args.command, args.repository, folders, trusted)
   except (ValueError, OSError) as error:
     print(str(error), file=sys.stderr)
     return 1

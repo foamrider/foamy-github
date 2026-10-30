@@ -22,20 +22,22 @@ class GitErrorsTest(unittest.TestCase):
   def test_missing_origin_is_actionable_and_is_not_retried(self):
     repo = module.Repository("/tmp/repo", "repo", "owner", "owner/repo")
     with patch.object(module, "run_git", return_value=self.failure("error: No such remote 'origin'")) as git, \
+         patch.object(module, "repository_policy", return_value=module.TRUSTED_POLICY), \
          patch.object(module.time, "sleep") as sleep:
       result = module.fetch_repository(repo)
     self.assertEqual(result["message"], "No origin remote configured. Add one in lazygit, then refresh.")
     self.assertFalse(result["ok"])
     self.assertEqual(result["attempts"], 0)
-    git.assert_called_once_with(repo, ["remote", "get-url", "origin"])
+    git.assert_called_once_with(repo, ["remote", "get-url", "origin"], config=())
     sleep.assert_not_called()
 
   def test_configured_remote_still_fetches(self):
     repo = module.Repository("/tmp/repo", "repo", "owner", "owner/repo")
-    with patch.object(module, "run_git", return_value=subprocess.CompletedProcess(["git"], 0, "", "")) as git:
+    with patch.object(module, "run_git", return_value=subprocess.CompletedProcess(["git"], 0, "", "")) as git, \
+         patch.object(module, "repository_policy", return_value=module.TRUSTED_POLICY):
       self.assertTrue(module.fetch_repository(repo)["ok"])
     self.assertEqual(git.call_count, 2)
-    self.assertEqual(git.call_args.args[1], ["fetch", "--quiet", "--prune", "origin"])
+    self.assertEqual(git.call_args.args[1], ["fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin"])
 
   def test_fallback_and_long_diagnostics(self):
     self.assertEqual(module.concise_error(None, "Fetch failed"), "Fetch failed")
