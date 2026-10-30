@@ -200,9 +200,18 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
 # Git runs in its own session so a timeout can kill git and its ssh/helpers as
 # a group. If Quickshell stops this helper (SIGTERM on plugin disable/reload),
 # kill those groups too instead of leaving fetches running orphaned.
+#
+# A signal can land between Popen() returning and the child being recorded.
+# Spawns are counted; the handler waits (bounded) for worker-thread spawns to
+# finish recording, and when it interrupts the main thread's own spawn it
+# defers: that spawn records its child, kills it and exits itself.
 _children: set[subprocess.Popen] = set()
 _children_lock = threading.Lock()
 _terminating = False
+_spawning = 0
+_main_spawning = False
+_deferred_signal = 0
+_cleanup: Callable[[], None] | None = None
 
 
 def kill_children() -> None:
@@ -213,18 +222,33 @@ def kill_children() -> None:
       pass
 
 
+def terminate_now(signum: int) -> None:
+  """Kill every recorded Git process group and exit (from the main thread)."""
+  kill_children()
+  deadline = time.monotonic() + 2
+  while _spawning and time.monotonic() < deadline:
+    time.sleep(.01)                       # lets worker threads record their child
+  kill_children()
+  if _cleanup is not None:
+    try:
+      _cleanup()
+    except OSError:
+      pass
+  # Worker threads may still be inside Git calls; exit without waiting for them.
+  os._exit(128 + signum)
+
+
 def install_signal_handlers(cleanup: Callable[[], None] | None = None) -> None:
+  global _cleanup
+  _cleanup = cleanup
+
   def terminate(signum, _frame):
-    global _terminating
+    global _terminating, _deferred_signal
     _terminating = True
-    kill_children()
-    if cleanup is not None:
-      try:
-        cleanup()
-      except OSError:
-        pass
-    # Worker threads may still be inside Git calls; exit without waiting for them.
-    os._exit(128 + signum)
+    if _main_spawning:
+      _deferred_signal = signum           # read_git finishes recording, then exits
+      return
+    terminate_now(signum)
   for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(signum, terminate)
 
@@ -397,17 +421,38 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
              consume: Callable[[bytes], None], output_limit: int | None,
              config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = ()) -> subprocess.CompletedProcess[str]:
   deadline = time.monotonic() + timeout
+  global _spawning, _main_spawning
   if _terminating:
     raise InspectionError("Stopping.")
+  main = threading.current_thread() is threading.main_thread()
   with _children_lock:
-    process = subprocess.Popen(
-      ["git", *config, "-C", repo.path, *arguments],
-      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-      start_new_session=True,
-      # Read-only status must not rewrite the index and wake our own watcher.
-      env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", **dict(env)},
-    )
-    _children.add(process)
+    _spawning += 1
+    if main:
+      _main_spawning = True
+    try:
+      process = subprocess.Popen(
+        ["git", *config, "-C", repo.path, *arguments],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+        # Read-only status must not rewrite the index and wake our own watcher.
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", **dict(env)},
+      )
+      _children.add(process)
+    finally:
+      _spawning -= 1
+      if main:
+        _main_spawning = False
+  if _terminating:
+    # Stopped while spawning: this child was recorded after the handler ran.
+    try:
+      os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+      pass
+    if main and _deferred_signal:
+      terminate_now(_deferred_signal)
+    process.wait()
+    _children.discard(process)
+    raise InspectionError("Stopping.")
   diagnostic = bytearray()
   size = 0
   finished = False

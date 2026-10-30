@@ -181,6 +181,41 @@ class LifecycleTest(unittest.TestCase):
         self.fail("git child outlived the helper")
 
 
+  def test_sigterm_between_spawn_and_record_still_kills_git(self):
+    # The signal arrives right after Popen() returns, before the child is
+    # recorded (deterministic: the Popen wrapper signals itself). Before the
+    # fix the handler saw no children and exited, orphaning git.
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      fake = root / "git"
+      pidfile = root / "child.pid"
+      fake.write_text(f"#!/bin/sh\necho $$ > {pidfile}.tmp && mv {pidfile}.tmp {pidfile}\nexec sleep 30\n")
+      fake.chmod(0o755)
+      script = (f"import os, signal, subprocess, sys, time; sys.path.insert(0, {str(Path(__file__).parents[1])!r})\n"
+                "import github_status as s\ns.install_signal_handlers()\n"
+                "real = subprocess.Popen\n"
+                "def racing(*a, **k):\n"
+                "  p = real(*a, **k)\n"
+                f"  while not os.path.exists({str(pidfile)!r}): time.sleep(.01)\n"
+                "  os.kill(os.getpid(), signal.SIGTERM)\n"
+                "  return p\n"
+                "s.subprocess.Popen = racing\n"
+                f"s.run_git(s.Repository({directory!r}, 'r', 'o', 'r'), ['fetch'], 60)\n")
+      env = dict(os.environ, PATH=f"{root}{os.pathsep}{os.environ['PATH']}")
+      helper = subprocess.Popen([sys.executable, "-c", script], env=env)
+      self.assertEqual(helper.wait(10), 128 + signal.SIGTERM)
+      child = int(pidfile.read_text())
+      deadline = time.monotonic() + 2       # the killed child is reaped by init asynchronously
+      while time.monotonic() < deadline:
+        try:
+          os.kill(child, 0)
+        except ProcessLookupError:
+          return
+        time.sleep(.02)
+      os.kill(child, signal.SIGKILL)
+      self.fail("git child spawned during the signal outlived the helper")
+
+
 class WalkRaceTest(unittest.TestCase):
   def test_directory_removed_while_queued_does_not_stop_the_watcher(self):
     with tempfile.TemporaryDirectory() as directory:
