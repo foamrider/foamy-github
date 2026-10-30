@@ -72,7 +72,12 @@ SAFE_SSH_OPTIONS = {"identityfile", "identitiesonly", "identityagent", "certific
                     "stricthostkeychecking", "userknownhostsfile", "hostkeyalias", "connecttimeout",
                     "addkeystoagent", "batchmode", "preferredauthentications", "pubkeyauthentication",
                     "passwordauthentication", "serveraliveinterval", "serveralivecountmax", "loglevel", "compression"}
-SHELL_META = re.compile(r"[;&|`$<>()\\\n\r]")
+# Git hands core.sshCommand and credential helpers to /bin/sh, so the words it
+# runs can differ from what shlex sees: globs (*?[), braces, quotes, escapes,
+# $ and friends all rewrite arguments. A repository-supplied command is only
+# accepted when every character is one the shell passes through literally
+# (a leading ~ only expands to a home directory).
+SHELL_SAFE = re.compile(r"^[A-Za-z0-9 _@%+=:,./~-]+$")
 RISKY_FETCH_KEYS = re.compile(r"^(core\.gitproxy|core\.alternaterefscommand|protocol\..*|remote\..*\.(vcs|uploadpack))$", re.IGNORECASE)
 SKIPPED_FETCH = ("Automatic fetch skipped: this repository's Git config can run commands. "
                  "Fetch it in lazygit, or trust repository config in Settings.")
@@ -80,7 +85,7 @@ SKIPPED_FETCH = ("Automatic fetch skipped: this repository's Git config can run 
 
 def ssh_command_allowed(value: str) -> bool:
   """A plain ssh with key/port/user style options: no shell, no ProxyCommand, no -F."""
-  if SHELL_META.search(value):
+  if not SHELL_SAFE.match(value):
     return False
   try:
     words = shlex.split(value)
@@ -108,7 +113,7 @@ def credential_helper_allowed(value: str) -> bool:
   """Empty (reset) or a stock git-credential-<name> helper with plain arguments."""
   if value == "":
     return True
-  if SHELL_META.search(value) or value.startswith("!"):
+  if not SHELL_SAFE.match(value):
     return False
   try:
     words = shlex.split(value)

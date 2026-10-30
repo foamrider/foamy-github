@@ -103,17 +103,30 @@ class TrustModelTest(unittest.TestCase):
     self.assertNotRun()
 
   def test_common_per_repository_auth_still_fetches(self):
-    for value in ("ssh -i ~/.ssh/work -o IdentitiesOnly=yes", "ssh -p 2222 -o 'UserKnownHostsFile=/tmp/k'"):
+    for value in ("ssh -i ~/.ssh/work -o IdentitiesOnly=yes", "ssh -p 2222 -o UserKnownHostsFile=/tmp/k"):
       self.assertTrue(status.ssh_command_allowed(value), value)
     for value in ("store --file=/tmp/creds", "cache --timeout 300", "libsecret", ""):
       self.assertTrue(status.credential_helper_allowed(value), value)
-    for value in ("ssh -F cfg", "ssh $(x)", "ssh -i `x`", "/tmp/ssh", "ssh -oProxyCommand=x"):
+    for value in ("ssh -F cfg", "ssh $(x)", "ssh -i `x`", "/tmp/ssh", "ssh -oProxyCommand=x",
+                  "ssh -i *", "ssh -i k?y", "ssh -i [a]", "ssh -i {a,b}", "ssh -i 'a b'", "ssh -i a\\ b", "ssh\t-i k"):
       self.assertFalse(status.ssh_command_allowed(value), value)
-    for value in ("!gh auth git-credential", "/usr/bin/helper", "store; x", "evil"):
+    for value in ("!gh auth git-credential", "/usr/bin/helper", "store; x", "evil", "store --file=*", "cache --socket=?"):
       self.assertFalse(status.credential_helper_allowed(value), value)
     self.git("config", "core.sshCommand", "ssh -i ~/.ssh/work")
     self.git("config", "credential.helper", "store --file=/tmp/creds")
     self.assertEqual(status.repository_policy(self.repo).fetch_risk, "")
+
+  def test_glob_in_ssh_command_cannot_inject_options(self):
+    # Codex P1: `ssh -i *` expanded by /bin/sh to files named `!key` and
+    # `-oProxyCommand=…` ran the proxy command. It must be skipped.
+    remote_marker = self.path / "proxy-ran"
+    (self.path / "!key").write_text("")
+    (self.path / "-oProxyCommand=touch proxy-ran").write_text("")
+    self.git("remote", "add", "origin", "ssh://example.invalid/repo.git")
+    self.git("config", "core.sshCommand", "ssh -i *")
+    result = status.fetch_repository(self.repo)
+    self.assertTrue(result.get("skipped"), result)
+    self.assertFalse(remote_marker.exists())
 
   def test_unattended_fetch_never_prompts(self):
     env = dict(status.repository_policy(self.repo).fetch_env)
