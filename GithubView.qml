@@ -33,6 +33,8 @@ PanelKeyCatcher {
   signal foldersEdited(var rows)
   signal browseRequested(int index)
   signal retryRequested()
+  // Errors raised inside the view (clipboard paste) go to the Panel, which owns settingsError.
+  signal settingsErrorReported(string message)
   signal switchPanelRequested(int direction)
   signal repositoryRequested(var repo)
 
@@ -337,7 +339,7 @@ PanelKeyCatcher {
             placeholderText: "~/Projects"
             translate: FoamyI18n.t
             Accessible.name: FoamyI18n.t("Repository folder %1", [folderRow.index + 1])
-            onPasteErrorChanged: if (pasteError !== "") root.settingsError = pasteError
+            onPasteErrorChanged: if (pasteError !== "") root.settingsErrorReported(pasteError)
             onTextEdited: folderRows.setProperty(folderRow.index, "path", text)
             onEditingFinished: root.foldersEdited(root.folderList())
             onInputActiveFocusChanged: if (inputActiveFocus) settingsPage.keepVisible(folderRow)

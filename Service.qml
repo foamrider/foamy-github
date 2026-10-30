@@ -58,7 +58,8 @@ Item {
     return args
   }
   readonly property var repos: status.repos || []
-  readonly property var affectedRepos: repos.filter(function(repo) { return repo.affected === true })
+  // Shown in the popup: local changes, ahead/behind, or a failed last fetch (its error is on the row).
+  readonly property var affectedRepos: Model.displayedRepos(repos)
   readonly property var totals: status.totals || Model.defaultStatus().totals
   readonly property var sync: status.sync || Model.defaultStatus().sync
   readonly property bool inotifyEnabled: setting("inotifyEnabled", true) !== false

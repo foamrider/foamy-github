@@ -66,6 +66,19 @@ ShellRoot {
         panels[1].openSettings()
       } else if (n === 2) {
         check(panels[1].editingSettings, "settings open")
+        var view1 = panels[1].popup.bodyItem
+        view1.settingsErrorReported("Clipboard too large")
+        check(view1.settingsError === "Clipboard too large", "paste error reaches the view through the Panel")
+        panels[1].settingsError = ""
+        check(view1.settingsError === "", "settingsError binding survives a paste error")
+        var bar1 = panels[1].bar
+        panels[1].saving = true
+        panels[1].save("fetchIntervalSec", 300)
+        panels[1].save("fetchIntervalSec", 1800)
+        check(panels[1].pendingSaves.length === 1 && bar1.saved.length === 0, "edits queue while a save runs")
+        panels[1].saving = false
+        panels[1].drainSaves()
+        check(bar1.saved.length === 1 && bar1.saved[0].settings.fetchIntervalSec === 1800, "queued edit saved after the running save")
         panels[1].close()
         panels[0].destroy()
       } else if (n === 3) {

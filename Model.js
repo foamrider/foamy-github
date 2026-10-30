@@ -115,6 +115,25 @@ function updatedText(timestampSec, nowMs, tr, tn) {
   return tn("Updated %1 minutes ago", minutes)
 }
 
+// Repositories the popup lists: anything affected locally, plus clean ones
+// whose last fetch failed, so their inline error stays visible.
+function displayedRepos(repos) {
+  return (repos || []).filter(function(repo) {
+    return !!repo && (repo.affected === true || (typeof repo.syncError === "string" && repo.syncError !== ""))
+  })
+}
+
+// Pending settings edits while a save command runs: one entry per key, the
+// latest value, in first-edit order.
+function queueSave(queue, key, value) {
+  var next = (queue || []).filter(function(entry) { return entry.key !== key })
+  var index = (queue || []).findIndex(function(entry) { return entry.key === key })
+  var entry = { key: key, value: value }
+  if (index >= 0) next.splice(index, 0, entry)
+  else next.push(entry)
+  return next
+}
+
 // The inline fetch error after a row's status line ("main · 3 changed · …").
 function syncErrorText(repo, tr) {
   tr = tr || translate
@@ -182,6 +201,8 @@ if (typeof module !== "undefined") {
     updatedText: updatedText,
     repositoryMeta: repositoryMeta,
     watchRetry: watchRetry,
+    displayedRepos: displayedRepos,
+    queueSave: queueSave,
     syncErrorText: syncErrorText
   }
 }

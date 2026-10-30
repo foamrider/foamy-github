@@ -24,6 +24,8 @@ Panel {
   property bool saving: false
   property string settingsError: ""
   property var lastSave: null
+  // Edits made while an `omarchy bar set` command runs wait here (latest per key).
+  property var pendingSaves: []
   property int browsingRow: -1
   property bool returningFromBrowser: false
   readonly property alias popup: popup
@@ -70,8 +72,9 @@ Panel {
   }
   function closeSettings() { editingSettings = false }
 
-  function save(key, value) {
-    settingsError = ""
+  function save(key, value, keepError) {
+    if (saving) { pendingSaves = Model.queueSave(pendingSaves, key, value); return }
+    if (!keepError) settingsError = ""
     var result = Prefs.save(root.bar, root.moduleName, Schema.fields, root.settings, key, value)
     lastSave = { key: key, value: value }
     if (!result.ok) { lastSave = null; settingsError = FoamyI18n.t(result.error); return }
@@ -80,10 +83,11 @@ Panel {
 
   // repositoryFolders is a list, which FoamyPrefs's schema types don't cover
   // (kit issue): validate with Model.parseFolderRows, then save the same way.
-  function saveFolders(rows) {
-    settingsError = ""
+  function saveFolders(rows, keepError) {
     var parsed = Model.parseFolderRows(rows)
     if (parsed.error) { lastSave = null; settingsError = FoamyI18n.t(parsed.error); return }
+    if (saving) { pendingSaves = Model.queueSave(pendingSaves, "repositoryFolders", parsed.folders); return }
+    if (!keepError) settingsError = ""
     lastSave = { key: "repositoryFolders", value: parsed.folders }
     if (JSON.stringify(Model.repositoryFolders(root.settings)) === JSON.stringify(parsed.folders)) return
     var command = Prefs.saveCommand(root.moduleName, "repositoryFolders", parsed.folders)
@@ -116,7 +120,19 @@ Panel {
     onExited: function(code) {
       root.saving = false
       root.settingsError = code === 0 ? "" : (String(saveError.text || "").trim().slice(0, 240) || FoamyI18n.t("Couldn't save the setting."))
+      Qt.callLater(root.drainSaves)
     }
+  }
+
+  // Run the next queued edit against the settings the finished save produced;
+  // a failure message stays visible while later edits save.
+  function drainSaves() {
+    if (saving || pendingSaves.length === 0) return
+    var next = pendingSaves[0]
+    pendingSaves = pendingSaves.slice(1)
+    if (next.key === "repositoryFolders") saveFolders(next.value, true)
+    else save(next.key, next.value, true)
+    if (!saving) Qt.callLater(root.drainSaves)
   }
 
   // The folder chooser is a separate window: release the popup while it is open.
@@ -212,6 +228,7 @@ Panel {
         retryable: root.settingsError !== "" && root.lastSave !== null
         browsing: folderPicker.running
         onCloseRequestedByView: root.close()
+        onSettingsErrorReported: function(message) { root.settingsError = message }
         onSettingsRequested: root.openSettings()
         onSettingsClosed: root.closeSettings()
         onSaveRequested: function(key, value) { root.save(key, value) }
