@@ -182,7 +182,10 @@ PanelKeyCatcher {
 
     header: Column {
       width: list.width
-      FoamyHeader {
+      // The foamy hero band: title row on the tinted wash, the repository
+      // summary (ahead / behind / changed / failed) in its hero slot.
+      FoamyHeroBand {
+        id: band
         width: parent.width
         iconName: "github"
         title: FoamyI18n.t("GitHub")
@@ -190,28 +193,29 @@ PanelKeyCatcher {
         settingsHasCursor: cursor.at(root.settingsStop)
         onSettingsClicked: root.settingsRequested()
         onSettingsHovered: function(hovered) { if (hovered) cursor.hover(root.settingsStop) }
-        FoamyAction {
-          iconName: "refresh-cw"
-          tooltipText: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…")
-            : FoamyI18n.t("Fetch remotes and refresh") + "\n" + root.lastSyncText
-          spinning: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
-          actionEnabled: !root.busy
-          hasCursor: cursor.at(root.refreshStop)
-          foreground: FoamyPalette.secondaryText
-          onHoveredChanged: if (hovered) cursor.hover(root.refreshStop)
-          onClicked: root.service.fetch()
+        trailing: [
+          FoamyAction {
+            iconName: "refresh-cw"
+            tooltipText: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…")
+              : FoamyI18n.t("Fetch remotes and refresh") + "\n" + root.lastSyncText
+            spinning: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
+            actionEnabled: !root.busy
+            hasCursor: cursor.at(root.refreshStop)
+            foreground: FoamyPalette.secondaryText
+            onHoveredChanged: if (hovered) cursor.hover(root.refreshStop)
+            onClicked: root.service.fetch()
+          }
+        ]
+        Flow {
+          Layout.fillWidth: true
+          spacing: FoamyStyle.padding
+          SummaryCount { value: root.totals.aheadRepos; label: FoamyI18n.t("ahead"); symbol: "↑"; tint: FoamyPalette.onSurface(FoamyPalette.success) }
+          SummaryCount { value: root.totals.behindRepos; label: FoamyI18n.t("behind"); symbol: "↓"; tint: FoamyPalette.onSurface(FoamyPalette.info) }
+          SummaryCount { value: root.totals.dirtyRepos; label: FoamyI18n.t("changed"); symbol: "•"; tint: FoamyPalette.onSurface(FoamyPalette.warning) }
+          SummaryCount { visible: value > 0; value: root.totals.failedRepos; label: FoamyI18n.t("failed"); symbol: "!"; tint: FoamyPalette.onSurface(FoamyPalette.error) }
         }
       }
-      Flow {
-        x: FoamyStyle.padding
-        width: parent.width - FoamyStyle.padding * 2
-        spacing: FoamyStyle.padding
-        bottomPadding: FoamyStyle.gapLarge
-        SummaryCount { value: root.totals.aheadRepos; label: FoamyI18n.t("ahead"); symbol: "↑"; tint: FoamyPalette.onSurface(FoamyPalette.success) }
-        SummaryCount { value: root.totals.behindRepos; label: FoamyI18n.t("behind"); symbol: "↓"; tint: FoamyPalette.onSurface(FoamyPalette.info) }
-        SummaryCount { value: root.totals.dirtyRepos; label: FoamyI18n.t("changed"); symbol: "•"; tint: FoamyPalette.onSurface(FoamyPalette.warning) }
-        SummaryCount { visible: value > 0; value: root.totals.failedRepos; label: FoamyI18n.t("failed"); symbol: "!"; tint: FoamyPalette.onSurface(FoamyPalette.error) }
-      }
+      Item { width: parent.width; height: FoamyStyle.gapLarge }
       Text {
         id: statusWarning
         visible: !!root.service && (root.service.lastError !== "" || root.sync.stale)
