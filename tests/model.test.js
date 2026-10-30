@@ -29,8 +29,6 @@ test('unavailable repositories stay visible and cannot reuse old safety checks',
   assert.equal(after.repos[0].complete, false)
   assert.equal(after.repos[0].behind, 0)
   assert.match(Model.repositoryMeta(after.repos[0]), /Status unavailable.*Scan limit/)
-  assert.equal(Model.repositoryState(after.repos[0]), 'unavailable')
-  assert.match(Model.barText(after, false), /1\?/)
 })
 
 test('status parser rejects oversized messages, repository lists and invalid rows', () => {
@@ -41,4 +39,20 @@ test('status parser rejects oversized messages, repository lists and invalid row
     ahead:0, behind:0, dirtyCount:0, complete:false, affected:true, error:'Timeout'}
   assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[row]})).ok, true)
   assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{...row, dirtyCount:-1}]})).ok, false)
+})
+
+test('watcher retries back off from 30 seconds to 30 minutes and reset after a stable run', () => {
+  let current = Model.WATCH_RETRY_MIN_MS
+  const delays = []
+  for (let i = 0; i < 9; i++) { const r = Model.watchRetry(current, 1000); delays.push(r.delay); current = r.next }
+  assert.deepEqual(delays.map(d => d / 1000), [30, 60, 120, 240, 480, 960, 1800, 1800, 1800])
+  assert.equal(Model.watchRetry(current, 11 * 60 * 1000).delay, 30000)
+})
+
+test('status rows accept an optional syncError string and reject other types', () => {
+  const row = {path:'/repo', name:'repo', owner:'projects', label:'repo', branch:'main', upstream:'',
+    ahead:0, behind:0, dirtyCount:0, complete:true, affected:false, error:''}
+  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[row]})).repos[0].syncError, '')
+  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{...row, syncError:'x'}]})).ok, true)
+  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{...row, syncError:5}]})).ok, false)
 })

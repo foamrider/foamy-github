@@ -1,16 +1,53 @@
+// foamy-kit 0.1.0 5ce350d31debd5711dbd72766149f4098a9976dc5aef10c55f47d3ed4dd14136 — do not edit; change foamy-kit and run sync
 import QtQuick
 import QtQuick.Controls as Controls
 import Quickshell.Io
+import qs.Commons
+import qs.Commons as Commons
+import qs.Ui
+
+// A single-line text field that never lets Qt read the clipboard itself.
+//
+// Qt's TextField reads the whole clipboard on every change, so a huge or
+// hostile clipboard can stall the shell. Paste (Ctrl+V, the context menu,
+// middle-click) runs clipboard.sh instead: bounded to 16 KiB, NUL-free, one
+// line, 2 s deadline, and late results never overwrite newer typing.
+//
+//   SafeTextField {
+//     width: parent.width
+//     text: root.query
+//     placeholderText: FoamyI18n.t("Search")
+//     translate: FoamyI18n.t                 // context menu labels
+//     onTextEdited: root.query = text
+//     onAccepted: root.search()
+//     onKeyPressed: function(event) { if (event.key === Qt.Key_Down) { list.focus(); event.accepted = true } }
+//   }
+//
+// Styled once (foamy radius, control fill and border); callers set size and
+// alignment, never background. clipboardScript resolves relative to this
+// file (kit/clipboard.sh by default) unless absolute.
 
 Flickable {
     id: root
 
+    // Match the stock UI kit while keeping native clipboard reads out of the editor.
+    property color foreground: Commons.Color.foreground
+    property color accent: Commons.Color.accent
+    property string clipboardScript: "clipboard.sh"
+    property real cornerRadius: FoamyStyle.radius
+    property color selectionTint: Style.selectionFillFor(foreground, accent)
+    property bool hasCursor: false
+    readonly property bool _focused: editor.activeFocus
+    readonly property bool _hot: editor.hovered || hasCursor
+    readonly property var _borderSpec: Border.controlSpec(_focused ? "focus" : (_hot ? "hover-cursor" : "normal"), foreground, accent)
     property alias background: editor.background
+    property bool editorReady: false
     property alias color: editor.color
     property alias cursorPosition: editor.cursorPosition
-    property bool editorReady: false
     property alias font: editor.font
+    property alias horizontalAlignment: editor.horizontalAlignment
     readonly property bool inputActiveFocus: editor.activeFocus
+    property alias padding: editor.padding
     property alias leftPadding: editor.leftPadding
     property int pasteCursor: 0
     property int pasteEnd: 0
@@ -31,8 +68,9 @@ Flickable {
         return key;
     }
 
-    signal accepted
+    signal keyPressed(var event)
     signal editingFinished
+    signal accepted
     signal textEdited
 
     function cancelPaste() {
@@ -96,7 +134,7 @@ Flickable {
         pasteStart = editor.selectionStart;
         pasteEnd = editor.selectionEnd;
         pasteCursor = editor.cursorPosition;
-        clipboard.command = ["bash", decodeURIComponent(Qt.resolvedUrl("github-clipboard.sh").toString().replace(/^file:\/\//, "")), primary ? "primary" : "clipboard"];
+        clipboard.command = ["bash", decodeURIComponent(Qt.resolvedUrl(clipboardScript).toString().replace(/^file:\/\//, "")), primary ? "primary" : "clipboard"];
         clipboard.running = true;
     }
     function select(start, end) {
@@ -119,18 +157,35 @@ Flickable {
     contentHeight: height
     contentWidth: Math.max(width, editor.contentWidth + editor.leftPadding + editor.rightPadding)
     flickableDirection: Flickable.HorizontalFlick
-    implicitHeight: 36
+    implicitHeight: FoamyStyle.controlHeight
+    font.family: FoamyStyle.fontFamily
+    font.pixelSize: FoamyStyle.font.body
+    color: foreground
+    selectionColor: selectionTint
+    selectedTextColor: foreground
+    placeholderTextColor: Qt.darker(foreground, 1.6)
+    leftPadding: Style.spacing.controlPaddingX + Border.left(_borderSpec)
+    rightPadding: Style.spacing.controlPaddingX + Border.right(_borderSpec)
+    background: BorderSurface {
+        color: Style.controlFill(root._focused, root._hot, root.foreground, root.accent)
+        borderSpec: root._borderSpec
+        radius: root.cornerRadius
+    }
 
     // TextArea checks clipboard formats only. TextField reads the entire clipboard
     // even on dataChanged, so intercepting its paste shortcut is not sufficient.
     Controls.TextArea.flickable: Controls.TextArea {
         id: editor
+        objectName: "safeEditor"
 
         Accessible.name: root.Accessible.name
         activeFocusOnTab: true
         persistentSelection: true
         selectByMouse: true
         textFormat: TextEdit.PlainText
+        // Attached TextArea margins otherwise shift centered single-line glyphs.
+        topPadding: 0
+        bottomPadding: 0
         verticalAlignment: TextEdit.AlignVCenter
         wrapMode: TextEdit.NoWrap
 
@@ -183,6 +238,11 @@ Flickable {
         }
 
         Keys.onPressed: function (event) {
+            // Callers retain search navigation and Escape without native paste.
+            event.accepted = false;
+            root.keyPressed(event);
+            if (event.accepted)
+                return;
             if (event.matches(StandardKey.Paste)) {
                 event.accepted = true;
                 root.requestPaste(false);
@@ -201,7 +261,7 @@ Flickable {
             root.editingFinished();
         }
         onCursorRectangleChanged: {
-            // Cursor geometry can change before the component context is ready.
+            // Initial layout can fire before the QML JavaScript context is ready.
             if (!root.editorReady)
                 return;
             var left = cursorRectangle.x;

@@ -1,13 +1,30 @@
+// foamy-kit 0.1.0 86c2ad3edce5da5e0adc87c45cf9f8e0d7ff6b8d741187a4179eb1df4b57f25c — do not edit; change foamy-kit and run sync
 import QtQuick
 import QtQuick.Controls
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
-// Private radius hook; keep behavior in sync with Ui/Dropdown.qml.
-
+// Adapted from Omarchy Ui/Dropdown.qml (MIT, see LICENSE-OMARCHY) for the
+// foamy look: foamy radius, font and control height, RTL mirroring of the
+// option list (the popup is a separate overlay, so it does not inherit the
+// panel's mirroring), and an optional label delegate. Selecting an option
+// sets `value` (as upstream) and emits changed(value).
+//
+//   FoamyDropdown {
+//     label: FoamyI18n.t("Refresh every")
+//     value: String(Prefs.value(fields, root.settings, "refreshSeconds"))
+//     options: [{ value: "30", label: FoamyI18n.t("30 seconds") }, …]
+//     onChanged: function(v) { root.save("refreshSeconds", Number(v)) }
+//   }
+//
+// labelDelegate: a Component whose root declares `property string text` and
+// `property color color`; it draws the trigger and option labels (e.g. the
+// clock plugin's glyph-and-time split).
+//
 // Themed single-select dropdown. Trigger row paints with the kit's focus
-// chrome; the popup anchors below and uses Color.popups.background +
-// Color.popups.border so it reads as a panel surface rather than the
+// chrome; the popup anchors below and uses Commons.Color.popups.background +
+// Commons.Color.popups.border so it reads as a panel surface rather than the
 // platform-native ComboBox look.
 //
 // `options` accepts either a plain string[] or an array of
@@ -21,18 +38,19 @@ import qs.Ui
 Item {
   id: root
 
-  property real cornerRadius: Style.cornerRadius * 2
   property string label: ""
   property string value: ""
   property var options: []
 
-  property color foreground: Color.popups.text
-  property color background: Color.popups.background
-  property color popupBorder: Color.popups.border
-  property color accent: Color.accent
-  readonly property var popupBorderSpec: Border.localOrSurfaceSpec("popups", "border", popupBorder, Color.popups.border, Style.normalBorderWidth)
-  property string fontFamily: Style.font.family
-  property int rowHeight: Style.spacing.controlHeight
+  property color foreground: Commons.Color.popups.text
+  property color background: Commons.Color.popups.background
+  property color popupBorder: Commons.Color.popups.border
+  property color accent: Commons.Color.accent
+  property real cornerRadius: FoamyStyle.radius
+  property Component labelDelegate: null
+  readonly property var popupBorderSpec: Border.localOrSurfaceSpec("popups", "border", popupBorder, Commons.Color.popups.border, Style.normalBorderWidth)
+  property string fontFamily: FoamyStyle.fontFamily
+  property int rowHeight: FoamyStyle.controlHeight
   property int popupRowHeight: Style.spacing.popupRowHeight
   property bool showLabel: true
 
@@ -67,6 +85,37 @@ Item {
     return value
   }
 
+  // A label: plain text, or the caller's labelDelegate.
+  component OptionText: Item {
+    id: optionText
+    property string text: ""
+    property color color: root.foreground
+    implicitHeight: plain.implicitHeight
+    clip: true
+    Text {
+      id: plain
+      visible: !root.labelDelegate
+      anchors.fill: parent
+      text: optionText.text
+      textFormat: Text.PlainText
+      horizontalAlignment: Text.AlignLeft
+      verticalAlignment: Text.AlignVCenter
+      color: optionText.color
+      font.family: root.fontFamily
+      font.pixelSize: FoamyStyle.font.body
+      elide: Text.ElideRight
+    }
+    Loader {
+      anchors.fill: parent
+      active: !!root.labelDelegate
+      sourceComponent: root.labelDelegate
+      onLoaded: {
+        item.text = Qt.binding(function() { return optionText.text })
+        item.color = Qt.binding(function() { return optionText.color })
+      }
+    }
+  }
+
   implicitWidth: Style.spacing.dropdownWidth
   implicitHeight: showLabel && label !== "" ? rowHeight + Style.spacing.huge : rowHeight
 
@@ -77,10 +126,12 @@ Item {
     Text {
       textFormat: Text.PlainText
       visible: root.showLabel && root.label !== ""
+      width: parent.width
+      horizontalAlignment: Text.AlignLeft
       text: root.label
-      color: Qt.darker(root.foreground, 1.4)
+      color: FoamyPalette.secondaryText
       font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      font.pixelSize: FoamyStyle.font.bodySmall
       font.bold: true
     }
 
@@ -114,29 +165,25 @@ Item {
         }
       }
 
-      Text {
-        textFormat: Text.PlainText
+      OptionText {
         anchors.left: parent.left
         anchors.right: chevron.left
         anchors.verticalCenter: parent.verticalCenter
-        anchors.leftMargin: trigger.borderLeft + Style.spacing.controlPaddingX
+        anchors.leftMargin: trigger.borderLeft + FoamyStyle.controlPaddingX
         anchors.rightMargin: trigger.borderRight + Style.spacing.md
         text: root.currentLabel()
         color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        elide: Text.ElideRight
       }
 
-      Text {
+      FoamyIcon {
         id: chevron
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         anchors.rightMargin: trigger.borderRight + Style.spacing.controlGap
-        text: "󰅀"
-        color: Qt.darker(root.foreground, 1.2)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
+        width: FoamyStyle.iconSize
+        height: width
+        name: "chevron-down"
+        color: FoamyPalette.secondaryText
       }
 
       MouseArea {
@@ -176,6 +223,8 @@ Item {
         contentItem: ListView {
           id: optionList
           spacing: Style.spacing.labelGap
+          LayoutMirroring.enabled: FoamyI18n.rightToLeft
+          LayoutMirroring.childrenInherit: true
 
           Keys.priority: Keys.BeforeItem
           Keys.onPressed: function(event) {
@@ -215,23 +264,19 @@ Item {
             required property int index
             width: optionList.width
             height: root.popupRowHeight
-            radius: Math.max(0, root.cornerRadius - popup.leftPadding)
+            radius: FoamyStyle.innerRadius(root.cornerRadius, popup.leftPadding)
             color: index === optionList.currentIndex
               ? Style.hoverFillFor(root.foreground, root.accent)
               : "transparent"
 
-            Text {
-              textFormat: Text.PlainText
+            OptionText {
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              anchors.leftMargin: Style.spacing.controlPaddingX
-              anchors.rightMargin: Style.spacing.controlPaddingX
+              anchors.leftMargin: FoamyStyle.controlPaddingX
+              anchors.rightMargin: FoamyStyle.controlPaddingX
               text: root.optionLabel(modelData)
               color: index === optionList.currentIndex ? Style.hoverStateColor(root.foreground, root.accent) : root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              elide: Text.ElideRight
             }
 
             MouseArea {

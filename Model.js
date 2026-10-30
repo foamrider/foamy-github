@@ -41,7 +41,8 @@ function parseStatus(raw) {
     for (var repo of parsed.repos) {
       if (!repo || typeof repo.complete !== "boolean" || typeof repo.affected !== "boolean")
         return failedStatus("Invalid repository status")
-      for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error"]) {
+      if (repo.syncError === undefined) repo.syncError = ""
+      for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error", "syncError"]) {
         if (typeof repo[field] !== "string" || repo[field].length > 4096)
           return failedStatus("Invalid repository status")
       }
@@ -101,58 +102,49 @@ function relativeTime(timestampSec, nowMs, tr) {
   return tr("%1d ago", [days])
 }
 
-function updatedText(timestampSec, nowMs, tr) {
+function plural(key, count) {
+  return translate(key, [count])
+}
+
+function updatedText(timestampSec, nowMs, tr, tn) {
   tr = tr || translate
+  tn = tn || plural
   if (!isFinite(timestampSec) || timestampSec <= 0) return ""
   var minutes = Math.max(0, Math.floor((nowMs - timestampSec * 1000) / 60000))
   if (minutes === 0) return tr("Updated just now")
-  if (minutes === 1) return tr("Updated 1 minute ago")
-  return tr("Updated %1 minutes ago", [minutes])
+  return tn("Updated %1 minutes ago", minutes)
 }
 
-function repositoryMeta(repo, tr) {
+// The inline fetch error after a row's status line ("main · 3 changed · …").
+function syncErrorText(repo, tr) {
   tr = tr || translate
+  return repo && repo.syncError ? tr(String(repo.syncError)) : ""
+}
+
+function repositoryMeta(repo, tr, tn) {
+  tr = tr || translate
+  tn = tn || plural
   if (!repo) return ""
   if (repo.complete === false) return tr("Status unavailable") + " · " + String(repo.error || "")
   var parts = []
   var branch = String(repo.branch || tr("detached"))
   parts.push(branch)
-  if (repo.ahead > 0) parts.push("↑" + tr(repo.ahead === 1 ? "%1 commit" : "%1 commits", [repo.ahead]))
-  if (repo.behind > 0) parts.push("↓" + tr(repo.behind === 1 ? "%1 commit" : "%1 commits", [repo.behind]))
+  if (repo.ahead > 0) parts.push("↑" + tn("%1 commits", repo.ahead))
+  if (repo.behind > 0) parts.push("↓" + tn("%1 commits", repo.behind))
   if (repo.dirtyCount > 0) parts.push(tr("%1 changed", [repo.dirtyCount]))
   return parts.join(" · ")
 }
 
-function repositoryState(repo) {
-  if (!repo) return "Clean"
-  if (repo.complete === false) return "unavailable"
-  var states = []
-  if (repo.ahead > 0) states.push("ahead")
-  if (repo.behind > 0) states.push("behind")
-  if (repo.dirtyCount > 0) states.push("dirty")
-  return states.length > 0 ? states.join(" + ") : "clean"
-}
+// Filesystem watcher retry: 30 s, doubling to 30 min while it keeps failing
+// soon after starting; a run that lasted 10 min starts over at 30 s.
+var WATCH_RETRY_MIN_MS = 30 * 1000
+var WATCH_RETRY_MAX_MS = 30 * 60 * 1000
+var WATCH_STABLE_MS = 10 * 60 * 1000
 
-function barText(status, vertical) {
-  if (status.sync.syncing) return "󰑐"
-  if (vertical) return "󰊤"
-  var parts = ["󰊤"]
-  if (status.totals.aheadRepos > 0) parts.push(status.totals.aheadRepos + "↑")
-  if (status.totals.behindRepos > 0) parts.push(status.totals.behindRepos + "↓")
-  if (status.totals.dirtyRepos > 0) parts.push(status.totals.dirtyRepos + "*")
-  if (status.totals.failedRepos > 0) parts.push(status.totals.failedRepos + "!")
-  if (status.totals.unavailableRepos > 0) parts.push(status.totals.unavailableRepos + "?")
-  if (status.sync.stale && status.totals.failedRepos === 0) parts.push("?")
-  return parts.join(" ")
-}
-
-function actionSummary(status) {
-  var sync = status && status.sync ? status.sync : defaultStatus().sync
-  var parts = []
-  if (sync.updated.length > 0) parts.push("Updated " + sync.updated.length)
-  if (sync.skipped.length > 0) parts.push("Skipped " + sync.skipped.length)
-  if (sync.failures.length > 0) parts.push("Failed " + sync.failures.length)
-  return parts.join(" · ")
+function watchRetry(currentMs, ranMs) {
+  var delay = Number(ranMs) >= WATCH_STABLE_MS ? WATCH_RETRY_MIN_MS
+    : Math.max(WATCH_RETRY_MIN_MS, Math.min(WATCH_RETRY_MAX_MS, Number(currentMs) || WATCH_RETRY_MIN_MS))
+  return { delay: delay, next: Math.min(WATCH_RETRY_MAX_MS, delay * 2) }
 }
 
 function repositoryFolders(settings) {
@@ -189,8 +181,7 @@ if (typeof module !== "undefined") {
     relativeTime: relativeTime,
     updatedText: updatedText,
     repositoryMeta: repositoryMeta,
-    repositoryState: repositoryState,
-    barText: barText,
-    actionSummary: actionSummary
+    watchRetry: watchRetry,
+    syncErrorText: syncErrorText
   }
 }

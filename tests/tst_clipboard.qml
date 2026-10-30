@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls as Controls
 import QtTest
 import Quickshell.Io
-import ".." as Plugin
+import "../kit" as Plugin
 
 Item {
     id: root

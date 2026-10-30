@@ -1,14 +1,20 @@
+pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Networking
+import "kit"
 import "Model.js" as Model
 
+// Repository state and every Git helper, once per shell. 4.5 draws one bar
+// (and so one Panel) per monitor; all of them read this singleton, and only
+// the FoamyMember leader feeds it settings. It runs while at least one bar
+// instance exists and stops its helpers when the last one goes.
 Item {
   id: root
 
   property var settings: ({})
-  property string language: "en"
+  readonly property bool active: FoamyShared.memberCount("github") > 0
   function tr(label, values) { return FoamyI18n.t(label, values) }
   property var status: Model.defaultStatus()
   property double lastChecked: 0
@@ -20,7 +26,7 @@ Item {
   // Keep message data so an in-flight operation follows language changes.
   property var actionMessages: []
   readonly property string actionStatus: actionMessages.map(function(message) {
-    return root.tr(message.label, message.values)
+    return message.count !== undefined ? FoamyI18n.tn(message.label, message.count) : root.tr(message.label, message.values)
   }).join(" · ")
   function setActionStatus(label, values) {
     actionMessages = label ? [{label: label, values: values || []}] : []
@@ -36,17 +42,27 @@ Item {
   property bool monitoring: false
   property bool watchRestartRequested: false
   property string watchedFolders: ""
+  // Watcher retry backoff: 30 s doubling to 30 min; reset after a stable run.
+  property int watchRetryMs: Model.WATCH_RETRY_MIN_MS
+  property double watchStartedAt: 0
 
   readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("github_status.py").toString().replace(/^file:\/\//, ""))
   readonly property var repositoryFolders: Model.repositoryFolders(settings)
   readonly property string folderArguments: JSON.stringify(repositoryFolders)
-  onFolderArgumentsChanged: Qt.callLater(function() { root.restartWatcher() })
+  onFolderArgumentsChanged: Qt.callLater(function() { root.restartWatcher(true) })
+  readonly property bool trustRepositoryConfig: setting("trustRepositoryConfig", false) === true
+  onTrustRepositoryConfigChanged: Qt.callLater(function() { root.restartWatcher(true) })
+  function helperArguments() {
+    var args = ["--folders-json", folderArguments]
+    if (trustRepositoryConfig) args.push("--trust-repository-config")
+    return args
+  }
   readonly property var repos: status.repos || []
   readonly property var affectedRepos: repos.filter(function(repo) { return repo.affected === true })
   readonly property var totals: status.totals || Model.defaultStatus().totals
   readonly property var sync: status.sync || Model.defaultStatus().sync
   readonly property bool inotifyEnabled: setting("inotifyEnabled", true) !== false
-  onInotifyEnabledChanged: Qt.callLater(function() { root.restartWatcher() })
+  onInotifyEnabledChanged: Qt.callLater(function() { root.restartWatcher(true) })
   readonly property int refreshIntervalSec: setting("refreshIntervalSec", 30) === 0 ? 0 : intSetting("refreshIntervalSec", 30, 10, 3600)
   readonly property int fetchIntervalSec: intSetting("fetchIntervalSec", 900, 300, 86400)
   readonly property bool busy: refreshing || syncing || repositoryActionRunning
@@ -55,13 +71,29 @@ Item {
     || Networking.connectivity === NetworkConnectivity.Limited
 
   onNetworkReadyChanged: {
-    if (networkReady) networkReadyTimer.restart()
+    if (networkReady && active) networkReadyTimer.restart()
     else networkReadyTimer.stop()
   }
 
-  Component.onCompleted: {
-    root.restartWatcher()
-    if (networkReady) networkReadyTimer.start()
+  onActiveChanged: {
+    if (active) {
+      root.restartWatcher(true)
+      if (networkReady) networkReadyTimer.start()
+      return
+    }
+    // The last bar instance went away (plugin disabled): stop every helper.
+    networkReadyTimer.stop()
+    watchProcess.running = false
+    statusProcess.running = false
+    syncProcess.running = false
+    repositoryActionProcess.running = false
+    monitoring = false
+  }
+
+  // Popup opened: with live monitoring the rows are already current, so
+  // don't rebuild every watch plan; otherwise take one fresh status.
+  function popupOpened() {
+    if (!(root.inotifyEnabled && root.monitoring)) root.refresh()
   }
 
   function setting(name, fallback) {
@@ -75,7 +107,9 @@ Item {
     return Math.max(minimum, Math.min(maximum, value))
   }
 
-  function restartWatcher() {
+  function restartWatcher(resetBackoff) {
+    if (!root.active) return
+    if (resetBackoff) root.watchRetryMs = Model.WATCH_RETRY_MIN_MS
     root.monitoring = false
     if (watchProcess.running) {
       root.watchRestartRequested = true
@@ -90,13 +124,14 @@ Item {
       return
     }
     root.watchedFolders = root.folderArguments
-    watchProcess.command = ["python3", root.helperPath.replace(/github_status\.py$/, "github_watch.py"),
-      "--folders-json", root.watchedFolders]
+    watchProcess.command = ["python3", root.helperPath.replace(/github_status\.py$/, "github_watch.py")].concat(root.helperArguments())
+    root.watchStartedAt = Date.now()
     root.refreshing = true
     watchProcess.running = true
   }
 
   function refresh() {
+    if (!root.active) return
     if (root.inotifyEnabled && root.monitoring && watchProcess.running) {
       root.refreshing = true
       watchProcess.write("refresh\n")
@@ -105,12 +140,12 @@ Item {
     if (statusProcess.running) return
     refreshing = true
     scannedFolders = folderArguments
-    statusProcess.command = ["python3", helperPath, "status", "--folders-json", folderArguments]
+    statusProcess.command = ["python3", helperPath, "status"].concat(helperArguments())
     statusProcess.running = true
   }
 
   function fetch() {
-    synchronize("fetch")
+    synchronize()
   }
 
   function fetchWhenIdle() {
@@ -136,12 +171,8 @@ Item {
     Qt.callLater(function() { root.fetchWhenIdle() })
   }
 
-  function update() {
-    synchronize("update")
-  }
-
-  function synchronize(mode) {
-    if (root.busy) return
+  function synchronize() {
+    if (root.busy || !root.active) return
     if (!root.networkReady) {
       setActionStatus("Waiting for network…")
       actionMessageTimer.restart()
@@ -151,8 +182,8 @@ Item {
     operationError = ""
     // An earlier completion timer must not clear the new progress title.
     actionMessageTimer.stop()
-    setActionStatus(mode === "update" ? "Fetching and safely updating…" : "Fetching repositories…")
-    syncProcess.command = ["python3", helperPath, mode, "--folders-json", folderArguments]
+    setActionStatus("Fetching repositories…")
+    syncProcess.command = ["python3", helperPath, "fetch"].concat(helperArguments())
     syncProcess.running = true
   }
 
@@ -165,15 +196,13 @@ Item {
   }
 
   function runRepositoryAction(mode, repo) {
-    if (root.busy || !repo || !repo.path || repo.complete !== true) return
+    if (root.busy || !root.active || !repo || !repo.path || repo.complete !== true) return
     repositoryActionRunning = true
     operationError = ""
     actionMessageTimer.stop()
     setActionStatus(mode === "push" ? "Pushing %1…" : "Pulling %1…",
       [String(repo.label || repo.name || "repository")])
-    repositoryActionProcess.command = [
-      "python3", helperPath, mode, String(repo.path), "--folders-json", folderArguments
-    ]
+    repositoryActionProcess.command = ["python3", helperPath, mode, String(repo.path)].concat(helperArguments())
     repositoryActionProcess.running = true
   }
 
@@ -207,17 +236,19 @@ Item {
   Timer {
     interval: Math.max(1, root.refreshIntervalSec) * 1000
     repeat: true
-    running: root.refreshIntervalSec > 0 && !root.monitoring
+    running: root.active && root.refreshIntervalSec > 0 && !root.monitoring
     triggeredOnStart: false
     onTriggered: root.refresh()
   }
 
-  // A failed watcher keeps the existing interval as fallback and retries slowly.
+  // A failed watcher keeps the existing interval as fallback and retries with
+  // backoff, so a deterministic failure (watch limit, one huge repository)
+  // costs a full scan every 30 minutes at most, not every 30 seconds.
   Timer {
-    interval: 30000
-    repeat: true
-    running: root.inotifyEnabled && !watchProcess.running
-    onTriggered: root.restartWatcher()
+    id: watchRetry
+    interval: Model.WATCH_RETRY_MIN_MS
+    repeat: false
+    onTriggered: if (root.active && root.inotifyEnabled && !watchProcess.running) root.restartWatcher(false)
   }
 
   Process {
@@ -244,9 +275,15 @@ Item {
         Qt.callLater(function() { root.restartWatcher() })
         return
       }
+      if (!root.active) return
       root.watchFailed = true
       root.watchDetail = String(watchOutput.text || "Filesystem watcher exited").trim().slice(0, 240)
-      console.warn("foamy.github:", String(watchOutput.text || "Filesystem watcher exited").trim())
+      var ran = Date.now() - root.watchStartedAt
+      var retry = Model.watchRetry(root.watchRetryMs, ran)
+      watchRetry.interval = retry.delay
+      root.watchRetryMs = retry.next
+      console.warn("foamy.github:", root.watchDetail, "(retrying in", Math.round(retry.delay / 1000), "s)")
+      if (root.inotifyEnabled) watchRetry.restart()
       root.refresh()
       root.retryScheduledFetch()
     }
@@ -270,7 +307,7 @@ Item {
   Timer {
     interval: root.fetchIntervalSec * 1000
     repeat: true
-    running: root.networkReady
+    running: root.active && root.networkReady
     triggeredOnStart: false
     onTriggered: root.fetchWhenIdle()
   }
@@ -311,13 +348,9 @@ Item {
       if (result && result.busy) {
         root.setActionStatus(result.message || "Repository synchronization is already running")
       } else if (result) {
-        var summary = []
-        if ((result.updated || []).length > 0) summary.push({label: "Updated %1", values: [result.updated.length]})
-        if ((result.skipped || []).length > 0) summary.push({label: "Skipped %1", values: [result.skipped.length]})
-        if ((result.failures || []).length > 0) summary.push({label: "Failed %1", values: [result.failures.length]})
-        if (summary.length > 0) root.actionMessages = summary
-        else root.setActionStatus(result.mode === "update" ? "Everything already current" : "Fetch complete")
-        if (exitCode !== 0) root.operationError = "Some repositories could not be synchronized"
+        var failed = (result.failures || []).length
+        root.actionMessages = failed > 0 ? [{label: "%1 repositories failed to fetch", values: [failed], count: failed}]
+          : [{label: "Fetch complete", values: []}]
       } else {
         root.setActionStatus("")
         root.operationError = String(syncError.text || "Repository synchronization failed").trim()
