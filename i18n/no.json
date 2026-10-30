@@ -122,7 +122,6 @@
   "Select all": "Merk alt",
   "Undo": "Angre",
   "Redo": "Gjør om",
-  "Automatic fetch skipped: this repository's Git config can run commands. Fetch it in lazygit, or trust repository config in Settings.": "Automatisk henting hoppet over: prosjektets Git-oppsett kan kjøre kommandoer. Hent i lazygit, eller stol på prosjektenes Git-oppsett i Innstillinger.",
   "No origin remote configured. Add one in lazygit, then refresh.": "Ingen origin-fjernlager er satt opp. Legg til et i lazygit, og oppdater.",
   "Could not read the origin remote. Check it in lazygit, then refresh.": "Kunne ikke lese origin-fjernlageret. Sjekk det i lazygit, og oppdater.",
   "Could not read the repository's Git config. Open it in lazygit.": "Kunne ikke lese prosjektets Git-oppsett. Åpne det i lazygit."

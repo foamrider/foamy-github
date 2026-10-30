@@ -105,7 +105,7 @@ def repository_directories(repo: status.Repository, trusted: bool = False) -> se
       if len(ignored) > status.MAX_WATCHES:
         raise status.InspectionError("Ignored directory limit reached. Use timed refresh or select narrower repository folders.")
   status.git_records(repo, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], ignore,
-                     config=policy.read)
+                     config=policy.read, env=policy.read_env)
   paths: set[Path] = set()
   budget = status.ScanBudget()
 
@@ -117,19 +117,20 @@ def repository_directories(repo: status.Repository, trusted: bool = False) -> se
       paths.add(path)
       if len(paths) > status.MAX_WATCHES:
         raise status.InspectionError("Directory watch limit reached. Use timed refresh or select narrower repository folders.")
+      # Stream entries so the budget (count and deadline) applies while reading.
       try:
-        children = list(os.scandir(path))
+        with os.scandir(path) as children:
+          for child in children:
+            budget.check()
+            if child.is_dir(follow_symlinks=False) and Path(child.path) not in ignored and child.name not in (
+                ("objects", "logs", "hooks", "worktrees") if metadata else (".git",)):
+              pending.append(Path(child.path))
+              if len(pending) + len(paths) > status.MAX_WATCHES:
+                raise status.InspectionError("Directory watch limit reached. Use timed refresh or select narrower repository folders.")
       except (FileNotFoundError, NotADirectoryError, PermissionError):
         # Deleted or replaced since it was queued (build tools' temp dirs), or
         # unreadable: its parent's watch reports the change, so skip it.
         continue
-      for child in children:
-        budget.check()
-        if child.is_dir(follow_symlinks=False) and Path(child.path) not in ignored and child.name not in (
-            ("objects", "logs", "hooks", "worktrees") if metadata else (".git",)):
-          pending.append(Path(child.path))
-          if len(pending) + len(paths) > status.MAX_WATCHES:
-            raise status.InspectionError("Directory watch limit reached. Use timed refresh or select narrower repository folders.")
 
   walk(root)
   for option in ("--git-dir", "--git-common-dir"):
@@ -155,14 +156,17 @@ def discovery_directories(folders: list[status.FolderConfig]) -> set[Path]:
     paths.add(path)
     if (path / ".git").exists() or depth == 0:
       return
+    subdirectories: list[Path] = []
     try:
-      children = list(os.scandir(path))
+      with os.scandir(path) as children:
+        for child in children:
+          budget.check()
+          if child.is_dir(follow_symlinks=False) and not child.name.startswith(".") and child.name != "node_modules":
+            subdirectories.append(Path(child.path))
     except (FileNotFoundError, NotADirectoryError, PermissionError):
-      return
-    for child in children:
-      budget.check()
-      if child.is_dir(follow_symlinks=False) and not child.name.startswith(".") and child.name != "node_modules":
-        visit(Path(child.path), depth - 1)
+      pass
+    for child in subdirectories:
+      visit(child, depth - 1)
 
   for folder in folders:
     root = Path(folder["path"]).expanduser().resolve()

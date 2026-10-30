@@ -46,41 +46,73 @@ class InspectionError(OSError):
 
 # --- Trust model -------------------------------------------------------------
 # Git runs automatically in every repository found under the configured
-# folders (status on every change, fetch on a timer). A repository's own
-# config (.git/config, config.worktree and anything they include) can name
-# commands that Git executes: core.fsmonitor, clean/smudge filters, hooks,
-# core.sshCommand, credential helpers, remote helpers. A repository unpacked
-# from an archive must not be able to run code just by existing, so unless
-# the user trusts repository config:
-#   - read-only commands disable fsmonitor, the untracked cache, hooks and
-#     repository-defined filters, and don't recurse into submodule worktrees;
-#   - automatic fetches also disable hooks, the ext:: transport and submodule
-#     recursion, never prompt (no askpass, SSH BatchMode), and skip a
-#     repository whose own config sets a command Git would run for a fetch
-#     (anything but a plain `ssh -i key`-style sshCommand or a stock
-#     credential helper such as store/cache/libsecret).
+# folders: status, ls-files and rev-parse on every change, and `git fetch`
+# on a timer. A repository's own config (.git/config, config.worktree and
+# every file they include) and attributes can make Git run programs, so a
+# repository unpacked from an archive could run code just by existing.
+# Unless the user trusts repository config, every unattended command runs
+# with command-scope overrides (GIT_CONFIG_COUNT/KEY/VALUE: keys and values
+# are passed separately, so no subsection name can smuggle an `=`), which Git
+# applies after every config file and include:
+#
+#   all commands  core.fsmonitor=false, core.untrackedCache=false,
+#                 core.hooksPath=/dev/null, status.submoduleSummary=false,
+#                 every defined filter driver (any scope: a repository's
+#                 attributes can select a global one such as Git LFS, whose
+#                 own repository config, e.g. lfs.extension.*, runs
+#                 programs) gets empty clean/smudge/process and
+#                 required=false; status doesn't recurse into submodule
+#                 worktrees; GIT_PAGER=cat.
+#   fetch         repository-local credential helpers are dropped (the list
+#                 is reset, then the user's global/system helpers are added
+#                 back), core.sshCommand comes from the environment (the
+#                 user's global value, a plain `ssh -i key` local value, or
+#                 `ssh -o BatchMode=yes`), GIT_PROXY_COMMAND="" when the
+#                 repository sets core.gitProxy, transports limited to
+#                 http(s)/ssh/git/file (no ext::, fd::, remote helpers),
+#                 --upload-pack=git-upload-pack, local http.* and
+#                 remote.*.proxy network/TLS/cookie settings reset to the
+#                 user's value or Git's default, core.alternateRefsCommand
+#                 neutral, no automatic maintenance or gc (so
+#                 gc.recentObjectsHook and friends never run), no commit-graph
+#                 write, no submodule recursion, no prompts (GIT_ASKPASS="",
+#                 SSH_ASKPASS_REQUIRE=never, credential.interactive=false,
+#                 GIT_TERMINAL_PROMPT=0).
+#
 # Push and pull are explicit user actions on one repository and run with the
 # repository's normal Git config, exactly as in a terminal.
 READ_CONFIG = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null")
-FETCH_CONFIG = READ_CONFIG + ("-c", "protocol.ext.allow=never", "-c", "credential.interactive=false")
 LOCAL_SCOPES = ("local", "worktree")
 TRUSTED_SCOPES = ("system", "global", "command")
-# git-lfs as written by `git lfs install --local`.
-SAFE_FILTERS = {"git-lfs clean -- %f", "git-lfs smudge -- %f", "git-lfs filter-process"}
-SAFE_CREDENTIAL_HELPERS = {"store", "cache", "libsecret", "gnome-keyring", "manager", "manager-core", "oauth", "osxkeychain", "wincred"}
 SAFE_SSH_OPTIONS = {"identityfile", "identitiesonly", "identityagent", "certificatefile", "port", "user",
                     "stricthostkeychecking", "userknownhostsfile", "hostkeyalias", "connecttimeout",
                     "addkeystoagent", "batchmode", "preferredauthentications", "pubkeyauthentication",
                     "passwordauthentication", "serveraliveinterval", "serveralivecountmax", "loglevel", "compression"}
-# Git hands core.sshCommand and credential helpers to /bin/sh, so the words it
-# runs can differ from what shlex sees: globs (*?[), braces, quotes, escapes,
-# $ and friends all rewrite arguments. A repository-supplied command is only
-# accepted when every character is one the shell passes through literally
-# (a leading ~ only expands to a home directory).
+# Git hands core.sshCommand to /bin/sh, so the words it runs can differ from
+# what shlex sees: globs (*?[), braces, quotes, escapes, $ and friends all
+# rewrite arguments. A repository-supplied command is only accepted when every
+# character is one the shell passes through literally.
 SHELL_SAFE = re.compile(r"^[A-Za-z0-9 _@%+=:,./~-]+$")
-RISKY_FETCH_KEYS = re.compile(r"^(core\.gitproxy|core\.alternaterefscommand|protocol\..*|remote\..*\.(vcs|uploadpack))$", re.IGNORECASE)
-SKIPPED_FETCH = ("Automatic fetch skipped: this repository's Git config can run commands. "
-                 "Fetch it in lazygit, or trust repository config in Settings.")
+READ_OVERRIDES = (("status.submoduleSummary", "false"),)
+FETCH_OVERRIDES = (
+  ("protocol.allow", "never"), ("protocol.https.allow", "always"), ("protocol.http.allow", "always"),
+  ("protocol.ssh.allow", "always"), ("protocol.git.allow", "always"), ("protocol.file.allow", "always"),
+  ("maintenance.auto", "false"), ("gc.auto", "0"), ("gc.autoPackLimit", "0"),
+  ("fetch.writeCommitGraph", "false"), ("core.alternateRefsCommand", "true"),
+  ("credential.interactive", "false"),
+)
+BASE_PROTOCOLS = ("http", "https", "ssh", "git", "file")
+# remote.<name>.uploadpack is first-wins (a later config value can't replace
+# a repository's), so the command line sets it.
+FETCH_ARGUMENTS = ("--no-auto-maintenance", "--no-recurse-submodules", "--upload-pack=git-upload-pack")
+# http.<var> / http.<url>.<var> and remote.<name>.proxy settings a repository
+# could use to read or redirect authenticated traffic; Git's defaults.
+HTTP_SENSITIVE = {
+  "proxy": "", "proxyauthmethod": "anyauth", "proxysslcert": "", "proxysslkey": "", "proxysslcainfo": "",
+  "sslverify": "true", "sslcainfo": "", "sslcapath": "", "sslcert": "", "sslkey": "", "sslbackend": "",
+  "pinnedpubkey": "", "cookiefile": "", "savecookies": "false", "extraheader": "", "curloptresolve": "",
+  "emptyauth": "false", "proactiveauth": "", "followredirects": "initial",
+}
 
 
 def ssh_command_allowed(value: str) -> bool:
@@ -109,30 +141,32 @@ def ssh_command_allowed(value: str) -> bool:
   return True
 
 
-def credential_helper_allowed(value: str) -> bool:
-  """Empty (reset) or a stock git-credential-<name> helper with plain arguments."""
-  if value == "":
-    return True
-  if not SHELL_SAFE.match(value):
-    return False
+def config_environment(pairs: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
+  """Command-scope config as GIT_CONFIG_COUNT/KEY/VALUE, after the user's own."""
   try:
-    words = shlex.split(value)
+    base = int(os.environ.get("GIT_CONFIG_COUNT", "0") or 0)
   except ValueError:
-    return False
-  return bool(words) and words[0] in SAFE_CREDENTIAL_HELPERS
+    base = 0
+  env: list[tuple[str, str]] = []
+  for index, (key, value) in enumerate(pairs):
+    env += [(f"GIT_CONFIG_KEY_{base + index}", key), (f"GIT_CONFIG_VALUE_{base + index}", value)]
+  env.append(("GIT_CONFIG_COUNT", str(base + len(pairs))))
+  return tuple(env)
 
 
 @dataclass(frozen=True)
 class GitPolicy:
   read: tuple[str, ...] = ()
+  read_env: tuple[tuple[str, str], ...] = ()
   status: tuple[str, ...] = ()
   fetch: tuple[str, ...] = ()
   fetch_env: tuple[tuple[str, str], ...] = ()
-  fetch_risk: str = ""
+  fetch_args: tuple[str, ...] = ()
 
 
 TRUSTED_POLICY = GitPolicy()
-DEFAULT_POLICY = GitPolicy(read=READ_CONFIG, fetch=FETCH_CONFIG)
+DEFAULT_POLICY = GitPolicy(read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES), status=("--ignore-submodules=dirty",),
+                           fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
 
 
 def config_entries(repo: "Repository") -> list[tuple[str, str, str]]:
@@ -152,6 +186,13 @@ def config_entries(repo: "Repository") -> list[tuple[str, str, str]]:
   return entries
 
 
+def split_key(key: str) -> tuple[str, str, str]:
+  """(section, subsection, variable); section and variable lowercased, subsection as is."""
+  section, _, rest = key.partition(".")
+  subsection, _, variable = rest.rpartition(".")
+  return section.lower(), subsection, variable.lower()
+
+
 def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   if trusted:
     return TRUSTED_POLICY
@@ -160,40 +201,64 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   for scope, key, value in entries:
     if scope in TRUSTED_SCOPES:
       trusted_values[key.lower()] = value
-  read: list[str] = list(READ_CONFIG)
-  risk = ""
-  overridden: set[str] = set()
+
+  # Every defined filter driver, from any scope, is switched off.
+  read: list[tuple[str, str]] = list(READ_OVERRIDES)
+  filters: list[str] = []
+  for _scope, key, _value in entries:
+    section, name, variable = split_key(key)
+    if section == "filter" and name and name not in filters and variable in ("clean", "smudge", "process", "required"):
+      filters.append(name)
+  for name in filters:
+    read += [(f"filter.{name}.clean", ""), (f"filter.{name}.smudge", ""), (f"filter.{name}.process", ""),
+             (f"filter.{name}.required", "false")]
+
+  fetch: list[tuple[str, str]] = list(read) + list(FETCH_OVERRIDES)
+  # Credential helpers: reset, then only the user's own (global/system/command).
+  fetch.append(("credential.helper", ""))
   for scope, key, value in entries:
-    if scope not in LOCAL_SCOPES:
-      continue
+    section, _name, variable = split_key(key)
+    if scope in TRUSTED_SCOPES and section == "credential" and variable == "helper":
+      fetch.append((key, value))
+  local = [(key, value) for scope, key, value in entries if scope in LOCAL_SCOPES]
+  done: set[str] = set()
+  for key, value in local:
+    section, name, variable = split_key(key)
     lower = key.lower()
-    section, _, rest = key.partition(".")
-    name, _, variable = rest.rpartition(".")
-    if section.lower() == "filter" and name and variable.lower() in ("clean", "smudge", "process"):
-      if value in SAFE_FILTERS or key in overridden:
-        continue
-      overridden.add(key)
-      read += ["-c", f"{key}={trusted_values.get(lower, '')}"]
-      if lower not in trusted_values:
-        read += ["-c", f"filter.{name}.required=false"]
-    elif lower == "core.sshcommand":
-      if "GIT_SSH_COMMAND" not in os.environ and not ssh_command_allowed(value):
-        risk = risk or "core.sshCommand"
-    elif section.lower() == "credential" and variable.lower() == "helper" or lower == "credential.helper":
-      if not credential_helper_allowed(value):
-        risk = risk or key
-    elif RISKY_FETCH_KEYS.match(lower):
-      risk = risk or key
-  env = {"SSH_ASKPASS_REQUIRE": "never"}
+    if lower in done:
+      continue
+    if (section == "http" and variable in HTTP_SENSITIVE) or (section == "remote" and name and variable == "proxy"):
+      done.add(lower)
+      fetch.append((key, trusted_values.get(lower, HTTP_SENSITIVE.get(variable, ""))))
+    elif section == "protocol" and name and variable == "allow" and name.lower() not in BASE_PROTOCOLS:
+      # protocol.<name>.allow beats protocol.allow: close remote helpers the
+      # repository opens (ext::, fd::, remote.*.vcs) unless the user did.
+      done.add(lower)
+      fetch.append((key, trusted_values.get(lower, "never")))
+
+  env = {"SSH_ASKPASS_REQUIRE": "never", "GIT_PROTOCOL_FROM_USER": "0", "GIT_PAGER": "cat"}
   if "GIT_ASKPASS" not in os.environ:
     # Empty wins over core.askPass and SSH_ASKPASS: unattended runs never prompt.
     env["GIT_ASKPASS"] = ""
-  if not any(name in os.environ for name in ("GIT_SSH_COMMAND", "GIT_SSH")) and not any(
-      key.lower() == "core.sshcommand" for _, key, _ in entries):
-    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
-  status = ("--ignore-submodules=dirty",)
-  return GitPolicy(read=tuple(read), status=status, fetch=tuple(read) + FETCH_CONFIG[len(READ_CONFIG):],
-                   fetch_env=tuple(sorted(env.items())), fetch_risk=risk)
+  if any(scope in LOCAL_SCOPES and key.lower() == "core.gitproxy" for scope, key, _ in entries):
+    # core.gitProxy is first-match: only the environment beats a local entry.
+    env["GIT_PROXY_COMMAND"] = ""
+  if "GIT_SSH_COMMAND" not in os.environ:
+    # GIT_SSH_COMMAND beats every core.sshCommand, so a local one never runs
+    # unless it is a plain `ssh -i key`-style command.
+    local_ssh = [value for scope, key, value in entries if scope in LOCAL_SCOPES and key.lower() == "core.sshcommand"]
+    trusted_ssh = trusted_values.get("core.sshcommand")
+    if local_ssh and ssh_command_allowed(local_ssh[-1]):
+      env["GIT_SSH_COMMAND"] = local_ssh[-1] + " -o BatchMode=yes"
+    elif trusted_ssh:
+      env["GIT_SSH_COMMAND"] = trusted_ssh
+    elif os.environ.get("GIT_SSH"):
+      env["GIT_SSH_COMMAND"] = shlex.quote(os.environ["GIT_SSH"])
+    else:
+      env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+  return GitPolicy(read=READ_CONFIG, read_env=config_environment(read), status=("--ignore-submodules=dirty",),
+                   fetch=READ_CONFIG, fetch_env=config_environment(fetch) + tuple(sorted(env.items())),
+                   fetch_args=FETCH_ARGUMENTS)
 
 
 # --- Child processes -----------------------------------------------------------
@@ -399,17 +464,21 @@ def collect_repositories(folders: list[str | FolderConfig] | None = None) -> lis
     if depth == 0:
       return
     # Respect each configured depth and avoid dependencies and symlink cycles.
+    # Stream entries so the budget (count and deadline) applies while reading.
+    subdirectories: list[Path] = []
     try:
-      children = list(os.scandir(path))
+      with os.scandir(path) as children:
+        for child in children:
+          budget.check()
+          if child.name.startswith(".") or child.name == "node_modules" or child.is_symlink():
+            continue
+          if child.is_dir(follow_symlinks=False):
+            subdirectories.append(Path(child.path))
     except (FileNotFoundError, NotADirectoryError, PermissionError):
-      # Removed, replaced or unreadable since is_dir(): nothing to list here.
-      return
-    for child in children:
-      budget.check()
-      if child.name.startswith(".") or child.name == "node_modules" or child.is_symlink():
-        continue
-      if child.is_dir(follow_symlinks=False):
-        visit(Path(child.path), depth - 1, base)
+      # Removed, replaced or unreadable since is_dir(): nothing (more) to list here.
+      pass
+    for child in subdirectories:
+      visit(child, depth - 1, base)
 
   for folder in parse_folders(json.dumps(DEFAULT_FOLDERS if folders is None else folders)):
     base = Path(folder["path"]).expanduser()
@@ -512,7 +581,7 @@ def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Se
 
 
 def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes], None], timeout: int = 15,
-                config: Sequence[str] = READ_CONFIG):
+                config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = ()):
   pending = bytearray()
   def read(chunk: bytes):
     pending.extend(chunk)
@@ -525,7 +594,7 @@ def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes
     del pending[:start]
     if len(pending) > MAX_RECORD_BYTES:
       raise InspectionError("Git status entry is too long. Open the repository in lazygit.")
-  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES, config)
+  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES, config, env)
   if result.returncode:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   if pending:
@@ -546,7 +615,7 @@ def dirty_entries(repo: Repository, policy: GitPolicy = DEFAULT_POLICY) -> int:
     # In porcelain v1 -z, a rename/copy has a second path, not a second entry.
     rename_path = b"R" in record[:2] or b"C" in record[:2]
   git_records(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", *policy.status], consume,
-              config=policy.read)
+              config=policy.read, env=policy.read_env)
   if rename_path:
     raise InspectionError("Git returned an incomplete rename. Try Refresh again.")
   return count
@@ -562,7 +631,7 @@ def command_text(repo: Repository, arguments: list[str], timeout: int = 8) -> st
 
 def checked_text(repo: Repository, arguments: list[str], allowed: tuple[int, ...] = (),
                  policy: GitPolicy = DEFAULT_POLICY) -> str:
-  result = run_git(repo, arguments, config=policy.read)
+  result = run_git(repo, arguments, config=policy.read, env=policy.read_env)
   if result.returncode != 0 and result.returncode not in allowed:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   return metadata(result.stdout.strip()) if result.returncode == 0 else ""
@@ -676,12 +745,8 @@ def fetch_repository(repo: Repository, trusted: bool = False) -> dict[str, Any]:
   except (OSError, subprocess.TimeoutExpired) as error:
     return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
             "operation": "fetch", "attempts": 0, "message": str(error)[:240]}
-  if policy.fetch_risk:
-    # Never run repository-defined commands unattended; say so on the row.
-    return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
-            "operation": "fetch", "attempts": 0, "skipped": True, "message": SKIPPED_FETCH}
   try:
-    remote = run_git(repo, ["remote", "get-url", "origin"], config=policy.read)
+    remote = run_git(repo, ["remote", "get-url", "origin"], config=policy.read, env=policy.read_env)
   except (OSError, subprocess.TimeoutExpired):
     remote = None
   if remote is None or remote.returncode != 0:
@@ -698,7 +763,7 @@ def fetch_repository(repo: Repository, trusted: bool = False) -> dict[str, Any]:
   for delay in (*FETCH_RETRY_DELAYS, None):
     attempts += 1
     try:
-      completed = run_git(repo, ["fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin"],
+      completed = run_git(repo, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
                           FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env)
     except (OSError, subprocess.TimeoutExpired):
       completed = None

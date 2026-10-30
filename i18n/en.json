@@ -122,7 +122,6 @@
   "Select all": "Select all",
   "Undo": "Undo",
   "Redo": "Redo",
-  "Automatic fetch skipped: this repository's Git config can run commands. Fetch it in lazygit, or trust repository config in Settings.": "Automatic fetch skipped: this repository's Git config can run commands. Fetch it in lazygit, or trust repository config in Settings.",
   "No origin remote configured. Add one in lazygit, then refresh.": "No origin remote configured. Add one in lazygit, then refresh.",
   "Could not read the origin remote. Check it in lazygit, then refresh.": "Could not read the origin remote. Check it in lazygit, then refresh.",
   "Could not read the repository's Git config. Open it in lazygit.": "Could not read the repository's Git config. Open it in lazygit."

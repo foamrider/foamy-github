@@ -58,30 +58,48 @@ monitor.
 
 ## Trust model
 
-The widget runs Git by itself, in every repository it finds: status on every
-change and a fetch on a timer. A repository's own Git config (`.git/config`
-and anything it includes) can name commands Git executes, so a repository
-unpacked from an untrusted archive into one of your folders could otherwise
-run code just by being there. By default:
+The widget runs Git by itself, in every repository it finds: `status`,
+`ls-files` and `rev-parse` on every change, and `git fetch` on a timer. A
+repository's own Git config (`.git/config`, `config.worktree` and any file they
+include) and its attributes can make Git run programs. A repository unpacked
+from an untrusted archive into one of your folders could otherwise run code
+just by being there.
 
-- **Status checks** run with `core.fsmonitor`, the untracked cache and hooks
-  turned off, ignore clean/smudge filters defined by the repository (your
-  global filters, such as Git LFS, still apply), and don't look inside
-  submodule worktrees.
-- **Automatic fetches** (the timer and the Refresh button) also turn off hooks,
-  the `ext::` transport and submodule recursion, and never prompt: no askpass
-  window and SSH in batch mode, so a locked key fails quietly instead of
-  asking every 15 minutes. A repository whose own config sets a command Git
-  would run for a fetch is skipped, with a message on its row: anything other
-  than a plain `ssh -i key`-style `core.sshCommand` or a stock credential
-  helper (`store`, `cache`, `libsecret`, `manager`, …), or `core.gitProxy`,
-  `protocol.*`, `remote.*.uploadpack`/`vcs`. Fetch those in lazygit.
-- **Push and pull** are explicit actions on one repository and run with its
-  normal Git config and hooks, exactly like `git push` in a terminal.
+So unless you trust repository config, every automatic Git command runs with
+overrides that Git applies after all config files and includes. They are
+passed as `GIT_CONFIG_COUNT`/`KEY`/`VALUE` pairs, so key names can't be
+misparsed.
 
-Your global Git config, credential helpers (for example `gh auth
-git-credential`) and SSH agent keep working. Your global `core.hooksPath`
-hooks don't run for status checks and automatic fetches.
+| Vector | Status checks | Automatic fetch |
+|---|---|---|
+| `core.fsmonitor`, untracked cache | off | off |
+| Hooks (`core.hooksPath`, `.git/hooks`) | off (`/dev/null`) | off |
+| Clean/smudge/process filters, including global ones such as Git LFS that the repository's attributes select (LFS reads repository settings like `lfs.extension.*`) | off for every defined filter | off |
+| Submodule worktrees | not inspected | not fetched |
+| `credential.helper` (repository-local) | — | ignored: the list is reset, then only your global/system helpers are added back |
+| `core.sshCommand` (repository-local) | — | ignored, except a plain `ssh -i key`-style command (no shell syntax, safe `-o` options) |
+| `core.askPass`, prompts | — | off: `GIT_ASKPASS=""` unless you set it, `SSH_ASKPASS_REQUIRE=never`, SSH `BatchMode` |
+| `core.gitProxy` | — | off for repositories that set one |
+| Transports (`ext::`, `fd::`, remote helpers, `remote.*.vcs`, `protocol.*`) | — | only http(s), ssh, git and file, plus helpers you allowed globally |
+| `remote.*.uploadpack` | — | `--upload-pack=git-upload-pack` |
+| `http.*` / `remote.*.proxy` (proxy, TLS, CA, cookies, extra headers, resolve) | — | reset to your global value or Git's default |
+| `core.alternateRefsCommand` | — | neutral |
+| Automatic maintenance / gc (`gc.recentObjectsHook`, `maintenance.*`, `gc.auto`) | — | not run (`--no-auto-maintenance`) |
+| Commit-graph write | — | off |
+
+Include files (`include.path`, `includeIf`) are covered: the overrides come
+after them. Your global Git config, credential helpers (for example `gh auth
+git-credential`) and SSH agent keep working. Repository-local credential
+helpers and unusual repository-local SSH commands don't apply to automatic
+fetches: such a repository shows the authentication error on its row, and you
+can fetch it in lazygit. Your global `core.hooksPath` hooks don't run for
+automatic commands. Files tracked with Git LFS that you touched can count as
+changed until Git refreshes its index. **Push and pull** are explicit actions
+on one repository and run with its normal Git config and hooks, exactly like
+`git push` in a terminal.
+
+Requires Git 2.31 or later (`GIT_CONFIG_COUNT`); `--no-auto-maintenance`
+needs 2.29.
 
 Turn on **Trust repository config** only if you trust every repository in
 these folders: the widget then uses each repository's config as is, like

@@ -28,7 +28,7 @@ class GitErrorsTest(unittest.TestCase):
     self.assertEqual(result["message"], "No origin remote configured. Add one in lazygit, then refresh.")
     self.assertFalse(result["ok"])
     self.assertEqual(result["attempts"], 0)
-    git.assert_called_once_with(repo, ["remote", "get-url", "origin"], config=())
+    git.assert_called_once_with(repo, ["remote", "get-url", "origin"], config=(), env=())
     sleep.assert_not_called()
 
   def test_configured_remote_still_fetches(self):
@@ -37,7 +37,7 @@ class GitErrorsTest(unittest.TestCase):
          patch.object(module, "repository_policy", return_value=module.TRUSTED_POLICY):
       self.assertTrue(module.fetch_repository(repo)["ok"])
     self.assertEqual(git.call_count, 2)
-    self.assertEqual(git.call_args.args[1], ["fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin"])
+    self.assertEqual(git.call_args.args[1], ["fetch", "--quiet", "--prune", "origin"])  # trusted: repository config as is
 
   def test_fallback_and_long_diagnostics(self):
     self.assertEqual(module.concise_error(None, "Fetch failed"), "Fetch failed")
