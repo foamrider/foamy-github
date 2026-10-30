@@ -72,16 +72,26 @@ ShellRoot {
         panels[1].settingsError = ""
         check(view1.settingsError === "", "settingsError binding survives a paste error")
         var bar1 = panels[1].bar
-        panels[1].saving = true
         panels[1].save("fetchIntervalSec", 300)
         panels[1].save("fetchIntervalSec", 1800)
-        check(panels[1].pendingSaves.length === 1 && bar1.saved.length === 0, "edits queue while a save runs")
-        panels[1].saving = false
-        panels[1].drainSaves()
-        check(bar1.saved.length === 1 && bar1.saved[0].settings.fetchIntervalSec === 1800, "queued edit saved after the running save")
+        check(panels[1].prefs.value("fetchIntervalSec") === 1800, "newest edit wins through FoamyPrefsQueue")
+        check(bar1.saved.length > 0 && bar1.saved[bar1.saved.length - 1].settings.fetchIntervalSec === 1800, "saved inline")
+        panels[1].saveFolders([{ path: "relative", depth: 2 }])
+        check(view1.settingsError !== "", "invalid folders are reported, not saved")
+        panels[1].saveFolders([{ path: "~/GitHub", depth: 3 }])
+        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.repositoryFolders) === JSON.stringify([{ path: "~/GitHub", depth: 3 }]), "folders saved as an array")
         panels[1].close()
         panels[0].destroy()
       } else if (n === 3) {
+        check(!panels[1].opened && !panels[1].editingSettings, "settings reset when the popup closes")
+        panels[1].openSettings()
+        check(panels[1].opened && panels[1].editingSettings, "openSettings() on a closed popup lands on Settings")
+        panels[1].returningFromBrowser = true
+        panels[1].close()
+        check(panels[1].editingSettings, "folder browser round trip keeps Settings")
+        panels[1].returningFromBrowser = false
+        panels[1].close()
+
         check(Kit.FoamyShared.memberCount("github") === 2, "leader left")
         check(Plugin.Service.active, "service still active after re-election")
         panels[1].destroy(); panels[2].destroy()

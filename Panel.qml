@@ -6,7 +6,6 @@ import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
 import "kit"
-import "kit/FoamyPrefs.js" as Prefs
 import "Model.js" as Model
 import "Preferences.js" as Schema
 
@@ -20,15 +19,13 @@ Panel {
   ipcTarget: "foamy.github"
   manageIpc: false
 
-  property bool editingSettings: false
-  property bool saving: false
+  readonly property bool editingSettings: settingsState.editing
+  // Local errors (folder validation, paste, folder browser); save errors come from prefs.
   property string settingsError: ""
-  property var lastSave: null
-  // Edits made while an `omarchy bar set` command runs wait here (latest per key).
-  property var pendingSaves: []
   property int browsingRow: -1
   property bool returningFromBrowser: false
   readonly property alias popup: popup
+  readonly property alias prefs: prefs
   readonly property var view: popup.bodyItem
 
   readonly property var totals: Service.totals
@@ -52,87 +49,48 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
+    function settings(): void { root.openSettings() }
     function refresh(): string { Service.fetch(); return "ok" }
     function status(): string { return JSON.stringify({ repositories: Service.status.repoCount, affected: Service.status.affectedCount, totals: Service.totals, syncing: Service.syncing, monitoring: Service.monitoring }) }
   }
 
-  onOpenedChanged: {
-    if (opened && !returningFromBrowser) {
-      editingSettings = false
-      Service.popupOpened()
-    }
-    if (!opened && !returningFromBrowser) editingSettings = false
-  }
+  onOpenedChanged: if (opened && !returningFromBrowser) Service.popupOpened()
 
-  function openSettings() {
+  // Settings open from the cog, `s` or IPC (also on a closed popup) and reset
+  // only when the popup closes; the folder browser round trip keeps them.
+  FoamySettingsState {
+    id: settingsState
+    panel: root
+    holdOnClose: root.returningFromBrowser
+    onShown: root.settingsError = ""
+  }
+  function openSettings() { settingsState.show() }
+  function closeSettings() { settingsState.hide() }
+
+  // repositoryFolders: a list of {path, depth}, validated by Model.parseFolderRows.
+  readonly property var fields: Schema.fields.concat([{
+    key: "repositoryFolders", type: "array", maxItems: 32, defaultValue: [],
+    validate: function(value) { var parsed = Model.parseFolderRows(value); return parsed.error ? parsed.error : true }
+  }])
+  FoamyPrefsQueue {
+    id: prefs
+    bar: root.bar
+    moduleName: root.moduleName
+    fields: root.fields
+    settings: root.settings
+  }
+  readonly property string pageError: settingsError !== "" ? settingsError : prefs.error !== "" ? FoamyI18n.t(prefs.error) : ""
+
+  function save(key, value) {
     settingsError = ""
-    lastSave = null
-    editingSettings = true
-    if (!opened) open()
-  }
-  function closeSettings() { editingSettings = false }
-
-  function save(key, value, keepError) {
-    if (saving) { pendingSaves = Model.queueSave(pendingSaves, key, value); return }
-    if (!keepError) settingsError = ""
-    var result = Prefs.save(root.bar, root.moduleName, Schema.fields, root.settings, key, value)
-    lastSave = { key: key, value: value }
-    if (!result.ok) { lastSave = null; settingsError = FoamyI18n.t(result.error); return }
-    runSave(result.command)
+    prefs.save(key, value)
   }
 
-  // repositoryFolders is a list, which FoamyPrefs's schema types don't cover
-  // (kit issue): validate with Model.parseFolderRows, then save the same way.
-  function saveFolders(rows, keepError) {
+  function saveFolders(rows) {
     var parsed = Model.parseFolderRows(rows)
-    if (parsed.error) { lastSave = null; settingsError = FoamyI18n.t(parsed.error); return }
-    if (saving) { pendingSaves = Model.queueSave(pendingSaves, "repositoryFolders", parsed.folders); return }
-    if (!keepError) settingsError = ""
-    lastSave = { key: "repositoryFolders", value: parsed.folders }
-    if (JSON.stringify(Model.repositoryFolders(root.settings)) === JSON.stringify(parsed.folders)) return
-    var command = Prefs.saveCommand(root.moduleName, "repositoryFolders", parsed.folders)
-    if (Prefs.canSaveInline(root.bar)) {
-      try {
-        if (root.bar.shell.updateEntryInline(root.moduleName, Prefs.merged(root.settings, "repositoryFolders", parsed.folders)) === true) command = []
-      } catch (error) {
-        console.warn("foamy.github: inline save failed, using omarchy bar set:", error)
-      }
-    }
-    runSave(command)
-  }
-
-  function retrySave() {
-    if (!lastSave) return
-    if (lastSave.key === "repositoryFolders") saveFolders(lastSave.value)
-    else save(lastSave.key, lastSave.value)
-  }
-
-  function runSave(command) {
-    if (!command || command.length === 0) return
-    saving = true
-    saveProcess.command = command
-    saveProcess.running = true
-  }
-
-  Process {
-    id: saveProcess
-    stderr: StdioCollector { id: saveError; waitForEnd: true }
-    onExited: function(code) {
-      root.saving = false
-      root.settingsError = code === 0 ? "" : (String(saveError.text || "").trim().slice(0, 240) || FoamyI18n.t("Couldn't save the setting."))
-      Qt.callLater(root.drainSaves)
-    }
-  }
-
-  // Run the next queued edit against the settings the finished save produced;
-  // a failure message stays visible while later edits save.
-  function drainSaves() {
-    if (saving || pendingSaves.length === 0) return
-    var next = pendingSaves[0]
-    pendingSaves = pendingSaves.slice(1)
-    if (next.key === "repositoryFolders") saveFolders(next.value, true)
-    else save(next.key, next.value, true)
-    if (!saving) Qt.callLater(root.drainSaves)
+    if (parsed.error) { settingsError = FoamyI18n.t(parsed.error); return }
+    settingsError = ""
+    prefs.save("repositoryFolders", parsed.folders)
   }
 
   // The folder chooser is a separate window: release the popup while it is open.
@@ -185,7 +143,7 @@ Panel {
       OpticalGlyph {
         width: Style.bar.iconCanvas
         height: Style.bar.iconCanvas
-        text: Service.syncing ? "" : ""
+        text: Service.syncing ? "\u{f021}" : "\u{f09b}"
         color: Service.syncing ? Commons.Color.accent : button.foreground
         fontFamily: button.fontFamily
         fontSize: button.fontSize
@@ -220,12 +178,12 @@ Panel {
     body: Component {
       GithubView {
         service: Service
-        settings: root.settings
+        settings: prefs.effectiveSettings
         opened: root.opened
         editingSettings: root.editingSettings
-        saving: root.saving
-        settingsError: root.settingsError
-        retryable: root.settingsError !== "" && root.lastSave !== null
+        saving: prefs.busy
+        settingsError: root.pageError
+        retryable: root.settingsError === "" && prefs.canRetry
         browsing: folderPicker.running
         onCloseRequestedByView: root.close()
         onSettingsErrorReported: function(message) { root.settingsError = message }
@@ -234,7 +192,7 @@ Panel {
         onSaveRequested: function(key, value) { root.save(key, value) }
         onFoldersEdited: function(rows) { root.saveFolders(rows) }
         onBrowseRequested: function(index) { root.browseFolder(index) }
-        onRetryRequested: root.retrySave()
+        onRetryRequested: prefs.retry()
         onSwitchPanelRequested: function(direction) { root.switchPanel(direction) }
         onRepositoryRequested: function(repo) { root.close(); Service.openRepository(repo) }
       }
