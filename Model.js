@@ -123,17 +123,6 @@ function displayedRepos(repos) {
   })
 }
 
-// Pending settings edits while a save command runs: one entry per key, the
-// latest value, in first-edit order.
-function queueSave(queue, key, value) {
-  var next = (queue || []).filter(function(entry) { return entry.key !== key })
-  var index = (queue || []).findIndex(function(entry) { return entry.key === key })
-  var entry = { key: key, value: value }
-  if (index >= 0) next.splice(index, 0, entry)
-  else next.push(entry)
-  return next
-}
-
 // The inline fetch error after a row's status line ("main · 3 changed · …").
 function syncErrorText(repo, tr) {
   tr = tr || translate
@@ -202,7 +191,6 @@ if (typeof module !== "undefined") {
     repositoryMeta: repositoryMeta,
     watchRetry: watchRetry,
     displayedRepos: displayedRepos,
-    queueSave: queueSave,
     syncErrorText: syncErrorText
   }
 }

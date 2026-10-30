@@ -184,7 +184,7 @@ PanelKeyCatcher {
       width: list.width
       FoamyHeader {
         width: parent.width
-        iconName: "folder"
+        iconName: "github"
         title: FoamyI18n.t("GitHub")
         meta: root.displayTitle
         settingsHasCursor: cursor.at(root.settingsStop)
@@ -551,20 +551,15 @@ PanelKeyCatcher {
       Row {
         spacing: FoamyStyle.gapTiny
         Layout.alignment: Qt.AlignVCenter
-        // Lucide arrow-up/arrow-down aren't in the kit yet (kit issue); text arrows keep the action size.
         FoamyAction {
-          iconName: ""
-          label: "↑"
-          implicitWidth: FoamyStyle.actionSize
+          iconName: "arrow-up"
           tooltipText: FoamyI18n.t("Push %1", [repoRow.repo ? String(repoRow.repo.label) : ""])
           enabled: !root.busy && !!repoRow.repo && repoRow.repo.complete === true && repoRow.repo.ahead > 0
           foreground: FoamyPalette.secondaryText
           onClicked: root.service.pushRepository(repoRow.repo)
         }
         FoamyAction {
-          iconName: ""
-          label: "↓"
-          implicitWidth: FoamyStyle.actionSize
+          iconName: "arrow-down"
           tooltipText: FoamyI18n.t("Pull %1", [repoRow.repo ? String(repoRow.repo.label) : ""])
           enabled: !root.busy && !!repoRow.repo && repoRow.repo.complete === true && repoRow.repo.behind > 0
             && repoRow.repo.dirtyCount === 0 && repoRow.repo.ahead === 0
@@ -572,7 +567,7 @@ PanelKeyCatcher {
           onClicked: root.service.pullRepository(repoRow.repo)
         }
         FoamyAction {
-          iconName: "terminal"
+          iconName: "eye"
           tooltipText: FoamyI18n.t("Open in lazygit")
           enabled: !!repoRow.repo
           foreground: FoamyPalette.secondaryText

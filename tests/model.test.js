@@ -64,11 +64,3 @@ test('clean repositories whose last fetch failed stay listed with their error', 
   assert.deepEqual(Model.displayedRepos([clean, failed, dirty]).map(r => r.path), ['/b', '/c'])
   assert.deepEqual(Model.displayedRepos(undefined), [])
 })
-
-test('edits made during a save are queued, latest value per key, in first-edit order', () => {
-  let queue = []
-  queue = Model.queueSave(queue, 'fetchIntervalSec', 300)
-  queue = Model.queueSave(queue, 'inotifyEnabled', false)
-  queue = Model.queueSave(queue, 'fetchIntervalSec', 1800)
-  assert.deepEqual(queue, [{key:'fetchIntervalSec', value:1800}, {key:'inotifyEnabled', value:false}])
-})
