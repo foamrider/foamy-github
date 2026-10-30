@@ -74,7 +74,7 @@ Panel {
     settingsError = ""
     var result = Prefs.save(root.bar, root.moduleName, Schema.fields, root.settings, key, value)
     lastSave = { key: key, value: value }
-    if (!result.ok) { settingsError = FoamyI18n.t(result.error); return }
+    if (!result.ok) { lastSave = null; settingsError = FoamyI18n.t(result.error); return }
     runSave(result.command)
   }
 
@@ -83,7 +83,7 @@ Panel {
   function saveFolders(rows) {
     settingsError = ""
     var parsed = Model.parseFolderRows(rows)
-    if (parsed.error) { settingsError = FoamyI18n.t(parsed.error); return }
+    if (parsed.error) { lastSave = null; settingsError = FoamyI18n.t(parsed.error); return }
     lastSave = { key: "repositoryFolders", value: parsed.folders }
     if (JSON.stringify(Model.repositoryFolders(root.settings)) === JSON.stringify(parsed.folders)) return
     var command = Prefs.saveCommand(root.moduleName, "repositoryFolders", parsed.folders)

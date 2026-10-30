@@ -61,7 +61,7 @@ Item {
         settings: ({ repositoryFolders: [{ path: "~/GitHub", depth: 2 }, { path: "~/Work", depth: 1 }], inotifyEnabled: true,
           refreshIntervalSec: 30, fetchIntervalSec: 900, trustRepositoryConfig: false })
         editingSettings: preview.previewState.indexOf("settings") === 0
-        settingsError: preview.previewState === "settings-error" ? "Use an absolute path or ~/ for every folder." : ""
+        settingsError: preview.previewState === "settings-error" ? "Couldn't save the setting." : ""
         retryable: preview.previewState === "settings-error"
       }
     }
