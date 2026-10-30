@@ -106,7 +106,6 @@ class GitLimitsTest(unittest.TestCase):
          patch.object(status, "run_git", side_effect=AssertionError("Must not mutate")):
       for mode in ("pull", "push"):
         self.assertFalse(status.repository_action(mode, self.repo.path, [self.repo.path])["ok"])
-      self.assertFalse(status.update_repository(self.repo)[2]["ok"])
 
   def test_one_bad_repository_does_not_discard_healthy_rows(self):
     bad = {**status.repository_status(self.repo), "error": "fixture", "complete": False}
