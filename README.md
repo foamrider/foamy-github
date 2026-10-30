@@ -80,7 +80,8 @@ misparsed.
 | `core.sshCommand` (repository-local) | — | ignored, except a plain `ssh -i key`-style command (no shell syntax, safe `-o` options) |
 | `core.askPass`, prompts | — | off: `GIT_ASKPASS=""` unless you set it, `SSH_ASKPASS_REQUIRE=never`, SSH `BatchMode` |
 | `core.gitProxy` | — | off for repositories that set one |
-| Transports (`ext::`, `fd::`, remote helpers, `remote.*.vcs`, `protocol.*`) | — | only http(s), ssh, git and file, plus helpers you allowed globally |
+| Transports (`ext::`, `fd::`, remote helpers, `remote.*.vcs`, `protocol.*`, every subsection spelling) | none | only http(s), ssh, git and file, plus helpers you allowed globally |
+| On-demand fetches of missing objects from a promisor remote (partial clone) | off (`GIT_NO_LAZY_FETCH=1`, and no transport on older Git) | — |
 | `remote.*.uploadpack` | — | `--upload-pack=git-upload-pack` |
 | `http.*` / `remote.*.proxy` (proxy, TLS, CA, cookies, extra headers, resolve) | — | reset to your global value or Git's default |
 | `core.alternateRefsCommand` | — | neutral |
@@ -92,8 +93,9 @@ after them. Your global Git config, credential helpers (for example `gh auth
 git-credential`) and SSH agent keep working. Repository-local credential
 helpers and unusual repository-local SSH commands don't apply to automatic
 fetches: such a repository shows the authentication error on its row, and you
-can fetch it in lazygit. Your global `core.hooksPath` hooks don't run for
-automatic commands. Files tracked with Git LFS that you touched can count as
+can fetch it in lazygit. A partial clone whose status needs a missing object
+shows an error on its row instead of downloading it. Your global
+`core.hooksPath` hooks don't run for automatic commands. Files tracked with Git LFS that you touched can count as
 changed until Git refreshes its index. **Push and pull** are explicit actions
 on one repository and run with its normal Git config and hooks, exactly like
 `git push` in a terminal.

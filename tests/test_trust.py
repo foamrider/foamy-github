@@ -1,4 +1,5 @@
 """Repository-local Git config must not run commands during automatic work."""
+import dataclasses
 import os
 from pathlib import Path
 import shutil
@@ -108,6 +109,26 @@ class TrustModelTest(unittest.TestCase):
     self.assertTrue(row["complete"], row["error"])
     watcher.repository_directories(self.repo)
     self.assertNotRun()
+
+  def test_status_never_fetches_missing_objects_from_a_promisor_remote(self):
+    # A promisor remote makes Git fetch a missing object on demand during a
+    # plain status, through whatever transport the repository allows.
+    self.git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
+    self.git("config", "remote.origin.promisor", "true")
+    self.git("config", "protocol.ext.allow", "always")
+    tree = self.git("rev-parse", "HEAD^{tree}").strip()
+    (self.path / ".git/objects" / tree[:2] / tree[2:]).unlink()
+    real = status.repository_policy
+    def older_git(repo, trusted=False):        # Git < 2.44 ignores GIT_NO_LAZY_FETCH
+      policy = real(repo, trusted)
+      return dataclasses.replace(policy, read_env=tuple(item for item in policy.read_env if item[0] != "GIT_NO_LAZY_FETCH"))
+    def environment_only(repo, trusted=False):  # GIT_NO_LAZY_FETCH alone, transports as the repository says
+      return dataclasses.replace(real(repo, trusted), read_env=status.config_environment(status.READ_OVERRIDES) + status.READ_ENV)
+    for name, policy in (("full", real), ("older Git", older_git), ("GIT_NO_LAZY_FETCH only", environment_only)):
+      with self.subTest(policy=name), patch.object(status, "repository_policy", policy):
+        status.repository_status(self.repo)
+        watcher.repository_directories(self.repo)
+        self.assertNotRun()
 
   def test_repository_clean_and_process_filters_do_not_run_on_status(self):
     (self.path / ".gitattributes").write_text("*.txt filter=evil\n")
@@ -262,6 +283,24 @@ class TrustModelTest(unittest.TestCase):
         for key in config:
           self.git("config", "--unset-all", key)
     self.assertFalse(self.marker.exists(), self.marker.read_text() if self.marker.exists() else "")
+
+  def test_fetch_ignores_ext_allowed_under_another_subsection_case(self):
+    # Subsections are case sensitive: protocol.Ext.allow is not the
+    # protocol.ext.allow Git reads, and must not hide it.
+    self.git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
+    self.git("config", "protocol.Ext.allow", "never")
+    self.git("config", "protocol.ext.allow", "always")
+    self.assertIn("protocol.Ext.allow=never\nprotocol.ext.allow=always", self.git("config", "--local", "--list"))
+    self.fetched()
+    self.assertNotRun()
+
+  def test_http_settings_differing_only_in_url_case_are_all_reset(self):
+    for key in ("http.https://example.com/A/.proxy", "http.https://example.com/a/.proxy"):
+      self.git("config", key, "http://evil:3128")
+    env = dict(status.repository_policy(self.repo).fetch_env)
+    config = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+    self.assertEqual(config.get("http.https://example.com/A/.proxy"), "")
+    self.assertEqual(config.get("http.https://example.com/a/.proxy"), "")
 
   def test_fetch_ignores_alternate_refs_command(self):
     remote = self.file_remote()
@@ -419,7 +458,7 @@ class NegativeControlTest(unittest.TestCase):
     names = [name for name in unittest.TestLoader().getTestCaseNames(TrustModelTest)
              if name.startswith(("test_fsmonitor", "test_repository_clean", "test_filter_name", "test_global_filter",
                                  "test_lfs_extension", "test_included", "test_submodule", "test_fetch_disables",
-                                 "test_fetch_runs", "test_fetch_ignores", "test_glob"))]
+                                 "test_fetch_runs", "test_fetch_ignores", "test_glob", "test_status_never"))]
     with patch.object(status, "repository_policy", lambda repo, trusted=False: status.TRUSTED_POLICY):
       for name in names:
         with self.subTest(vector=name):

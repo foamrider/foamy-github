@@ -63,6 +63,12 @@ class InspectionError(OSError):
 #                 programs) gets empty clean/smudge/process and
 #                 required=false; status doesn't recurse into submodule
 #                 worktrees; GIT_PAGER=cat.
+#   reads         no transport at all: a promisor remote (partial clone)
+#                 makes status or rev-list fetch a missing object on
+#                 demand, outside every fetch rule below, so
+#                 GIT_NO_LAZY_FETCH=1 (Git 2.44+) and, for older Git,
+#                 protocol.allow=never plus never for every protocol.*.allow
+#                 Git would read (the base protocols and any configured one).
 #   fetch         repository-local credential helpers are dropped (the list
 #                 is reset, then the user's global/system helpers are added
 #                 back), core.sshCommand comes from the environment (the
@@ -102,6 +108,9 @@ FETCH_OVERRIDES = (
   ("credential.interactive", "false"),
 )
 BASE_PROTOCOLS = ("http", "https", "ssh", "git", "file")
+# Inspection never needs a transport (see "reads" above).
+READ_TRANSPORT = (("protocol.allow", "never"),) + tuple((f"protocol.{name}.allow", "never") for name in BASE_PROTOCOLS)
+READ_ENV = (("GIT_NO_LAZY_FETCH", "1"),)
 # remote.<name>.uploadpack is first-wins (a later config value can't replace
 # a repository's), so the command line sets it.
 FETCH_ARGUMENTS = ("--no-auto-maintenance", "--no-recurse-submodules", "--upload-pack=git-upload-pack")
@@ -165,7 +174,8 @@ class GitPolicy:
 
 
 TRUSTED_POLICY = GitPolicy()
-DEFAULT_POLICY = GitPolicy(read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES), status=("--ignore-submodules=dirty",),
+DEFAULT_POLICY = GitPolicy(read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES + READ_TRANSPORT) + READ_ENV,
+                           status=("--ignore-submodules=dirty",),
                            fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
 
 
@@ -193,6 +203,13 @@ def split_key(key: str) -> tuple[str, str, str]:
   return section.lower(), subsection, variable.lower()
 
 
+def canonical_key(key: str) -> str:
+  """The key as Git matches it: subsection names are case sensitive, so
+  protocol.Ext.allow and protocol.ext.allow are two different settings."""
+  section, subsection, variable = split_key(key)
+  return f"{section}.{subsection}.{variable}" if subsection else f"{section}.{variable}"
+
+
 def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   if trusted:
     return TRUSTED_POLICY
@@ -200,20 +217,30 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   trusted_values: dict[str, str] = {}
   for scope, key, value in entries:
     if scope in TRUSTED_SCOPES:
-      trusted_values[key.lower()] = value
+      trusted_values[canonical_key(key)] = value
 
   # Every defined filter driver, from any scope, is switched off.
-  read: list[tuple[str, str]] = list(READ_OVERRIDES)
+  common: list[tuple[str, str]] = list(READ_OVERRIDES)
   filters: list[str] = []
   for _scope, key, _value in entries:
     section, name, variable = split_key(key)
     if section == "filter" and name and name not in filters and variable in ("clean", "smudge", "process", "required"):
       filters.append(name)
   for name in filters:
-    read += [(f"filter.{name}.clean", ""), (f"filter.{name}.smudge", ""), (f"filter.{name}.process", ""),
-             (f"filter.{name}.required", "false")]
+    common += [(f"filter.{name}.clean", ""), (f"filter.{name}.smudge", ""), (f"filter.{name}.process", ""),
+               (f"filter.{name}.required", "false")]
 
-  fetch: list[tuple[str, str]] = list(read) + list(FETCH_OVERRIDES)
+  # Reads: every transport closed, including any protocol.<name>.allow from
+  # any scope (each subsection spelling separately).
+  read: list[tuple[str, str]] = common + list(READ_TRANSPORT)
+  closed = {canonical_key(key) for key, _ in READ_TRANSPORT}
+  for _scope, key, _value in entries:
+    section, name, variable = split_key(key)
+    if section == "protocol" and name and variable == "allow" and canonical_key(key) not in closed:
+      closed.add(canonical_key(key))
+      read.append((key, "never"))
+
+  fetch: list[tuple[str, str]] = common + list(FETCH_OVERRIDES)
   # Credential helpers: reset, then only the user's own (global/system/command).
   fetch.append(("credential.helper", ""))
   for scope, key, value in entries:
@@ -224,17 +251,17 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   done: set[str] = set()
   for key, value in local:
     section, name, variable = split_key(key)
-    lower = key.lower()
-    if lower in done:
+    canonical = canonical_key(key)
+    if canonical in done:
       continue
     if (section == "http" and variable in HTTP_SENSITIVE) or (section == "remote" and name and variable == "proxy"):
-      done.add(lower)
-      fetch.append((key, trusted_values.get(lower, HTTP_SENSITIVE.get(variable, ""))))
-    elif section == "protocol" and name and variable == "allow" and name.lower() not in BASE_PROTOCOLS:
+      done.add(canonical)
+      fetch.append((key, trusted_values.get(canonical, HTTP_SENSITIVE.get(variable, ""))))
+    elif section == "protocol" and name and variable == "allow" and name not in BASE_PROTOCOLS:
       # protocol.<name>.allow beats protocol.allow: close remote helpers the
       # repository opens (ext::, fd::, remote.*.vcs) unless the user did.
-      done.add(lower)
-      fetch.append((key, trusted_values.get(lower, "never")))
+      done.add(canonical)
+      fetch.append((key, trusted_values.get(canonical, "never")))
 
   env = {"SSH_ASKPASS_REQUIRE": "never", "GIT_PROTOCOL_FROM_USER": "0", "GIT_PAGER": "cat"}
   if "GIT_ASKPASS" not in os.environ:
@@ -256,7 +283,7 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
       env["GIT_SSH_COMMAND"] = shlex.quote(os.environ["GIT_SSH"])
     else:
       env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
-  return GitPolicy(read=READ_CONFIG, read_env=config_environment(read), status=("--ignore-submodules=dirty",),
+  return GitPolicy(read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
                    fetch=READ_CONFIG, fetch_env=config_environment(fetch) + tuple(sorted(env.items())),
                    fetch_args=FETCH_ARGUMENTS)
 
