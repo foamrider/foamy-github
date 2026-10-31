@@ -95,7 +95,12 @@ class Inotify:
 
 def repository_directories(repo: status.Repository, trusted: "bool | status.Trust" = False) -> set[Path]:
   root = Path(repo.path)
-  pin = status.trusted_pin(repo, trusted)
+  try:
+    pin = status.trusted_pin(repo, trusted)
+  except (OSError, ValueError):
+    # Couldn't pin this repository (moved, deleted, broken .git pointer):
+    # plan its watches hardened, like an untrusted one, and keep watching the rest.
+    pin = None
   try:
     return _repository_directories(repo, status.replace(status.TRUSTED_POLICY, pin=pin) if pin
                                    else status.repository_policy(repo, False))

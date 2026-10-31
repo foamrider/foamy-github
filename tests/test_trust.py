@@ -1205,3 +1205,50 @@ class ProbeCacheTest(unittest.TestCase):
         self.assertEqual(len(results), 6)
         self.assertTrue(all(results), f"{name}: a concurrent caller saw an empty probe result")
         self.assertEqual(len({tuple(r) for r in results}), 1)
+
+
+class ContainedFailureTest(unittest.TestCase):
+  """Codex: a repository that can't be pinned (deleted, renamed, broken
+  .git pointer) must not fail the whole status scan when trust is in use."""
+
+  def setUp(self):
+    temporary = tempfile.TemporaryDirectory()
+    self.addCleanup(temporary.cleanup)
+    self.root = Path(temporary.name)
+    patcher = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.root / "cache"), "HOME": str(self.root),
+                                      "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+    patcher.start()
+    self.addCleanup(patcher.stop)
+
+  def make(self, name):
+    path = self.root / "repos" / name
+    path.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
+    return status.Repository(str(path), name, "repos", name)
+
+  def test_one_broken_repository_with_trust_in_use(self):
+    good = self.make("good")
+    broken = self.make("broken")
+    missing = status.Repository(str(self.root / "repos/missing"), "missing", "repos", "missing")
+    shutil.rmtree(Path(broken.path) / ".git")
+    (Path(broken.path) / ".git").write_text("gitdir: /nonexistent/elsewhere\n")    # broken pointer
+    trust = status.parse_trusted(json.dumps([{"path": "/somewhere/else", "identity": "1:1:1|2:2:2"}]))
+    with patch.object(status, "collect_repositories", return_value=[missing, broken, good]):
+      payload = status.status_payload([str(self.root / "repos")], trust)
+    rows = {row["name"]: row for row in payload["repos"]}
+    self.assertTrue(rows["good"]["complete"], rows["good"])
+    for name in ("missing", "broken"):
+      self.assertFalse(rows[name]["complete"])
+      self.assertFalse(rows[name]["trusted"])
+      self.assertTrue(rows[name]["error"])
+
+  def test_watch_plan_survives_an_unpinnable_repository(self):
+    broken = self.make("broken")
+    shutil.rmtree(Path(broken.path) / ".git")
+    (Path(broken.path) / ".git").write_text("gitdir: /nonexistent/elsewhere\n")
+    trust = status.parse_trusted(json.dumps([{"path": "/somewhere/else", "identity": "1:1:1|2:2:2"}]))
+    with patch.object(status, "pin_repository", side_effect=FileNotFoundError("gone")):
+      try:
+        watcher.repository_directories(broken, trust)
+      except status.InspectionError:
+        pass                                  # the hardened plan may still report the broken repository

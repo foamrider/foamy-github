@@ -996,8 +996,24 @@ def uses_lfs(repo: "Repository", policy: "GitPolicy") -> bool:
   return any(LFS_ATTRIBUTE.search(read_bounded(candidate)) for candidate in candidates)
 
 
+def unavailable_row(repo: Repository, message: str) -> dict[str, Any]:
+  return {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0, "dirty": None, "dirtyCount": 0,
+          "affected": True, "complete": False, "error": message[:240], "lfs": False, "trusted": False, "identity": ""}
+
+
 def repository_status(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
+  """One repository's row; any failure (a repository deleted, renamed or with
+  a broken .git pointer since discovery, while pinning for a trust check)
+  becomes this row's error and never fails the whole scan."""
+  try:
+    return _pinned_status(repo, trusted)
+  except Exception as error:   # noqa: BLE001 - contain one repository's failure
+    return unavailable_row(repo, str(error) or type(error).__name__)
+
+
+def _pinned_status(repo: Repository, trusted: "bool | Trust") -> dict[str, Any]:
   # Trusted: checked against, and run only inside, the pinned directories.
+  # A pinning failure raises here, before any trusted command runs.
   pin = trusted_pin(repo, trusted)
   try:
     row = _repository_status(repo, pin)
