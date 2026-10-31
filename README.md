@@ -152,6 +152,8 @@ the plugin in English.
 
 ## Development
 
+`kit/` holds shared components copied from [foamy-kit](https://github.com/foamrider/foamy-kit); edit them there, not here.
+
 ```sh
 node --test tests/model.test.js tests/preferences.test.js && node tests/i18n.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
