@@ -434,6 +434,7 @@ PanelKeyCatcher {
       }
       FoamyDropdown {
         width: parent.width
+        compact: true
         label: Prefs.value(Schema.fields, root.settings, "inotifyEnabled") ? FoamyI18n.t("Fallback refresh every") : FoamyI18n.t("Refresh every")
         value: String(Prefs.value(Schema.fields, root.settings, "refreshIntervalSec"))
         options: [
@@ -447,6 +448,7 @@ PanelKeyCatcher {
       }
       FoamyDropdown {
         width: parent.width
+        compact: true
         label: FoamyI18n.t("Fetch remotes every")
         value: String(Prefs.value(Schema.fields, root.settings, "fetchIntervalSec"))
         options: [
