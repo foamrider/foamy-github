@@ -112,8 +112,9 @@ unavailable**. This costs about 1.5 ms per repository check (10.4 vs 8.9 ms,
 and your credential helpers. Instead, Git fetches the repository in place,
 with a read-only minimal config mounted over the repository's own (in a
 private mount namespace, see below). That config holds only the snapshot's
-origin URL (left out when it comes from your own config), fetch refspecs,
-tag option, repository format and partial-clone settings.
+remote URLs (none when the origin comes from your own config), the origin's
+fetch refspecs and tag option, repository format and partial-clone settings.
+One function decides which keys survive, for this and the status overlay.
 
 Git reads your system and global config natively, against the repository's
 real path. So `includeIf` (gitdir, onbranch, hasconfig), bare booleans, empty
@@ -153,9 +154,13 @@ automatic fetches of untrusted repositories are skipped with a message.
 
 With bubblewrap, untrusted status checks also run in the pinned, read-only
 namespace with a frozen minimal config mounted over the repository's own. It
-holds only the repository format, worktree and ignore settings, and the
-branch/remote mapping for upstream counts; there are no filter, fsmonitor,
-hooks or other driver keys. A mid-check edit to the repository's config is
+holds only the repository format, worktree and ignore settings, the
+branch/remote mapping for upstream counts, and the remote URLs; there are no
+filter, fsmonitor, hooks or other driver keys. The URLs are only context, so
+your own `includeIf "hasconfig:remote.*.url:…"` matches as in a terminal (an
+included `core.excludesFile` still applies). Status checks never contact a
+remote, trusted or not: no transport is allowed and a partial clone's missing
+objects are never fetched on demand (`GIT_NO_LAZY_FETCH`). A mid-check edit to the repository's config is
 therefore invisible to Git, and Landlock stays on as a second layer. Values
 are kept as Git read them: a bare boolean (`filemode` with no value, which is
 true) stays a bare key, not an empty value (false).

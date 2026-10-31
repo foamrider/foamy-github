@@ -737,7 +737,7 @@ class TrustModelTest(unittest.TestCase):
     config.write_text(text.replace("filemode = true", "filemode"))
     entries = status.config_entries(self.repo)
     self.assertIn(("local", "core.filemode", None), entries)
-    self.assertIn("\tfilemode\n", status.config_text(status.status_config(entries)))
+    self.assertIn("\tfilemode\n", status.config_text(status.overlay_config(entries)))
     (self.path / "file.txt").chmod(0o755)
     row = status.repository_status(self.repo)
     self.assertTrue(row["complete"], row["error"])
@@ -974,6 +974,53 @@ class TrustModelTest(unittest.TestCase):
                              env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
     self.assertNotEqual(missing.returncode, 0, "the new blob was downloaded: the clone's filter was dropped")
 
+  def test_hasconfig_include_applies_to_untrusted_status(self):
+    # Codex P2: the frozen status overlay dropped every remote.*.url, so the
+    # user's includeIf "hasconfig:remote.*.url:..." stopped matching: an
+    # included core.excludesFile no longer applied and ignored files showed.
+    ignores = self.root / "work.ignore"
+    ignores.write_text("build/\n")
+    (self.root / "work.inc").write_text(f"[core]\n\texcludesFile = {ignores}\n")
+    self.global_config(f'[includeIf "hasconfig:remote.*.url:git://work.example.invalid/**"]\n\tpath = {self.root}/work.inc\n')
+    self.git("remote", "add", "upstream", "git://work.example.invalid/team/repo.git")
+    (self.path / "build").mkdir()
+    (self.path / "build/out.txt").write_text("generated\n")
+    self.assertEqual(self.git("status", "--porcelain").strip(), "", "ordinary Git ignores build/")
+    row = status.repository_status(self.repo)
+    self.assertTrue(row["complete"], row["error"])
+    self.assertEqual(row["dirtyCount"], 0, "the hasconfig include did not apply")
+    self.assertNotIn(self.path / "build", watcher.repository_directories(self.repo))
+
+  def test_status_of_a_partial_clone_never_lazy_fetches(self):
+    # The status overlay now carries remote URLs: inspection must still never
+    # contact the promisor remote (GIT_NO_LAZY_FETCH, no transport), even
+    # when status needs a missing blob (rename detection against HEAD).
+    upstream = self.root / "lazy-upstream"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+    self.git("config", "uploadpack.allowFilter", "true", cwd=upstream)
+    (upstream / "old.txt").write_text("".join(f"{n}\n" for n in range(200)))
+    self.git("add", "old.txt", cwd=upstream)
+    self.git("commit", "-qm", "one", cwd=upstream)
+    clone = self.root / "lazy-clone"
+    subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", self.served("lazy-upstream"), str(clone)],
+                   check=True, capture_output=True)
+    offline = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    git = lambda *args: subprocess.run(["git", "-C", str(clone), *args], env=offline, capture_output=True, text=True)
+    blob = git("rev-parse", "HEAD:old.txt").stdout.strip()
+    git("read-tree", "HEAD")
+    (clone / "new.txt").write_text("".join(f"{n}\n" for n in range(199)))
+    git("add", "new.txt")
+    git("update-index", "--force-remove", "old.txt")
+    self.assertNotEqual(git("cat-file", "-e", blob).returncode, 0, "the blob should be missing to start with")
+    repo = status.Repository(str(clone), "lazy", "root", "lazy")
+    trust = status.parse_trusted(json.dumps([{"path": repo.path, "identity": status.repository_identity(repo)}]))
+    for trusted in (False, trust):
+      with self.subTest(trusted=bool(trusted)):
+        row = status.repository_status(repo, trusted)
+        self.assertIs(row["trusted"], bool(trusted) and bool(status.bwrap_command()))
+        watcher.repository_directories(repo, trusted)
+        self.assertNotEqual(git("cat-file", "-e", blob).returncode, 0, "status fetched a missing blob from the promisor")
+
   def test_shallow_fetch_never_follows_planted_symlinks(self):
     # Codex security: a shallow update must not write through a planted
     # symlink. Git itself now writes the shallow file (O_EXCL lock file).
@@ -1203,8 +1250,11 @@ class NegativeControlTest(unittest.TestCase):
              if name.startswith(("test_fsmonitor", "test_repository_clean", "test_filter_name", "test_global_filter",
                                  "test_lfs_extension", "test_included", "test_fetch_disables",
                                  "test_fetch_runs", "test_fetch_ignores", "test_glob", "test_status_never"))]
-    with patch.object(status, "repository_policy", lambda repo, *rest: status.TRUSTED_POLICY), \
-         patch.object(status, "untrusted_status_policy", lambda repo: (status.TRUSTED_POLICY, lambda: None)):
+    # The repository's own config, with nothing on top (trusted reads also
+    # close transports and lazy fetches, which would hide the promisor vector).
+    raw = dataclasses.replace(status.TRUSTED_POLICY, read_env=())
+    with patch.object(status, "repository_policy", lambda repo, *rest: raw), \
+         patch.object(status, "untrusted_status_policy", lambda repo: (raw, lambda: None)):
       for name in names:
         with self.subTest(vector=name):
           result = unittest.TestResult()

@@ -142,7 +142,10 @@ class GitPolicy:
 # Trusted repositories run their own config, but not their submodules': trust
 # is per repository, and a submodule worktree is a separate repository (whose
 # config would otherwise run during status or an on-demand submodule fetch).
-TRUSTED_POLICY = GitPolicy(status=("--ignore-submodules=dirty",), fetch_args=("--no-recurse-submodules",))
+# Their inspection doesn't contact a remote either: a partial clone's missing
+# object is never fetched on demand during status (the same "reads" rule).
+TRUSTED_POLICY = GitPolicy(read_env=config_environment(READ_TRANSPORT) + READ_ENV,
+                           status=("--ignore-submodules=dirty",), fetch_args=("--no-recurse-submodules",))
 DEFAULT_POLICY = GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES + READ_TRANSPORT) + READ_ENV,
                            status=("--ignore-submodules=dirty",),
                            fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
@@ -1292,12 +1295,59 @@ STATUS_KEYS = re.compile(r"^(core\.(repositoryformatversion|bare|filemode|ignore
                          r"status\.showuntrackedfiles)$")
 
 
-def status_config(entries: Sequence[tuple[str, str, str]]) -> list[tuple[str, str]]:
-  minimal = []
-  for scope, key, value in entries:
-    if scope in LOCAL_SCOPES and STATUS_KEYS.match(canonical_key(key)) and canonical_key(key) != "extensions.worktreeconfig" \
-        and (value is None or "\n" not in value):
-      minimal.append((key, value))
+REMOTE_URL = re.compile(r"^remote\..+\.url$")
+VALUE_SAFE = re.compile(r"[A-Za-z0-9:+=._/-]+")
+
+
+def is_true(value: "str | None") -> bool:
+  return value is None or value.lower() in ("true", "yes", "on", "1")
+
+
+def overlay_config(entries: Sequence[tuple[str, str, "str | None"]], fetch: bool = False) -> list[tuple[str, "str | None"]]:
+  """The one place deciding which of the repository's own config entries
+  survive into a frozen overlay (status: config_overlay via
+  untrusted_status_policy; fetch: overlay_fetch). Values are kept as Git read
+  them (None is a bare key, Git's true).
+
+  Both keep every remote.<name>.url as read, in order: only context, so the
+  user's includeIf "hasconfig:remote.*.url:..." matches exactly as in a
+  terminal. Inspection never contacts a remote (no transport and no lazy
+  fetch, see "reads"); a fetch only ever contacts origin."""
+  local = [(key, value) for scope, key, value in entries if scope in LOCAL_SCOPES]
+  urls = [(key, value) for key, value in local if REMOTE_URL.match(canonical_key(key)) and value is not None]
+  if not fetch:
+    # Status: repository format, worktree/stat behaviour, ignore files and
+    # the branch/remote mapping for upstream counts. Nothing that runs.
+    return [(key, value) for key, value in local
+            if (key, value) in urls or (STATUS_KEYS.match(canonical_key(key)) and canonical_key(key) != "extensions.worktreeconfig"
+                                        and (value is None or "\n" not in value))]
+  # Fetch: format and extensions, the origin's refspecs and tag option,
+  # partial-clone settings. Last value wins for single-valued keys.
+  values: dict[str, list[str]] = {}
+  for key, value in local:
+    values.setdefault(canonical_key(key), []).append("true" if value is None else value)
+  last = lambda key, default="": (values.get(key) or [default])[-1]
+  minimal: list[tuple[str, "str | None"]] = []
+  extensions = [(key, found[-1]) for key, found in values.items()
+                if key.startswith("extensions.") and key != "extensions.worktreeconfig" and VALUE_SAFE.fullmatch(found[-1])]
+  minimal.append(("core.repositoryformatversion", "1" if extensions or last("core.repositoryformatversion", "0") == "1" else "0"))
+  minimal.append(("core.bare", "true" if is_true(last("core.bare", "false")) else "false"))
+  shared = last("core.sharedrepository")
+  if shared and VALUE_SAFE.fullmatch(shared):
+    minimal.append(("core.sharedRepository", shared))
+  minimal += extensions
+  minimal += urls
+  refspecs = [spec for spec in values.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
+    or ["+refs/heads/*:refs/remotes/origin/*"]
+  minimal += [("remote.origin.fetch", spec) for spec in refspecs]
+  if last("remote.origin.tagopt") in ("--no-tags", "--tags"):
+    minimal.append(("remote.origin.tagopt", last("remote.origin.tagopt")))
+  # A partial clone: Git 2.43 records only remote.origin.promisor and
+  # partialclonefilter; older clones also extensions.partialClone.
+  filters = [spec for spec in values.get("remote.origin.partialclonefilter", []) if VALUE_SAFE.fullmatch(spec)]
+  if is_true(last("remote.origin.promisor", "false")) or filters or last("extensions.partialclone") == "origin":
+    minimal.append(("remote.origin.promisor", "true"))
+    minimal += [("remote.origin.partialclonefilter", spec) for spec in filters[-1:]]
   return minimal
 
 
@@ -1316,7 +1366,7 @@ def untrusted_status_policy(repo: Repository) -> tuple[GitPolicy, Callable[[], N
     return repository_policy(repo, False), lambda: None
   try:
     policy = repository_policy(repo, False, pin)
-    overlay, files = config_overlay(pin, status_config(policy.snapshot))
+    overlay, files = config_overlay(pin, overlay_config(policy.snapshot))
   except BaseException:
     pin.close()
     raise
@@ -1335,51 +1385,21 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
 
   Git runs in the pinned repository's mount namespace (see Pin) with a
   read-only minimal config bound over <commondir>/config and, for linked
-  worktrees, config.worktree: only the snapshot's origin url, refspecs, tag
-  option, repository format/extensions and partial-clone keys. Git reads the
+  worktrees, config.worktree (overlay_config): the snapshot's remote URLs,
+  origin refspecs and tag option, repository format/extensions and
+  partial-clone keys. Git reads the
   user's system and global config natively and with its real Git directory
   path, so includeIf gitdir/onbranch/hasconfig, bare booleans, empty resets
   and every precedence rule are Git's own. Objects, refs and the shallow
   file are written by Git itself into the pinned repository. Hooks are off
   (core.hooksPath=/dev/null at command scope)."""
   entries = list(policy.snapshot)
-  local: dict[str, list[str]] = {}
-  for scope, key, value in entries:
-    if scope in LOCAL_SCOPES:
-      # A bare key is Git's boolean true; it carries no URL, refspec or name.
-      local.setdefault(canonical_key(key), []).append("true" if value is None else value)
   # The origin URL may come from the user's own config (no local entry):
   # then the overlay leaves it out and Git resolves it natively.
-  urls = local.get("remote.origin.url", [])
-  if not urls and not any(canonical_key(key) == "remote.origin.url" for scope, key, _ in entries if scope in TRUSTED_SCOPES):
+  if not any(canonical_key(key) == "remote.origin.url" and (scope in TRUSTED_SCOPES or value is not None)
+             for scope, key, value in entries if scope in LOCAL_SCOPES + TRUSTED_SCOPES):
     return None
-  value_safe = re.compile(r"[A-Za-z0-9:+=._/-]+")
-  minimal: list[tuple[str, str]] = []
-  extensions = [(key, values[-1]) for key, values in local.items()
-                if key.startswith("extensions.") and key != "extensions.worktreeconfig" and value_safe.fullmatch(values[-1])]
-  version = (local.get("core.repositoryformatversion") or ["0"])[-1]
-  minimal.append(("core.repositoryformatversion", "1" if extensions or version == "1" else "0"))
-  bare = (local.get("core.bare") or ["false"])[-1].lower()
-  minimal.append(("core.bare", "true" if bare in ("true", "yes", "on", "1") else "false"))
-  shared = (local.get("core.sharedrepository") or [""])[-1]
-  if shared and value_safe.fullmatch(shared):
-    minimal.append(("core.sharedRepository", shared))
-  minimal += extensions
-  refspecs = [spec for spec in local.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
-    or ["+refs/heads/*:refs/remotes/origin/*"]
-  if urls:
-    minimal.append(("remote.origin.url", urls[0]))
-  minimal += [("remote.origin.fetch", spec) for spec in refspecs]
-  tagopt = (local.get("remote.origin.tagopt") or [""])[-1]
-  if tagopt in ("--no-tags", "--tags"):
-    minimal.append(("remote.origin.tagopt", tagopt))
-  # A partial clone: Git 2.43 records only remote.origin.promisor and
-  # partialclonefilter; older clones also extensions.partialClone.
-  filters = [spec for spec in local.get("remote.origin.partialclonefilter", []) if value_safe.fullmatch(spec)]
-  promisor = (local.get("remote.origin.promisor") or ["false"])[-1].lower() in ("true", "yes", "on", "1")
-  if promisor or filters or (local.get("extensions.partialclone") or [""])[-1] == "origin":
-    minimal.append(("remote.origin.promisor", "true"))
-    minimal += [("remote.origin.partialclonefilter", spec) for spec in filters[-1:]]
+  minimal = overlay_config(entries, fetch=True)
 
   pin = policy.pin
   if pin is None:
