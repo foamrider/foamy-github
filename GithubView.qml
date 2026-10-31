@@ -221,6 +221,8 @@ PanelKeyCatcher {
     // Rows are virtualised: only visible repositories are instantiated.
     model: root.editingSettings ? [] : root.repos
     cacheBuffer: 0
+    // A wheel notch scrolls about three rows, however the mouse splits it.
+    FoamyWheelScroll { id: wheel; target: list }
     ScrollBar.vertical: ScrollBar {
       visible: list.interactive
       width: FoamyStyle.gapSmall
@@ -548,7 +550,7 @@ PanelKeyCatcher {
     readonly property bool noteWanted: lfs && !trusted && !unavailable && !!repo && root.lfsNotePath === repo.path
     onNoteWantedChanged: {
       lfsNote.expanded = noteWanted
-      if (noteWanted) Qt.callLater(function() { list.positionViewAtIndex(repoRow.rowIndex, ListView.Contain) })
+      if (noteWanted) wheel.ensureVisible(lfsPanel)
     }
     Component.onCompleted: lfsNote.expanded = noteWanted
     hasCursor: cursor.at(rowStop)
