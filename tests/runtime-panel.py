@@ -43,7 +43,8 @@ ShellRoot {
     for (var i = 0; i < 3; i++) {
       var bar = barComponent.createObject(shell, { moduleName: "foamy.github" })
       panels.push(component.createObject(host, { bar: bar, x: 1500, y: 0, width: 40, height: 34,
-        settings: { repositoryFolders: [], inotifyEnabled: true, refreshIntervalSec: 30, fetchIntervalSec: 900 } }))
+        settings: { repositoryFolders: [], inotifyEnabled: @INOTIFY@, refreshIntervalSec: 30, fetchIntervalSec: 900,
+                    trustRepositoryConfig: true } }))
     }
     step.start()
   }
@@ -63,6 +64,11 @@ ShellRoot {
         check(view !== null && view.service === Plugin.Service, "body built on open")
         check(panels[0].popup.bodyItem === null, "other monitors stay lazy")
         check(Plugin.Service.lastChecked > 0 || Plugin.Service.refreshing, "status arrived from the watcher")
+        // Legacy global trust migrates once after the first complete scan, in
+        // both live-monitoring and timed-polling mode.
+        var leaderSaves = panels[0].bar.saved
+        check(leaderSaves.length > 0 && leaderSaves[leaderSaves.length - 1].settings.trustRepositoryConfig === false,
+              "legacy trust migrated (" + (Plugin.Service.inotifyEnabled ? "live monitoring" : "polling") + ")")
         panels[1].openSettings()
       } else if (n === 2) {
         check(panels[1].editingSettings, "settings open")
@@ -80,10 +86,11 @@ ShellRoot {
         check(view1.settingsError !== "", "invalid folders are reported, not saved")
         panels[1].saveFolders([{ path: "~/GitHub", depth: 3 }])
         check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.repositoryFolders) === JSON.stringify([{ path: "~/GitHub", depth: 3 }]), "folders saved as an array")
-        panels[1].setTrusted("/home/me/GitHub/lfs-repo", true)
-        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === JSON.stringify(["/home/me/GitHub/lfs-repo"]), "trusting a repository saves its path")
-        check(Plugin.Service.helperArguments().indexOf("--trusted-json") >= 0, "helpers get the trusted list")
-        panels[1].setTrusted("/home/me/GitHub/lfs-repo", false)
+        var lfsRepo = { path: "/home/me/GitHub/lfs-repo", identity: "1:2:3" }
+        panels[1].setTrusted(lfsRepo, true)
+        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === JSON.stringify([lfsRepo]), "trusting saves path and identity")
+        check(Plugin.Service.helperArguments().indexOf(Plugin.Service.legacyTrustAll ? "--trust-repository-config" : "--trusted-json") >= 0, "helpers get the trust arguments")
+        panels[1].setTrusted(lfsRepo, false)
         check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === "[]", "untrusting removes it")
         check(view1.lfsRepositories.length === 0, "no Git LFS section without LFS repositories")
         panels[1].close()
@@ -117,7 +124,8 @@ ShellRoot {
 
 status = 0
 for host in (sys.argv[1:] or ["4.0", "4.5"]):
-    run = harness.Run(host, SHELL, plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-").run(timeout=60)
+  for mode in ("true", "false"):        # inotifyEnabled: live monitoring, then timed polling
+    run = harness.Run(host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-").run(timeout=60)
     checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
     # Any QML warning from the plugin's own files fails the run too.
     warnings = [line for line in run.log.splitlines() if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line]
@@ -125,10 +133,10 @@ for host in (sys.argv[1:] or ["4.0", "4.5"]):
         run.ok = False
         print("\n".join(warnings))
     if run.ok:
-        print(f"{host}: runtime passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
+        print(f"{host} ({'live monitoring' if mode == 'true' else 'polling'}): runtime passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
         run.cleanup()
     else:
         status = 1
-        print(f"{host}: runtime FAILED; log at {run.base}/qs.log")
+        print(f"{host} ({'live monitoring' if mode == 'true' else 'polling'}): runtime FAILED; log at {run.base}/qs.log")
         print("\n".join(run.failures() or run.log.splitlines()[-30:]))
 sys.exit(status)
