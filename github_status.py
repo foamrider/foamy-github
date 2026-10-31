@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import ctypes
 import fcntl
 import json
 import os
@@ -13,6 +14,7 @@ import selectors
 import shlex
 import stat
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -117,6 +119,8 @@ READ_ENV = (("GIT_NO_LAZY_FETCH", "1"),)
 FETCH_ARGUMENTS = ("--no-auto-maintenance", "--no-recurse-submodules", "--upload-pack=git-upload-pack")
 # http.<var> / http.<url>.<var> and remote.<name>.proxy settings a repository
 # could use to read or redirect authenticated traffic; Git's defaults.
+# Multi-valued: every value is used, an empty value resets the list.
+HTTP_MULTI_VALUED = {"extraheader", "curloptresolve"}
 HTTP_SENSITIVE = {
   "proxy": "", "proxyauthmethod": "anyauth", "proxysslcert": "", "proxysslkey": "", "proxysslcainfo": "",
   "sslverify": "true", "sslcainfo": "", "sslcapath": "", "sslcert": "", "sslkey": "", "sslbackend": "",
@@ -255,7 +259,15 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
     canonical = canonical_key(key)
     if canonical in done:
       continue
-    if (section == "http" and variable in HTTP_SENSITIVE) or (section == "remote" and name and variable == "proxy"):
+    if section == "http" and variable in HTTP_MULTI_VALUED:
+      # A list: values accumulate and an empty value resets it. Reset, then
+      # replay the user's own values in order (a scalar last-wins override
+      # would leave the repository's entries in place).
+      done.add(canonical)
+      fetch.append((key, ""))
+      fetch += [(trusted_key, trusted_value) for scope, trusted_key, trusted_value in entries
+                if scope in TRUSTED_SCOPES and canonical_key(trusted_key) == canonical and trusted_value != ""]
+    elif (section == "http" and variable in HTTP_SENSITIVE) or (section == "remote" and name and variable == "proxy"):
       done.add(canonical)
       fetch.append((key, trusted_values.get(canonical, HTTP_SENSITIVE.get(variable, ""))))
     elif section == "protocol" and name and variable == "allow" and name not in BASE_PROTOCOLS:
@@ -666,27 +678,79 @@ def checked_text(repo: Repository, arguments: list[str], allowed: tuple[int, ...
 
 
 # --- Per-repository trust and Git LFS detection ------------------------------------
+_STATX_BTIME = 0x800
+_libc = None
+
+
+def birth_time_ns(path: Path) -> int:
+  """The inode's birth time (statx), or 0 where the filesystem has none."""
+  global _libc
+  try:
+    if _libc is None:
+      _libc = ctypes.CDLL(None, use_errno=True)
+      _libc.statx.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p]
+    buffer = ctypes.create_string_buffer(256)
+    if _libc.statx(-100, os.fsencode(path), 0x100, _STATX_BTIME, buffer) != 0:   # AT_FDCWD, AT_SYMLINK_NOFOLLOW
+      return 0
+    mask = struct.unpack_from("I", buffer, 0)[0]
+    if not mask & _STATX_BTIME:
+      return 0
+    seconds, nanoseconds = struct.unpack_from("qI", buffer, 80)               # struct statx.stx_btime
+    return seconds * 1_000_000_000 + nanoseconds
+  except (OSError, AttributeError):
+    return 0
+
+
+def repository_identity(repo: "Repository") -> str:
+  """Which repository this is, beyond its path: the Git directory's device,
+  inode and birth time. Deleting and re-cloning, or swapping in another
+  repository at the same path, gives a new identity (a reused inode number
+  can't also reproduce the birth time)."""
+  directories = git_directories(repo)
+  if not directories:
+    return ""
+  try:
+    info = os.stat(directories[0], follow_symlinks=False)
+  except OSError:
+    return ""
+  return f"{info.st_dev}:{info.st_ino}:{birth_time_ns(directories[0])}"
+
+
 @dataclass(frozen=True)
 class Trust:
   """Which repositories run their own Git config in automatic work: all of them
-  (the legacy global switch) or the ones at these exact real paths. A moved or
-  renamed repository is untrusted again; symlinks are resolved on both sides."""
+  (the legacy global switch) or the ones trusted at this exact real path AND
+  with this identity. A moved, renamed, re-cloned or swapped repository is
+  untrusted again; symlinks are resolved on both sides."""
   everything: bool = False
-  paths: frozenset[str] = frozenset()
+  entries: frozenset[tuple[str, str]] = frozenset()
 
   def covers(self, repo: "Repository") -> bool:
-    return self.everything or os.path.realpath(repo.path) in self.paths
+    if self.everything:
+      return True
+    identity = repository_identity(repo)
+    return bool(identity) and (os.path.realpath(repo.path), identity) in self.entries
 
 
 def parse_trusted(raw: str) -> Trust:
+  """[{"path": "/abs/repo", "identity": "dev:ino:btime"}, …]; entries without
+  an identity (an earlier build stored bare paths) trust nothing."""
   try:
-    paths = json.loads(raw)
+    items = json.loads(raw)
   except json.JSONDecodeError as error:
     raise ValueError("Trusted repositories must be a JSON list") from error
-  if not isinstance(paths, list) or len(paths) > MAX_REPOSITORIES or not all(
-      isinstance(path, str) and path.startswith("/") and len(os.fsencode(path)) <= MAX_METADATA_BYTES for path in paths):
-    raise ValueError("Trusted repositories must be a list of absolute paths")
-  return Trust(paths=frozenset(os.path.realpath(path) for path in paths))
+  if not isinstance(items, list) or len(items) > MAX_REPOSITORIES:
+    raise ValueError("Trusted repositories must be a list of repositories")
+  entries = set()
+  for item in items:
+    if isinstance(item, str):
+      continue
+    if not (isinstance(item, dict) and isinstance(item.get("path"), str) and item["path"].startswith("/")
+            and isinstance(item.get("identity"), str) and 0 < len(item["identity"]) <= 128
+            and len(os.fsencode(item["path"])) <= MAX_METADATA_BYTES):
+      raise ValueError("Trusted repositories must be a list of repositories")
+    entries.add((os.path.realpath(item["path"]), item["identity"]))
+  return Trust(entries=frozenset(entries))
 
 
 def is_trusted(repo: "Repository", trusted: "bool | Trust") -> bool:
@@ -754,7 +818,7 @@ def repository_status(repo: Repository, trusted: "bool | Trust" = False) -> dict
   trusted = is_trusted(repo, trusted)
   row = {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0,
          "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": "",
-         "lfs": False, "trusted": trusted}
+         "lfs": False, "trusted": trusted, "identity": repository_identity(repo)}
   try:
     policy = repository_policy(repo, trusted)
     # Detection always uses the hardened policy, even for trusted repositories.

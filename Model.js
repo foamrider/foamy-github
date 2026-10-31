@@ -44,8 +44,9 @@ function parseStatus(raw) {
       if (repo.syncError === undefined) repo.syncError = ""
       if (repo.lfs === undefined) repo.lfs = false
       if (repo.trusted === undefined) repo.trusted = false
+      if (repo.identity === undefined) repo.identity = ""
       if (typeof repo.lfs !== "boolean" || typeof repo.trusted !== "boolean") return failedStatus("Invalid repository status")
-      for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error", "syncError"]) {
+      for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error", "syncError", "identity"]) {
         if (typeof repo[field] !== "string" || repo[field].length > 4096)
           return failedStatus("Invalid repository status")
       }
@@ -126,21 +127,32 @@ function displayedRepos(repos) {
   })
 }
 
-// Trusted repository paths from settings (absolute, de-duplicated, bounded).
+// Trusted repositories from settings: [{ path, identity }] (absolute path plus
+// the Git directory identity reported by the helper). Bare paths from an
+// earlier build carry no identity and are dropped (untrusted again).
 function trustedRepositories(settings) {
   var value = settings ? settings.trustedRepositories : undefined
   var list = value === undefined || value === null ? [] : JSON.parse(JSON.stringify(value))
   if (!Array.isArray(list)) return []
   var out = []
-  for (var i = 0; i < list.length && out.length < 256; i++)
-    if (typeof list[i] === "string" && list[i].charAt(0) === "/" && out.indexOf(list[i]) < 0) out.push(list[i])
+  for (var i = 0; i < list.length && out.length < 256; i++) {
+    var item = list[i]
+    if (item && typeof item === "object" && typeof item.path === "string" && item.path.charAt(0) === "/"
+        && typeof item.identity === "string" && item.identity !== ""
+        && !out.some(function(entry) { return entry.path === item.path }))
+      out.push({ path: item.path, identity: item.identity })
+  }
   return out
 }
 
-// The trusted list with `path` added or removed.
-function withTrust(list, path, trusted) {
-  var out = (list || []).filter(function(item) { return item !== path })
-  if (trusted) out.push(path)
+function isTrusted(list, repo) {
+  return !!repo && (list || []).some(function(entry) { return entry.path === repo.path && entry.identity === repo.identity })
+}
+
+// The trusted list with `repo` (its path and identity) added or removed.
+function withTrust(list, repo, trusted) {
+  var out = (list || []).filter(function(entry) { return entry.path !== repo.path })
+  if (trusted && repo.identity) out.push({ path: String(repo.path), identity: String(repo.identity) })
   return out
 }
 
@@ -153,8 +165,12 @@ function lfsRepos(repos) {
 // Validation for the trustedRepositories setting.
 function validTrustedList(value) {
   if (!Array.isArray(value) || value.length > 256) return "Use at most 256 trusted repositories."
-  for (var i = 0; i < value.length; i++)
-    if (typeof value[i] !== "string" || value[i].charAt(0) !== "/" || value[i].length > 4096) return "Trusted repositories must be absolute paths."
+  for (var i = 0; i < value.length; i++) {
+    var item = value[i]
+    if (!item || typeof item.path !== "string" || item.path.charAt(0) !== "/" || item.path.length > 4096
+        || typeof item.identity !== "string" || item.identity === "" || item.identity.length > 128)
+      return "Trusted repositories must be absolute paths."
+  }
   return true
 }
 
@@ -228,6 +244,7 @@ if (typeof module !== "undefined") {
     displayedRepos: displayedRepos,
     trustedRepositories: trustedRepositories,
     withTrust: withTrust,
+    isTrusted: isTrusted,
     lfsRepos: lfsRepos,
     validTrustedList: validTrustedList,
     syncErrorText: syncErrorText

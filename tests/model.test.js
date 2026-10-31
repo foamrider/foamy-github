@@ -65,15 +65,18 @@ test('clean repositories whose last fetch failed stay listed with their error', 
   assert.deepEqual(Model.displayedRepos(undefined), [])
 })
 
-test('per-repository trust: list helpers, validation and LFS rows', () => {
-  assert.deepEqual(Model.trustedRepositories({trustedRepositories: ['/a', 'rel', '/a', 5, '/b']}), ['/a', '/b'])
+test('per-repository trust: entries carry path and identity', () => {
+  const a = {path: '/a', identity: '1:2:3'}, b = {path: '/b', identity: '4:5:6'}
+  assert.deepEqual(Model.trustedRepositories({trustedRepositories: [a, '/legacy', {path: 'rel', identity: 'x'}, {path: '/c'}, a, b]}), [a, b])
   assert.deepEqual(Model.trustedRepositories({}), [])
-  assert.deepEqual(Model.withTrust(['/a'], '/b', true), ['/a', '/b'])
-  assert.deepEqual(Model.withTrust(['/a', '/b'], '/a', false), ['/b'])
-  assert.deepEqual(Model.withTrust(['/a'], '/a', true), ['/a'])
-  assert.equal(Model.validTrustedList(['/a']), true)
-  assert.match(Model.validTrustedList(['a']), /absolute/)
-  assert.match(Model.validTrustedList(Array(257).fill('/a')), /256/)
+  assert.deepEqual(Model.withTrust([a], b, true), [a, b])
+  assert.deepEqual(Model.withTrust([a, b], a, false), [b])
+  assert.deepEqual(Model.withTrust([a], {path: '/a', identity: '9:9:9'}, true), [{path: '/a', identity: '9:9:9'}])
+  assert.ok(Model.isTrusted([a], {path: '/a', identity: '1:2:3'}))
+  assert.ok(!Model.isTrusted([a], {path: '/a', identity: '1:2:4'}), 'a replaced repository is not trusted')
+  assert.equal(Model.validTrustedList([a]), true)
+  assert.match(Model.validTrustedList(['/a']), /absolute/)
+  assert.match(Model.validTrustedList(Array(257).fill(a)), /256/)
   const rows = [{label:'b', lfs:true}, {label:'A', lfs:true}, {label:'c', lfs:false}]
   assert.deepEqual(Model.lfsRepos(rows).map(r => r.label), ['A', 'b'])
 })

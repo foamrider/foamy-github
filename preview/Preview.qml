@@ -56,7 +56,7 @@ Item {
     readonly property bool busy: false
     readonly property var lfsRepos: [
       preview.row("Personal/game-assets", "main", 0, 0, 12, { lfs: true, trusted: false }),
-      preview.row("Work/design-system", "main", 0, 0, 0, { lfs: true, trusted: true })
+      preview.row("Work/design-system", "main", 0, 0, 0, { lfs: true, trusted: true, identity: "65:1024:1" })
     ]
     function fetch() {}
     function pushRepository(repo) {}
@@ -72,7 +72,7 @@ Item {
       Plugin.GithubView {
         service: mock
         settings: ({ repositoryFolders: [{ path: "~/GitHub", depth: 2 }, { path: "~/Work", depth: 1 }], inotifyEnabled: true,
-          refreshIntervalSec: 30, fetchIntervalSec: 900, trustedRepositories: ["/home/me/GitHub/Work/design-system"] })
+          refreshIntervalSec: 30, fetchIntervalSec: 900, trustedRepositories: [{ path: "/home/me/GitHub/Work/design-system", identity: "65:1024:1" }] })
         opened: true
         editingSettings: preview.previewState.indexOf("settings") === 0
         settingsError: preview.previewState === "settings-error" ? "Couldn't save the setting." : ""

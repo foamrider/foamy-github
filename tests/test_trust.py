@@ -326,6 +326,34 @@ class TrustModelTest(unittest.TestCase):
     self.assertEqual(config["remote.origin.proxy"], "")
     self.assertEqual(config["http.extraheader"], "")
 
+  def test_repository_extra_headers_are_not_sent_and_global_ones_are(self):
+    # Codex: http.extraHeader is a list; a last-wins override left the
+    # repository's headers in place (and a local empty value cleared the user's).
+    import http.server, threading
+    seen: list[str] = []
+    class Handler(http.server.BaseHTTPRequestHandler):
+      def do_GET(self):
+        seen.extend(f"{k}: {v}" for k, v in self.headers.items())
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+      def log_message(self, *args):
+        pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    self.addCleanup(server.server_close)
+    self.addCleanup(server.shutdown)
+    self.global_config("[http]\n\textraHeader = X-Global: one\n\textraHeader = X-Global-Two: two\n")
+    self.git("remote", "add", "origin", f"http://127.0.0.1:{server.server_address[1]}/repo.git")
+    self.git("config", "http.extraHeader", "X-Untrusted: injected")
+    self.git("config", "--add", "http.extraHeader", "")
+    self.git("config", "--add", "http.extraHeader", "X-Untrusted-Two: injected")
+    self.assertFalse(self.fetched()["ok"])
+    self.assertTrue(seen, "no request reached the server")
+    self.assertFalse([h for h in seen if h.startswith("X-Untrusted")], seen)
+    self.assertIn("X-Global: one", seen)
+    self.assertIn("X-Global-Two: two", seen)
+
   def test_common_per_repository_ssh_key_still_works(self):
     for value in ("ssh -i ~/.ssh/work -o IdentitiesOnly=yes", "ssh -p 2222 -o UserKnownHostsFile=/tmp/k"):
       self.assertTrue(status.ssh_command_allowed(value), value)
@@ -595,7 +623,7 @@ class PerRepositoryTrustTest(unittest.TestCase):
       repos[name] = repo
     link = self.root / "link-to-a"
     link.symlink_to(repos["a"].path)
-    trust = status.parse_trusted(json.dumps([str(link)]))   # symlinks resolve to the real path
+    trust = status.parse_trusted(json.dumps([{"path": str(link), "identity": status.repository_identity(repos["a"])}]))   # symlinks resolve
     rows = {row["name"]: row for row in status.status_payload(
       [{"path": str(self.root), "depth": 1}], trust)["repos"]}
     self.assertTrue(rows["a"]["trusted"] and rows["a"]["lfs"])
@@ -605,12 +633,34 @@ class PerRepositoryTrustTest(unittest.TestCase):
 
   def test_moved_repository_is_untrusted_again(self):
     repo, run = self.make_repo("orig", {".gitattributes": "* filter=lfs\n"})
-    trust = status.parse_trusted(json.dumps([repo.path]))
+    trust = status.parse_trusted(json.dumps([{"path": repo.path, "identity": status.repository_identity(repo)}]))
+    self.assertTrue(trust.covers(repo))
     moved = self.root / "moved"
     Path(repo.path).rename(moved)
     self.assertFalse(trust.covers(status.Repository(str(moved), "moved", "root", "moved")))
 
+  def test_repository_replaced_at_the_same_path_is_untrusted(self):
+    # Codex security: trust must not pass to a different repository that
+    # later sits at the trusted path (deleted and re-created, or swapped).
+    marker = self.root / "replacement.ran"
+    repo, _run = self.make_repo("trusted", {".gitattributes": "* filter=lfs\n"})
+    trust = status.parse_trusted(json.dumps([{"path": repo.path, "identity": status.repository_identity(repo)}]))
+    self.assertTrue(status.repository_status(repo, trust)["trusted"])
+    shutil.rmtree(repo.path)
+    replacement, run = self.make_repo("trusted", {"file.txt": "x\n"})       # same path, new repository
+    run("config", "core.fsmonitor", f"touch {marker}")
+    row = status.repository_status(replacement, trust)
+    self.assertFalse(row["trusted"])
+    self.assertTrue(row["complete"], row["error"])
+    self.assertFalse(marker.exists(), "the replacement ran its own config")
+    swapped, run = self.make_repo("other", {"file.txt": "y\n"})
+    os.rename(repo.path, self.root / "aside")
+    os.rename(swapped.path, repo.path)                                       # swap another one in
+    self.assertFalse(trust.covers(status.Repository(repo.path, "trusted", "root", "trusted")))
+
   def test_trusted_list_is_validated(self):
-    for raw in ("{}", '["relative"]', "[1]", "not json"):
-      with self.assertRaises(ValueError):
+    for raw in ("{}", "[1]", "not json", '[{"path": "rel", "identity": "1"}]', '[{"path": "/a"}]'):
+      with self.assertRaises(ValueError, msg=raw):
         status.parse_trusted(raw)
+    # Bare paths from an earlier build trust nothing.
+    self.assertEqual(status.parse_trusted('["/a"]').entries, frozenset())

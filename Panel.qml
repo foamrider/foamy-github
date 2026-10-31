@@ -90,10 +90,10 @@ Panel {
   }
 
   // Per-repository trust (offered for Git LFS repositories).
-  function setTrusted(path, trusted) {
-    if (!path) return
+  function setTrusted(repo, trusted) {
+    if (!repo || !repo.path || !repo.identity) return
     settingsError = ""
-    prefs.save("trustedRepositories", Model.withTrust(Model.trustedRepositories(prefs.effectiveSettings), String(path), trusted))
+    prefs.save("trustedRepositories", Model.withTrust(Model.trustedRepositories(prefs.effectiveSettings), repo, trusted))
   }
 
   // One-time migration of the old global "Trust repository config" switch:
@@ -105,13 +105,16 @@ Panel {
     if (Service.lastChecked <= 0 || Service.status.ok === false || Service.refreshing) return
     legacyMigrated = true
     var trusted = Model.trustedRepositories(prefs.effectiveSettings)
-    Service.lfsRepos.forEach(function(repo) { trusted = Model.withTrust(trusted, String(repo.path), true) })
+    Service.lfsRepos.forEach(function(repo) { if (repo.identity) trusted = Model.withTrust(trusted, repo, true) })
     prefs.save("trustedRepositories", trusted)
     prefs.save("trustRepositoryConfig", false)
   }
   Connections {
     target: Service
-    function onLastCheckedChanged() { root.migrateLegacyTrust() }
+    // The watcher delivers status while `refreshing` is still true, so also
+    // retry when a refresh finishes (live monitoring and timed polling alike).
+    function onLastCheckedChanged() { Qt.callLater(root.migrateLegacyTrust) }
+    function onRefreshingChanged() { if (!Service.refreshing) Qt.callLater(root.migrateLegacyTrust) }
   }
 
   function saveFolders(rows) {
@@ -218,7 +221,7 @@ Panel {
         onSettingsRequested: root.openSettings()
         onSettingsClosed: root.closeSettings()
         onSaveRequested: function(key, value) { root.save(key, value) }
-        onTrustRequested: function(path, trusted) { root.setTrusted(path, trusted) }
+        onTrustRequested: function(repo, trusted) { root.setTrusted(repo, trusted) }
         onFoldersEdited: function(rows) { root.saveFolders(rows) }
         onBrowseRequested: function(index) { root.browseFolder(index) }
         onRetryRequested: prefs.retry()

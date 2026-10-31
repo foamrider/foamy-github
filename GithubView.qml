@@ -37,7 +37,7 @@ PanelKeyCatcher {
   signal settingsErrorReported(string message)
   signal switchPanelRequested(int direction)
   signal repositoryRequested(var repo)
-  signal trustRequested(string path, bool trusted)
+  signal trustRequested(var repo, bool trusted)
 
   readonly property var repos: service ? service.affectedRepos : []
   readonly property var totals: service ? service.totals : Model.defaultStatus().totals
@@ -125,7 +125,7 @@ PanelKeyCatcher {
     if (index < 0) return
     var info = stops.infos.indexOf(index)
     if (info >= 0) {
-      root.trustRequested(String(repos[info].path), true)
+      root.trustRequested(repos[info], true)
       lfsAnchor = null
       lfsRepo = null
       cursor.hover(stops.rows[info])          // stay on that repository once its (i) goes
@@ -497,8 +497,8 @@ PanelKeyCatcher {
           width: lfsSection.width
           label: String(modelData.label)
           description: String(modelData.path)
-          checked: root.trustedList.indexOf(String(modelData.path)) >= 0
-          onClicked: root.trustRequested(String(modelData.path), !checked)
+          checked: Model.isTrusted(root.trustedList, modelData)
+          onClicked: root.trustRequested(modelData, !checked)
         }
       }
     }
@@ -579,7 +579,7 @@ PanelKeyCatcher {
         // Enter on the (i) trusts; show that by highlighting this button.
         hasCursor: !!root.lfsAnchor && root.lfsAnchor.hasCursor === true
         onClicked: {
-          if (root.lfsRepo) root.trustRequested(String(root.lfsRepo.path), true)
+          if (root.lfsRepo) root.trustRequested(root.lfsRepo, true)
           root.lfsAnchor = null
           root.lfsRepo = null
         }

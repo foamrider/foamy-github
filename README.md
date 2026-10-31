@@ -120,8 +120,11 @@ these files with bounded, no-follow reads and runs nothing from the repository.
 - **Settings → Git LFS** lists only LFS repositories, each with a toggle. The
   section is hidden when none is found.
 
-Trust is stored as the repository's real path (`trustedRepositories`), with
-symlinks resolved. A moved or renamed repository is untrusted again.
+Trust is stored as the repository's real path (symlinks resolved) plus the
+identity of its Git directory: device, inode and birth time
+(`trustedRepositories`). A moved or renamed repository is untrusted again, and
+so is a different repository that later appears at the same path (deleted and
+re-cloned, or swapped in). It shows the (i) again.
 Repositories that don't use LFS never show any of this.
 
 **From the earlier global switch:** if you had turned on **Trust repository
