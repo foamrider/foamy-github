@@ -93,7 +93,7 @@ Panel {
   function setTrusted(repo, trusted) {
     if (!repo || !repo.path || !repo.identity) return
     settingsError = ""
-    prefs.save("trustedRepositories", Model.withTrust(Model.trustedRepositories(prefs.effectiveSettings), repo, trusted))
+    prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, trusted))
   }
 
   // One-time migration of the old global "Trust repository config" switch:

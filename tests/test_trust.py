@@ -441,6 +441,100 @@ class TrustModelTest(unittest.TestCase):
     self.assertFalse([h for h in seen if h.startswith(("X-Before", "X-After"))], seen)
     self.assertFalse((self.path / "loot").exists())
 
+  def tls_server(self, trusted_ca: bool):
+    """A local HTTPS server; returns (port, seen headers, CA path)."""
+    import ssl
+    certs = self.root / "certs"
+    certs.mkdir(exist_ok=True)
+    run = lambda *args: subprocess.run(["openssl", *args], check=True, capture_output=True, cwd=certs)
+    if not (certs / "server.pem").exists():
+      run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=Foamy test CA",
+          "-keyout", "ca.key", "-out", "ca.pem", "-addext", "basicConstraints=critical,CA:TRUE")
+      run("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", "server.key", "-out", "server.csr")
+      (certs / "ext").write_text("subjectAltName=IP:127.0.0.1\n")
+      run("x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "2",
+          "-out", "server.pem", "-extfile", "ext")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certs / "server.pem", certs / "server.key")
+    port, seen = self.recording_server(tls_context=context)
+    return port, seen, certs / "ca.pem"
+
+  def test_bare_boolean_in_user_config_stays_true(self):
+    # Codex: a bare `sslVerify` (true) was serialised as "" (false).
+    port, seen, _ca = self.tls_server(trusted_ca=False)
+    self.global_config("[http]\n\tsslVerify\n")
+    self.git("remote", "add", "origin", f"https://127.0.0.1:{port}/repo.git")
+    self.assertFalse(self.fetched()["ok"])
+    self.assertEqual(seen, [], "an untrusted certificate was accepted")
+
+  def test_user_config_empty_resets_and_conditional_includes_behave_natively(self):
+    # Codex: an empty reset in global config must keep a system header off;
+    # includeIf hasconfig:remote.*.url and gitdir: must apply.
+    port, seen = self.recording_server()
+    system = self.root / "system.gitconfig"
+    system.write_text("[http]\n\textraHeader = X-Removed: secret\n")
+    (self.root / "cond.inc").write_text("[http]\n\textraHeader = X-Hasconfig: 1\n")
+    (self.root / "gitdir.inc").write_text("[http]\n\textraHeader = X-Gitdir: 1\n")
+    self.global_config(f'[http]\n\textraHeader =\n\textraHeader = X-Kept: yes\n'
+                       f'[includeIf "hasconfig:remote.*.url:http://127.0.0.1:{port}/**"]\n\tpath = {self.root}/cond.inc\n'
+                       f'[includeIf "gitdir:{self.path}/"]\n\tpath = {self.root}/gitdir.inc\n')
+    patcher = patch.dict(os.environ, {"GIT_CONFIG_SYSTEM": str(system)})
+    patcher.start()
+    self.addCleanup(patcher.stop)
+    os.environ.pop("GIT_CONFIG_NOSYSTEM", None)
+    self.git("remote", "add", "origin", f"http://127.0.0.1:{port}/repo.git")
+    self.git("config", "http.extraHeader", "X-Local: 1")
+    self.assertFalse(self.fetched()["ok"])
+    headers = [h.split(":")[0] for h in seen]
+    self.assertIn("X-Kept", headers)
+    self.assertIn("X-Hasconfig", headers)
+    self.assertIn("X-Gitdir", headers)
+    self.assertNotIn("X-Removed", headers)
+    self.assertNotIn("X-Local", headers)
+
+  def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
+    # Codex security: trust was checked on the path, then Git reopened it.
+    hostile_marker = self.root / "swapped.ran"
+    trust = status.parse_trusted(json.dumps([{"path": self.repo.path, "identity": status.repository_identity(self.repo)}]))
+    hostile = self.root / "hostile"
+    subprocess.run(["git", "init", "-q", str(hostile)], check=True)
+    self.git("config", "core.fsmonitor", f"touch {hostile_marker}", cwd=hostile)
+    real_uses_lfs = status.uses_lfs
+    def swap_then(repo, policy):
+      if not hostile_marker.parent.joinpath("swapped").exists():
+        os.rename(self.path, self.root / "original")
+        os.rename(hostile, self.path)
+        (self.root / "swapped").write_text("")
+      return real_uses_lfs(repo, policy)
+    with patch.object(status, "uses_lfs", side_effect=swap_then):
+      status.repository_status(self.repo, trust)
+    self.assertFalse(hostile_marker.exists(), "the swapped-in repository ran its config with trust")
+
+  def test_untrusted_fetch_writes_only_into_the_inspected_repository(self):
+    # Codex security: a rename/symlink swap during the fetch redirected the
+    # fetched objects and ref updates into another repository.
+    self.file_remote()
+    victim = self.root / "victim"
+    subprocess.run(["git", "clone", "-q", str(self.root / "remote.git"), str(victim)], check=True, capture_output=True)
+    # The victim's origin/main matches the inspected repository's, so a
+    # redirected update-ref (old value checked) would succeed there.
+    victim_before = self.git("rev-parse", "HEAD").strip()
+    self.git("update-ref", "refs/remotes/origin/main", victim_before, cwd=victim)
+    self.git("update-ref", "refs/remotes/origin/main", victim_before)
+    real_list_refs = status.list_refs
+    swapped = []
+    def swap_after_first(*args, **kwargs):
+      result = real_list_refs(*args, **kwargs)
+      if not swapped:
+        swapped.append(True)
+        os.rename(self.path, self.root / "moved-away")
+        os.symlink(victim, self.path)
+      return result
+    with patch.object(status, "list_refs", side_effect=swap_after_first):
+      status.fetch_repository(self.repo)
+    self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main", cwd=victim).strip(), victim_before,
+                     "the fetch updated another repository")
+
   def test_private_ca_from_user_config_applies_despite_repository_tls_settings(self):
     # Codex P2: the user's global http.sslCAInfo must still apply when the
     # repository sets its own (URL-specific) TLS settings.
@@ -498,20 +592,22 @@ class TrustModelTest(unittest.TestCase):
     result = self.fetched()
     self.assertTrue(result["ok"], result)
 
-  def test_user_insteadof_applies_before_relative_resolution(self):
-    # Codex: a global url.<base>.insteadOf (e.g. alias/) is applied first, as
-    # Git does; only a still-relative local result is resolved.
-    self.file_remote()
-    self.global_config('[url "../"]\n\tinsteadOf = alias/\n[url "../nope/"]\n\tinsteadOf = ali\n')
-    self.git("remote", "set-url", "origin", "alias/remote.git")
-    result = self.fetched()
-    self.assertTrue(result["ok"], result)
-    user = [("url.https://example.com/.insteadof", "gh:"), ("url.https://example.com/org/.insteadof", "gh:org/")]
-    self.assertEqual(status.rewrite_url("gh:org/repo", user), "https://example.com/org/repo")   # longest prefix
-    self.assertEqual(status.resolve_origin("gh:org/repo", self.repo, user), "gh:org/repo")      # Git rewrites it
-    self.assertEqual(status.resolve_origin("alias/x", self.repo, [("url.../.insteadof", "alias/")]),
-                     os.path.join(self.repo.path, "../x"))
-
+  def test_user_insteadof_and_home_paths_resolve_like_git(self):
+    # Codex: the user's insteadOf applies first (Git itself is asked), and
+    # `~/` / `~user/` expand to a home directory, also after a rewrite.
+    self.file_remote()                                     # $HOME/remote.git (HOME is the test root)
+    cases = (("alias/remote.git", '[url "../"]\n\tinsteadOf = alias/\n[url "../nope/"]\n\tinsteadOf = ali\n'),
+             ("~/remote.git", ""),
+             (f"~{os.environ.get('USER') or __import__('getpass').getuser()}/remote.git", ""),
+             ("home:remote.git", '[url "~/"]\n\tinsteadOf = home:\n'))
+    for url, config in cases:
+      with self.subTest(url=url):
+        self.global_config(config)
+        self.git("remote", "set-url", "origin", url)
+        result = self.fetched()
+        if url.startswith("~") and not url.startswith("~/") and Path(os.path.expanduser(url.split("/")[0])) != self.root:
+          continue                                         # ~user isn't the test HOME here
+        self.assertTrue(result["ok"], result)
   def test_one_failing_repository_does_not_abort_the_sync(self):
     good = self.repo
     self.file_remote()
@@ -629,26 +725,42 @@ class TrustModelTest(unittest.TestCase):
     self.assertIn("X-Global: one", seen)
     self.assertIn("X-Global-Two: two", seen)
 
-  def test_common_per_repository_ssh_key_still_works(self):
-    for value in ("ssh -i ~/.ssh/work -o IdentitiesOnly=yes", "ssh -p 2222 -o UserKnownHostsFile=/tmp/k"):
-      self.assertTrue(status.ssh_command_allowed(value), value)
-    for value in ("ssh -F cfg", "ssh $(x)", "ssh -i `x`", "/tmp/ssh", "ssh -oProxyCommand=x",
-                  "ssh -i *", "ssh -i k?y", "ssh -i [a]", "ssh -i {a,b}", "ssh -i 'a b'", "ssh -i a\\ b", "ssh\t-i k"):
-      self.assertFalse(status.ssh_command_allowed(value), value)
-    self.git("config", "core.sshCommand", "ssh -i ~/.ssh/work")
-    env = dict(status.repository_policy(self.repo).fetch_env)
-    self.assertEqual(env["GIT_SSH_COMMAND"], "ssh -i ~/.ssh/work -o BatchMode=yes")
-
+  def test_repository_ssh_command_is_never_used_unless_trusted(self):
+    # Codex security P1: a repository sshCommand with UserKnownHostsFile and
+    # accept-new could append to ~/.bashrc. Untrusted fetches ignore it.
+    bashrc = self.root / ".bashrc"
+    bashrc.write_text("# precious\n")
+    args = self.root / "ssh-args"
+    fake = self.script("ssh", f'echo "$@" >> {args}', exit_code=255)        # records how ssh is called
+    patcher = patch.dict(os.environ, {"PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}"})
+    patcher.start()
+    self.addCleanup(patcher.stop)
+    self.git("remote", "add", "origin", "ssh://127.0.0.1:1/repo.git")
+    self.git("config", "core.sshCommand", "ssh -o UserKnownHostsFile=~/.bashrc -o StrictHostKeyChecking=accept-new")
+    self.assertFalse(self.fetched()["ok"])
+    self.assertNotIn("UserKnownHostsFile", args.read_text())
+    self.assertIn("BatchMode=yes", args.read_text())
+    self.assertEqual(bashrc.read_text(), "# precious\n")
+    self.marker.unlink()
+    # The user's own global sshCommand is used instead.
+    self.global_config(f"[core]\n\tsshCommand = {self.script('global-ssh')}\n")
+    self.fetched()
+    self.assertEqual(set(self.marker.read_text().split()), {"global-ssh"})
   def test_unattended_fetch_never_prompts(self):
     env = dict(status.repository_policy(self.repo).fetch_env)
     self.assertEqual(env["GIT_ASKPASS"], "")
     self.assertEqual(env["SSH_ASKPASS_REQUIRE"], "never")
-    self.assertEqual(env["GIT_SSH_COMMAND"], "ssh -o BatchMode=yes")
-    with patch.dict(os.environ, {"GIT_ASKPASS": "/usr/bin/my-askpass", "GIT_SSH_COMMAND": "my-ssh"}):
-      env = dict(status.repository_policy(self.repo).fetch_env)
-      self.assertNotIn("GIT_ASKPASS", env)
-      self.assertNotIn("GIT_SSH_COMMAND", env)
-
+    with patch.dict(os.environ, {"GIT_ASKPASS": "/usr/bin/my-askpass"}):
+      self.assertNotIn("GIT_ASKPASS", dict(status.repository_policy(self.repo).fetch_env))
+    # Without any configured sshCommand, ssh runs in batch mode.
+    args = self.root / "ssh-args"
+    fake = self.script("ssh", f'echo "$@" > {args}', exit_code=255)
+    patcher = patch.dict(os.environ, {"PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}"})
+    patcher.start()
+    self.addCleanup(patcher.stop)
+    self.git("remote", "add", "origin", "ssh://example.invalid/repo.git")
+    self.assertFalse(self.fetched()["ok"])
+    self.assertIn("BatchMode=yes", args.read_text())
   def test_user_config_parameters_are_kept(self):
     with patch.dict(os.environ, {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "Me"}):
       env = dict(status.repository_policy(self.repo).fetch_env)

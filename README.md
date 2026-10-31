@@ -7,7 +7,7 @@ Local Git repository status, fetch, push, and pull.
 ## Install
 
 Requires Omarchy 4.5 (also loads on 4.0.6, in English), Git, Python 3, Bash,
-util-linux `setpriv` with Landlock (both standard on Omarchy),
+util-linux `setpriv` with Landlock and `bubblewrap` (all standard on Omarchy),
 `jq` and `wl-clipboard`. Opening a repository requires `lazygit` and Omarchy's
 terminal launcher; **Browse for folder** uses `qml6` and `hyprctl`.
 
@@ -78,8 +78,8 @@ below.
 | Hooks (`core.hooksPath`, `.git/hooks`) | off (`/dev/null`) | off |
 | Clean/smudge/process filters, including global ones such as Git LFS that the repository's attributes select (LFS reads repository settings like `lfs.extension.*`) | off for every defined filter | off |
 | Submodule worktrees | not inspected | not fetched |
-| `credential.helper` (repository-local) | — | never read (frozen config: only your global/system helpers) |
-| `core.sshCommand` (repository-local) | — | ignored, except a plain `ssh -i key`-style command (no shell syntax, safe `-o` options) |
+| `credential.helper` (repository-local) | — | never read (only your global/system config applies) |
+| `core.sshCommand` (repository-local) | — | never read: custom SSH commands in a repository's own config apply only to trusted repositories. Your global one, `GIT_SSH_COMMAND`, or `ssh -o BatchMode=yes` is used |
 | `core.askPass`, prompts | — | off: `GIT_ASKPASS=""` unless you set it, `SSH_ASKPASS_REQUIRE=never`, SSH `BatchMode` |
 | `core.gitProxy` (repository-local) | — | never read |
 | Transports (`ext::`, `fd::`, remote helpers, `remote.*.vcs`, `protocol.*`, every subsection spelling) | none | only http(s), ssh, git and file, plus helpers you allowed globally |
@@ -108,15 +108,29 @@ unavailable**. This costs about 1.5 ms per repository check (10.4 vs 8.9 ms,
 
 **Automatic fetches** can't run under that restriction, because they need ssh
 and your credential helpers. Instead they run in a private, throwaway shadow
-repository whose config we write. It holds only your global and system
-settings, as Git resolves them for that repository (`includeIf` included),
-plus the snapshot's origin URL, fetch refspecs and object format. New objects
-go straight into the repository's object store. The updated
+repository. Git reads your global and system config natively, so
+`includeIf`, bare booleans and empty resets behave exactly as usual. The
+shadow's own config replaces only the repository's: the snapshot's origin URL,
+fetch refspecs, tag option, object format and partial-clone settings. Your
+`includeIf "gitdir:…"` files that match the real repository are included by
+path, and `onbranch` sees the real branch. Relative or `~` origins are
+resolved like Git does, after your `insteadOf` rules.
+
+New objects go straight into the repository's object store. The updated
 `refs/remotes/origin/*` and new tags are then applied with `git update-ref`
 under the no-exec restriction. The repository's own config is never read
-during a fetch, so changing it mid-fetch has no effect. Symbolic refs such as
-`origin/HEAD` and existing tags are left alone. Reftable, SHA-256, worktrees,
-shallow and partial clones are handled.
+during a fetch. Symbolic refs such as `origin/HEAD` and existing tags are left
+alone. Reftable, SHA-256, worktrees, shallow and partial clones are handled.
+
+**Pinned repositories.** A repository's directories are opened once, and
+its identity (device, inode, birth time) is taken from those open
+directories. Git then runs in a private mount namespace (`bubblewrap`) where
+the repository's paths are bound to exactly those directories. A rename or
+symlink swap during a check therefore can't make a trusted check run another
+repository's config, and can't redirect a fetch's objects or ref updates. This
+applies to trusted checks and fetches, and to every automatic fetch. Without
+bubblewrap, trusted repositories are checked like untrusted ones, and
+automatic fetches of untrusted repositories are skipped with a message.
 
 Where `setpriv` or Landlock is missing (Omarchy's kernel and util-linux have
 both), status checks fall back to the snapshot overrides alone. A repository

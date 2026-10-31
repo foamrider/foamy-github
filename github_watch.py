@@ -95,7 +95,17 @@ class Inotify:
 
 def repository_directories(repo: status.Repository, trusted: "bool | status.Trust" = False) -> set[Path]:
   root = Path(repo.path)
-  policy = status.repository_policy(repo, status.is_trusted(repo, trusted))
+  pin = status.trusted_pin(repo, trusted)
+  try:
+    return _repository_directories(repo, status.replace(status.TRUSTED_POLICY, pin=pin) if pin
+                                   else status.repository_policy(repo, False))
+  finally:
+    if pin is not None:
+      pin.close()
+
+
+def _repository_directories(repo: status.Repository, policy: status.GitPolicy) -> set[Path]:
+  root = Path(repo.path)
   # Git identifies ignored trees in one call; never recurse into dependency/build
   # trees, but retain directories containing tracked files even if now ignored.
   ignored: set[Path] = set()
@@ -105,7 +115,7 @@ def repository_directories(repo: status.Repository, trusted: "bool | status.Trus
       if len(ignored) > status.MAX_WATCHES:
         raise status.InspectionError("Ignored directory limit reached. Use timed refresh or select narrower repository folders.")
   status.git_records(repo, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], ignore,
-                     config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
+                     config=policy.read, env=policy.read_env, sandbox=policy.sandboxed, pin=policy.pin)
   paths: set[Path] = set()
   budget = status.ScanBudget()
 

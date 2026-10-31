@@ -11,7 +11,6 @@ import json
 import os
 import re
 import selectors
-import shlex
 import secrets
 import shutil
 import stat
@@ -22,7 +21,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypedDict
 
@@ -95,15 +94,6 @@ class InspectionError(OSError):
 READ_CONFIG = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null")
 LOCAL_SCOPES = ("local", "worktree")
 TRUSTED_SCOPES = ("system", "global", "command")
-SAFE_SSH_OPTIONS = {"identityfile", "identitiesonly", "identityagent", "certificatefile", "port", "user",
-                    "stricthostkeychecking", "userknownhostsfile", "hostkeyalias", "connecttimeout",
-                    "addkeystoagent", "batchmode", "preferredauthentications", "pubkeyauthentication",
-                    "passwordauthentication", "serveraliveinterval", "serveralivecountmax", "loglevel", "compression"}
-# Git hands core.sshCommand to /bin/sh, so the words it runs can differ from
-# what shlex sees: globs (*?[), braces, quotes, escapes, $ and friends all
-# rewrite arguments. A repository-supplied command is only accepted when every
-# character is one the shell passes through literally.
-SHELL_SAFE = re.compile(r"^[A-Za-z0-9 _@%+=:,./~-]+$")
 READ_OVERRIDES = (("status.submoduleSummary", "false"),)
 FETCH_OVERRIDES = (
   ("protocol.allow", "never"), ("protocol.https.allow", "always"), ("protocol.http.allow", "always"),
@@ -120,32 +110,6 @@ READ_ENV = (("GIT_NO_LAZY_FETCH", "1"),)
 # a repository's), so the command line sets it.
 FETCH_ARGUMENTS = ("--no-auto-maintenance", "--no-recurse-submodules", "--upload-pack=git-upload-pack",
                    "--no-write-fetch-head")
-def ssh_command_allowed(value: str) -> bool:
-  """A plain ssh with key/port/user style options: no shell, no ProxyCommand, no -F."""
-  if not SHELL_SAFE.match(value):
-    return False
-  try:
-    words = shlex.split(value)
-  except ValueError:
-    return False
-  if not words or words[0] not in ("ssh", "/usr/bin/ssh"):
-    return False
-  index = 1
-  while index < len(words):
-    word = words[index]
-    if word in ("-4", "-6", "-T", "-q", "-v", "-vv", "-vvv", "-C"):
-      index += 1
-    elif word in ("-i", "-p", "-l") and index + 1 < len(words):
-      index += 2
-    elif word == "-o" and index + 1 < len(words) and words[index + 1].split("=", 1)[0].strip().lower() in SAFE_SSH_OPTIONS:
-      index += 2
-    elif word.startswith("-o") and len(word) > 2 and word[2:].split("=", 1)[0].strip().lower() in SAFE_SSH_OPTIONS:
-      index += 1
-    else:
-      return False
-  return True
-
-
 def config_environment(pairs: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
   """Command-scope config as GIT_CONFIG_COUNT/KEY/VALUE, after the user's own."""
   try:
@@ -162,6 +126,7 @@ def config_environment(pairs: Sequence[tuple[str, str]]) -> tuple[tuple[str, str
 @dataclass(frozen=True)
 class GitPolicy:
   sandboxed: bool = False
+  pin: Any = None
   snapshot: tuple[tuple[str, str, str], ...] = ()
   read: tuple[str, ...] = ()
   read_env: tuple[tuple[str, str], ...] = ()
@@ -221,10 +186,6 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   if trusted:
     return TRUSTED_POLICY
   entries = config_entries(repo)
-  trusted_values: dict[str, str] = {}
-  for scope, key, value in entries:
-    if scope in TRUSTED_SCOPES:
-      trusted_values[canonical_key(key)] = value
 
   # Every defined filter driver, from any scope, is switched off.
   common: list[tuple[str, str]] = list(READ_OVERRIDES)
@@ -265,19 +226,8 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
         and value.lower() in ("always", "user") and name not in allowed and re.fullmatch(r"[A-Za-z0-9+.-]+", name)):
       allowed.append(name)
   env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
-  if "GIT_SSH_COMMAND" not in os.environ:
-    # GIT_SSH_COMMAND beats every core.sshCommand, so a local one never runs
-    # unless it is a plain `ssh -i key`-style command.
-    local_ssh = [value for scope, key, value in entries if scope in LOCAL_SCOPES and key.lower() == "core.sshcommand"]
-    trusted_ssh = trusted_values.get("core.sshcommand")
-    if local_ssh and ssh_command_allowed(local_ssh[-1]):
-      env["GIT_SSH_COMMAND"] = local_ssh[-1] + " -o BatchMode=yes"
-    elif trusted_ssh:
-      env["GIT_SSH_COMMAND"] = trusted_ssh
-    elif os.environ.get("GIT_SSH"):
-      env["GIT_SSH_COMMAND"] = shlex.quote(os.environ["GIT_SSH"])
-    else:
-      env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+  # SSH: the shadow fetch never reads the repository's own config, so its
+  # core.sshCommand can't apply; shadow_fetch() uses the user's (or BatchMode ssh).
   return GitPolicy(sandboxed=True, snapshot=tuple(entries), read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
                    fetch=READ_CONFIG, fetch_env=config_environment(fetch) + tuple(sorted(env.items())),
                    fetch_args=FETCH_ARGUMENTS)
@@ -568,9 +518,11 @@ def sandbox_command() -> list[str]:
 def read_git(repo: Repository, arguments: list[str], timeout: float,
              consume: Callable[[bytes], None], output_limit: int | None,
              config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = (),
-             sandbox: bool = False, stdin: Any = None) -> subprocess.CompletedProcess[str]:
+             sandbox: bool = False, stdin: Any = None, pin: "Pin | None" = None) -> subprocess.CompletedProcess[str]:
   deadline = time.monotonic() + timeout
   git = (sandbox_command() if sandbox else []) or ["git"]
+  if pin is not None:
+    git = pin.prefix() + git
   global _spawning, _main_spawning
   if _terminating:
     raise InspectionError("Stopping.")
@@ -584,6 +536,7 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
         [*git, *config, "-C", repo.path, *arguments],
         stdin=subprocess.DEVNULL if stdin is None else stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,
+        pass_fds=pin.fds() if pin is not None else (),
         # Read-only status must not rewrite the index and wake our own watcher.
         env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", **dict(env)},
       )
@@ -649,14 +602,15 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
 
 
 def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Sequence[str] = READ_CONFIG,
-            env: Sequence[tuple[str, str]] = (), sandbox: bool = False, stdin: Any = None) -> subprocess.CompletedProcess[str]:
+            env: Sequence[tuple[str, str]] = (), sandbox: bool = False, stdin: Any = None,
+            pin: "Pin | None" = None) -> subprocess.CompletedProcess[str]:
   output = bytearray()
   def consume(chunk: bytes):
     output.extend(chunk[:max(0, MAX_CAPTURE_BYTES - len(output))])
   # Mutating operations must not be interrupted just for verbose progress.
   # Retain bounded diagnostics while continuing to drain their output.
   mutating = arguments[0] in ("fetch", "push", "pull", "merge")
-  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env, sandbox, stdin)
+  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env, sandbox, stdin, pin)
   # Byte-exact, as above: branch, upstream and Git-dir paths go back into
   # Git arguments and file paths, so they must round-trip.
   result.stdout = os.fsdecode(bytes(output))
@@ -664,7 +618,8 @@ def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Se
 
 
 def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes], None], timeout: int = 15,
-                config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = (), sandbox: bool = False):
+                config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = (), sandbox: bool = False,
+                pin: "Pin | None" = None):
   pending = bytearray()
   def read(chunk: bytes):
     pending.extend(chunk)
@@ -677,7 +632,7 @@ def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes
     del pending[:start]
     if len(pending) > MAX_RECORD_BYTES:
       raise InspectionError("Git status entry is too long. Open the repository in lazygit.")
-  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES, config, env, sandbox)
+  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES, config, env, sandbox, pin=pin)
   if result.returncode:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   if pending:
@@ -698,7 +653,7 @@ def dirty_entries(repo: Repository, policy: GitPolicy = DEFAULT_POLICY) -> int:
     # In porcelain v1 -z, a rename/copy has a second path, not a second entry.
     rename_path = b"R" in record[:2] or b"C" in record[:2]
   git_records(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", *policy.status], consume,
-              config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
+              config=policy.read, env=policy.read_env, sandbox=policy.sandboxed, pin=policy.pin)
   if rename_path:
     raise InspectionError("Git returned an incomplete rename. Try Refresh again.")
   return count
@@ -714,7 +669,7 @@ def command_text(repo: Repository, arguments: list[str], timeout: int = 8) -> st
 
 def checked_text(repo: Repository, arguments: list[str], allowed: tuple[int, ...] = (),
                  policy: GitPolicy = DEFAULT_POLICY) -> str:
-  result = run_git(repo, arguments, config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
+  result = run_git(repo, arguments, config=policy.read, env=policy.read_env, sandbox=policy.sandboxed, pin=policy.pin)
   if result.returncode != 0 and result.returncode not in allowed:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   return metadata(result.stdout.strip()) if result.returncode == 0 else ""
@@ -725,15 +680,17 @@ _STATX_BTIME = 0x800
 _libc = None
 
 
-def birth_time_ns(path: Path) -> int:
-  """The inode's birth time (statx), or 0 where the filesystem has none."""
+def birth_time_ns(path: Path | None, fd: int = -100) -> int:
+  """The inode's birth time (statx), or 0 where the filesystem has none.
+  With `fd` and no path: that open file itself (AT_EMPTY_PATH)."""
   global _libc
   try:
     if _libc is None:
       _libc = ctypes.CDLL(None, use_errno=True)
       _libc.statx.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p]
     buffer = ctypes.create_string_buffer(256)
-    if _libc.statx(-100, os.fsencode(path), 0x100, _STATX_BTIME, buffer) != 0:   # AT_FDCWD, AT_SYMLINK_NOFOLLOW
+    name, flags = (os.fsencode(path), 0x100) if path is not None else (b"", 0x1000)  # NOFOLLOW / EMPTY_PATH
+    if _libc.statx(fd, name, flags, _STATX_BTIME, buffer) != 0:
       return 0
     mask = struct.unpack_from("I", buffer, 0)[0]
     if not mask & _STATX_BTIME:
@@ -764,6 +721,97 @@ def repository_identity(repo: "Repository") -> str:
   return f"{info.st_dev}:{info.st_ino}:{born}"
 
 
+# --- Pinned repositories ------------------------------------------------------------
+# A path can be renamed or swapped between a check and the Git commands that
+# follow (Codex: a trust check, then a different repository at the path; a
+# shadow fetch whose objects and refs land in another repository). So the
+# worktree and Git directories are opened once, the identity is taken from
+# those open directories, and every Git command for that check runs in a
+# private mount namespace (bubblewrap) where the expected paths are bound to
+# exactly those open directories: a rename or symlink swap outside can't
+# redirect anything.
+_bwrap: list[str] | None = None
+
+
+def bwrap_command() -> list[str]:
+  global _bwrap
+  if _bwrap is None:
+    _bwrap = []
+    bwrap = shutil.which("bwrap")
+    if bwrap:
+      try:
+        if subprocess.run([bwrap, "--dev-bind", "/", "/", "--", "true"], capture_output=True, timeout=5).returncode == 0:
+          _bwrap = [bwrap, "--dev-bind", "/", "/"]
+      except (OSError, subprocess.TimeoutExpired):
+        pass
+  return _bwrap
+
+
+@dataclass
+class Pin:
+  binds: tuple[tuple[int, str], ...]        # (open directory fd, the path it is bound to)
+  identity: str
+  common: int                               # fd of the common Git directory
+
+  def prefix(self) -> list[str]:
+    command = list(bwrap_command())
+    for fd, path in self.binds:
+      command += ["--bind-fd", str(fd), path]
+    return command + ["--"]
+
+  def fds(self) -> tuple[int, ...]:
+    return tuple(fd for fd, _ in self.binds)
+
+  def close(self) -> None:
+    for fd, _ in self.binds:
+      try:
+        os.close(fd)
+      except OSError:
+        pass
+
+
+def open_directory(path: Path | str, dir_fd: int | None = None) -> int:
+  return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+
+
+def fd_identity(fd: int) -> str:
+  info = os.fstat(fd)
+  born = birth_time_ns(None, fd)
+  return f"{info.st_dev}:{info.st_ino}:{born}" if born > 0 else ""
+
+
+def pin_repository(repo: "Repository") -> Pin | None:
+  """Open the worktree and its Git directories once; None when pinning isn't
+  possible (no bubblewrap), the caller then fails closed."""
+  if not bwrap_command():
+    return None
+  opened: list[tuple[int, str]] = []
+  try:
+    worktree = open_directory(repo.path)
+    opened.append((worktree, repo.path))
+    try:
+      git_dir = open_directory(".git", dir_fd=worktree)      # relative to the pinned worktree
+      git_path = Path(repo.path) / ".git"
+    except NotADirectoryError:
+      directories = git_directories(repo)                     # a .git file (linked worktree)
+      if not directories:
+        raise InspectionError("Could not find the repository's Git directory. Open it in lazygit.")
+      git_path = directories[0]
+      git_dir = open_directory(git_path)
+    opened.append((git_dir, str(git_path)))
+    common = git_dir
+    commondir = read_bounded(Path(f"/proc/self/fd/{git_dir}") / "commondir", MAX_METADATA_BYTES).strip()
+    if commondir:
+      common_path = (git_path / os.fsdecode(commondir)).resolve()
+      common = open_directory(common_path)
+      opened.append((common, str(common_path)))
+    return Pin(binds=tuple(opened), identity=fd_identity(git_dir), common=common)
+  except BaseException:
+    for fd, _ in opened:
+      os.close(fd)
+    raise
+
+
 @dataclass(frozen=True)
 class Trust:
   """Which repositories run their own Git config in automatic work: all of them
@@ -773,10 +821,10 @@ class Trust:
   everything: bool = False
   entries: frozenset[tuple[str, str]] = frozenset()
 
-  def covers(self, repo: "Repository") -> bool:
+  def covers(self, repo: "Repository", identity: str | None = None) -> bool:
     if self.everything:
       return True
-    identity = repository_identity(repo)
+    identity = repository_identity(repo) if identity is None else identity
     return bool(identity) and (os.path.realpath(repo.path), identity) in self.entries
 
 
@@ -805,6 +853,21 @@ def parse_trusted(raw: str) -> Trust:
 
 def is_trusted(repo: "Repository", trusted: "bool | Trust") -> bool:
   return trusted.covers(repo) if isinstance(trusted, Trust) else bool(trusted)
+
+
+def trusted_pin(repo: "Repository", trusted: "bool | Trust") -> Pin | None:
+  """A pinned repository when it is trusted, checked against the identity of
+  the directories actually opened; None (run hardened) otherwise, including
+  when it can't be pinned. Git then runs only against that pin."""
+  if trusted is False or (isinstance(trusted, Trust) and not trusted.everything and not trusted.entries):
+    return None
+  pin = pin_repository(repo)
+  if pin is None:
+    return None
+  if isinstance(trusted, Trust) and not trusted.covers(repo, pin.identity):
+    pin.close()
+    return None
+  return pin
 
 
 MAX_ATTRIBUTE_FILES = 64
@@ -859,18 +922,31 @@ def uses_lfs(repo: "Repository", policy: "GitPolicy") -> bool:
     if len(names) < MAX_ATTRIBUTE_FILES:
       names.append(record)
   git_records(repo, ["ls-files", "-z", "--", ":(glob).gitattributes", ":(glob)**/.gitattributes"], consume,
-              config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
+              config=policy.read, env=policy.read_env, sandbox=policy.sandboxed, pin=policy.pin)
   candidates += [Path(repo.path) / os.fsdecode(name) for name in names]
   return any(LFS_ATTRIBUTE.search(read_bounded(candidate)) for candidate in candidates)
 
 
 def repository_status(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
-  trusted = is_trusted(repo, trusted)
+  # Trusted: checked against, and run only inside, the pinned directories.
+  pin = trusted_pin(repo, trusted)
+  try:
+    row = _repository_status(repo, pin)
+    if pin is not None and row["complete"] and repository_identity(repo) != pin.identity and isinstance(trusted, Trust):
+      row.update(complete=False, affected=True, error="The repository changed during the check. Try Refresh again.")
+    return row
+  finally:
+    if pin is not None:
+      pin.close()
+
+
+def _repository_status(repo: Repository, pin: Pin | None) -> dict[str, Any]:
+  trusted = pin is not None
   row = {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0,
          "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": "",
          "lfs": False, "trusted": trusted, "identity": repository_identity(repo)}
   try:
-    policy = repository_policy(repo, trusted)
+    policy = replace(TRUSTED_POLICY, pin=pin) if trusted else repository_policy(repo, False)
     # Detection always uses the hardened policy, even for trusted repositories.
     row["lfs"] = uses_lfs(repo, policy if not trusted else repository_policy(repo, False))
     branch = checked_text(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], (1,), policy)
@@ -985,9 +1061,6 @@ def concise_error(completed: subprocess.CompletedProcess[str] | None, fallback: 
 REF_PREFIXES = ("refs/remotes/origin/", "refs/tags/")
 SEED_PREFIXES = ("refs/remotes/origin/", "refs/tags/", "refs/heads/")
 MAX_REFS = 100000
-SHADOW_ISOLATION = (("GIT_CONFIG_GLOBAL", os.devnull), ("GIT_CONFIG_NOSYSTEM", "1"))
-
-
 def config_quote(value: str) -> str:
   return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t") + '"'
 
@@ -1006,27 +1079,6 @@ def config_text(entries: Sequence[tuple[str, str]]) -> str:
   return "\n".join(lines) + "\n"
 
 
-def user_config(repo: Repository) -> list[tuple[str, str]]:
-  """The user's global and system settings as Git resolves them for this
-  repository (includes followed, includeIf evaluated), never its own config."""
-  pairs: list[tuple[str, str]] = []
-  for scope in ("--system", "--global"):
-    output = bytearray()
-    result = read_git(repo, ["config", scope, "--includes", "--list", "-z"], 8, output.extend, MAX_CAPTURE_BYTES * 4,
-                      READ_CONFIG, sandbox=True)
-    if result.returncode:
-      continue                              # no such file: nothing to add
-    for record in bytes(output).split(b"\0"):
-      if not record:
-        continue
-      key, _, value = record.partition(b"\n")
-      key_text = os.fsdecode(key)
-      if key_text.lower().startswith(("include.", "includeif.")):
-        continue                            # already expanded above
-      pairs.append((key_text, os.fsdecode(value)))
-  return pairs
-
-
 def refspec_allowed(spec: str) -> bool:
   """Only refspecs that write remote-tracking refs (or are negative)."""
   if spec.startswith("^"):
@@ -1036,11 +1088,12 @@ def refspec_allowed(spec: str) -> bool:
               and not re.search(r"\s|\.\.", spec))
 
 
-def list_refs(repo: Repository, prefixes: Sequence[str], sandbox: bool, env: Sequence[tuple[str, str]] = ()) -> dict[str, str]:
+def list_refs(repo: Repository, prefixes: Sequence[str], sandbox: bool, env: Sequence[tuple[str, str]] = (),
+              pin: "Pin | None" = None) -> dict[str, str]:
   output = bytearray()
   # Symbolic refs (refs/remotes/origin/HEAD) are left alone: never copied, never pruned.
   result = read_git(repo, ["for-each-ref", "--format=%(objectname) %(refname) %(symref)", *prefixes], 30, output.extend,
-                    MAX_STATUS_BYTES, READ_CONFIG, env, sandbox)
+                    MAX_STATUS_BYTES, READ_CONFIG, env, sandbox, pin=pin)
   if result.returncode:
     raise InspectionError(concise_error(result, "Could not read the repository's refs. Open it in lazygit."))
   refs: dict[str, str] = {}
@@ -1054,43 +1107,33 @@ def list_refs(repo: Repository, prefixes: Sequence[str], sandbox: bool, env: Seq
   return refs
 
 
-def rewrite_url(url: str, user: Sequence[tuple[str, str]]) -> str:
-  """Git's url.<base>.insteadOf rewrite, from the user's own config only:
-  the longest matching prefix wins."""
-  best_prefix, best_base = "", None
-  for key, value in user:
-    section, base, variable = split_key(key)
-    if section == "url" and has_subsection(key) and variable == "insteadof" and value \
-        and url.startswith(value) and len(value) > len(best_prefix):
-      best_prefix, best_base = value, base
-  return url if best_base is None else best_base + url[len(best_prefix):]
-
-
 def is_relative_local(url: str) -> bool:
   if "://" in url or os.path.isabs(url):
     return False
   return not (re.match(r"^[^/]*:", url) and not url.startswith(("./", "../")))   # scp-style host:path
 
 
-def resolve_origin(url: str, repo: Repository, user: Sequence[tuple[str, str]] = ()) -> str:
-  """The origin as the shadow should see it. Git resolves a relative local
-  remote (`../remote.git`, `./x`) from the repository's top level, after the
-  user's insteadOf rewrites; the shadow lives elsewhere. So when the rewritten
-  URL is relative and local, store it absolute; otherwise keep the original
-  and let Git rewrite it with the same (frozen) user config, exactly once."""
-  rewritten = rewrite_url(url, user)
+def resolve_origin(url: str, rewritten: str, repo: Repository) -> str:
+  """The origin for the shadow. `rewritten` is `url` after the user's
+  insteadOf rules (asked from Git itself). Git expands `~/` and `~user/` and
+  resolves a relative local path from the repository's top level; the shadow
+  lives elsewhere, so such a result is stored absolute. Anything else keeps
+  the original URL, and Git rewrites it once with the same user config."""
+  if rewritten.startswith("~"):
+    return os.path.expanduser(rewritten)
   if is_relative_local(rewritten):
     return os.path.join(repo.path, rewritten)
   return url
 
 
-def replace_in_directory(directory: Path, name: str, data: bytes, mode: int = 0o644) -> None:
+def replace_in_directory(directory: "Path | int", name: str, data: bytes, mode: int = 0o644) -> None:
   """Atomically replace `directory/name` with `data` without following any
   symlink the repository's owner (or anyone who can write there) planted: the
   directory is opened with O_NOFOLLOW, the temporary file is created
   exclusively under a random name with O_NOFOLLOW, then renamed over `name`
   (rename never follows a symlink at the destination)."""
-  directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+  directory_fd = (os.dup(directory) if isinstance(directory, int)
+                  else os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC))
   try:
     temporary = f".{name}.foamy-{secrets.token_hex(8)}"
     file_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
@@ -1127,7 +1170,42 @@ def read_regular(path: Path, limit: int) -> bytes | None:
   return data
 
 
+def gitdir_includes(repo: Repository, pin: Pin) -> list[str]:
+  """The user's `includeIf "gitdir:…"` files that apply to the real repository.
+  The shadow lives elsewhere, so Git couldn't match them there; they are
+  included by path (Git reads them natively, bools and resets intact). Other
+  conditions (hasconfig, onbranch) Git evaluates in the shadow itself."""
+  files: list[str] = []
+  for scope in ("--system", "--global"):
+    output = bytearray()
+    result = read_git(repo, ["config", scope, "--includes", "--show-origin", "--list", "-z"], 8, output.extend,
+                      MAX_CAPTURE_BYTES * 4, READ_CONFIG, sandbox=True, pin=pin)
+    if result.returncode:
+      continue                              # no such file
+    parts = bytes(output).split(b"\0")
+    entries = [(os.fsdecode(parts[i]), os.fsdecode(parts[i + 1])) for i in range(0, len(parts) - 1, 2)]
+    origins = {origin[len("file:"):] for origin, _ in entries if origin.startswith("file:")}
+    for origin, record in entries:
+      key, _, value = record.partition("\n")
+      section, condition, variable = split_key(key)
+      if section == "includeif" and variable == "path" and condition.lower().startswith(("gitdir:", "gitdir/i:")) \
+          and origin.startswith("file:") and value:
+        target = os.path.expanduser(value)
+        if not os.path.isabs(target):
+          target = os.path.join(os.path.dirname(origin[len("file:"):]), target)
+        if target in origins and target not in files:
+          files.append(target)
+  return files
+
+
 def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedProcess[str] | None:
+  """Fetch an untrusted repository in a throwaway shadow repository.
+
+  Git reads the user's global and system config natively (includeIf, bare
+  booleans and empty resets behave exactly as usual); the shadow's own config
+  replaces only the repository's and holds nothing but the origin from the
+  snapshot. The real repository is pinned (see Pin): objects and ref updates
+  can only reach the directories that were inspected."""
   entries = list(policy.snapshot)
   local: dict[str, list[str]] = {}
   for scope, key, value in entries:
@@ -1136,56 +1214,70 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
   urls = local.get("remote.origin.url", [])
   if not urls:
     return None
-  directories = git_directories(repo)
-  if not directories:
-    raise InspectionError("Could not find the repository's Git directory. Open it in lazygit.")
-  common = directories[-1]
-  objects = common / "objects"
   format_ = (local.get("extensions.objectformat") or ["sha1"])[-1].lower()
   if format_ not in ("sha1", "sha256"):
     raise InspectionError("Unsupported object format. Fetch this repository in lazygit.")
   refspecs = [spec for spec in local.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
     or ["+refs/heads/*:refs/remotes/origin/*"]
-  user = user_config(repo)
-  remote = [("remote.origin.url", resolve_origin(urls[0], repo, user))] + [("remote.origin.fetch", spec) for spec in refspecs]
+  core = [("core.repositoryformatversion", "1"), ("core.bare", "true"), ("extensions.objectformat", format_)]
+  remote_tail = [("remote.origin.fetch", spec) for spec in refspecs]
   tagopt = (local.get("remote.origin.tagopt") or [""])[-1]
   if tagopt in ("--no-tags", "--tags"):
-    remote.append(("remote.origin.tagopt", tagopt))
-  core = [("core.repositoryformatversion", "1"), ("core.bare", "true"), ("extensions.objectformat", format_)]
+    remote_tail.append(("remote.origin.tagopt", tagopt))
   # A partial clone: Git 2.43 records only remote.origin.promisor and
   # partialclonefilter; older clones also extensions.partialClone.
   filters = local.get("remote.origin.partialclonefilter", [])
   promisor = (local.get("remote.origin.promisor") or ["false"])[-1].lower() in ("true", "yes", "on", "1")
   if promisor or filters or (local.get("extensions.partialclone") or [""])[-1] == "origin":
     core.append(("extensions.partialclone", "origin"))
-    remote.append(("remote.origin.promisor", "true"))
-    for spec in local.get("remote.origin.partialclonefilter", [])[-1:]:
+    remote_tail.append(("remote.origin.promisor", "true"))
+    for spec in filters[-1:]:
       if re.fullmatch(r"[A-Za-z0-9:+=._-]+", spec):
-        remote.append(("remote.origin.partialclonefilter", spec))
+        remote_tail.append(("remote.origin.partialclonefilter", spec))
 
-  before = list_refs(repo, SEED_PREFIXES, sandbox=True, env=policy.read_env)
-  root = cache_dir() / "shadow"
-  root.mkdir(mode=0o700, exist_ok=True)
-  shadow = Path(tempfile.mkdtemp(prefix="fetch-", dir=root))
+  pin = pin_repository(repo)
+  if pin is None:
+    raise InspectionError("Automatic fetch needs bubblewrap (bwrap) to run safely. Fetch this repository in lazygit.")
+  shadow: Path | None = None
   try:
+    objects = os.path.join(pin.binds[-1][1], "objects")
+    head = run_git(repo, ["symbolic-ref", "-q", "HEAD"], config=policy.read, env=policy.read_env, sandbox=True, pin=pin)
+    branch = head.stdout.strip() if head.returncode == 0 and head.stdout.strip().startswith("refs/heads/") else "refs/heads/main"
+    before = list_refs(repo, SEED_PREFIXES, sandbox=True, env=policy.read_env, pin=pin)
+    includes = [("include.path", path) for path in gitdir_includes(repo, pin)]
+    root = cache_dir() / "shadow"
+    root.mkdir(mode=0o700, exist_ok=True)
+    shadow = Path(tempfile.mkdtemp(prefix="fetch-", dir=root))
     (shadow / "refs").mkdir()
     (shadow / "objects").mkdir()
     # Byte-exact writes (os.fsencode), matching how config and refs are read.
-    (shadow / "HEAD").write_bytes(b"ref: refs/heads/main\n")
-    (shadow / "config").write_bytes(os.fsencode(config_text(core + user + remote)))
+    (shadow / "HEAD").write_bytes(os.fsencode(f"ref: {branch}\n"))          # for includeIf onbranch
+    def write_config(url: str):
+      (shadow / "config").write_bytes(os.fsencode(config_text(core + includes + [("remote.origin.url", url)] + remote_tail)))
+    write_config(urls[0])
     (shadow / "packed-refs").write_bytes(os.fsencode("# pack-refs with: sorted \n" + "".join(
       f"{oid} {name}\n" for name, oid in sorted(before.items()))))
-    shallow = common / "shallow"
-    original_shallow = read_regular(shallow, MAX_STATUS_BYTES)
+    original_shallow = read_regular(Path(f"/proc/self/fd/{pin.common}") / "shallow", MAX_STATUS_BYTES)
     if original_shallow is not None:
       (shadow / "shallow").write_bytes(original_shallow)
     view = Repository(str(shadow), repo.name, repo.owner, repo.label)
-    env = list(policy.fetch_env) + list(SHADOW_ISOLATION) + [("GIT_OBJECT_DIRECTORY", str(objects))]
+    # The user's insteadOf rules, from Git itself (no repository config here).
+    asked = run_git(view, ["ls-remote", "--get-url", "origin"], config=READ_CONFIG)
+    rewritten = asked.stdout.strip() if asked.returncode == 0 and asked.stdout.strip() else urls[0]
+    resolved = resolve_origin(urls[0], rewritten, repo)
+    if resolved != urls[0]:
+      write_config(resolved)
+    env = dict(policy.fetch_env)
+    if "GIT_SSH_COMMAND" not in os.environ and "GIT_SSH" not in os.environ:
+      configured = run_git(view, ["config", "--get", "core.sshCommand"], config=READ_CONFIG)
+      if configured.returncode != 0 or not configured.stdout.strip():
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"       # else the user's own core.sshCommand
+    env["GIT_OBJECT_DIRECTORY"] = objects
     completed = run_git(view, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
-                        FETCH_TIMEOUT_SECONDS, policy.fetch, tuple(env))
+                        FETCH_TIMEOUT_SECONDS, policy.fetch, tuple(env.items()), pin=pin)
     if completed.returncode != 0:
       return completed
-    after = list_refs(view, REF_PREFIXES, sandbox=False, env=tuple(SHADOW_ISOLATION) + (("GIT_OBJECT_DIRECTORY", str(objects)),))
+    after = list_refs(view, REF_PREFIXES, sandbox=False, env=(("GIT_OBJECT_DIRECTORY", objects),), pin=pin)
     commands: list[str] = []
     for name in sorted(set(before) | set(after)):
       if not name.startswith(REF_PREFIXES):
@@ -1205,20 +1297,25 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
     if original_shallow is not None and (shadow / "shallow").is_file():
       updated = (shadow / "shallow").read_bytes()
       if updated != original_shallow:
-        # The only file written inside the repository's Git directory.
-        replace_in_directory(common, "shallow", updated)
+        # The only file written inside the repository's Git directory, through its pinned fd.
+        replace_in_directory(pin.common, "shallow", updated)
     if commands:
       updates = shadow / "updates"
       updates.write_bytes(os.fsencode("\n".join(commands) + "\n"))
       with updates.open("rb") as stdin:
         applied = run_git(repo, ["update-ref", "--stdin"], FETCH_TIMEOUT_SECONDS, policy.read, policy.read_env,
-                          sandbox=True, stdin=stdin)
+                          sandbox=True, stdin=stdin, pin=pin)
       if applied.returncode != 0:
         return subprocess.CompletedProcess(applied.args, applied.returncode, "",
           "error: the repository's refs changed while fetching; try again")
+    if repository_identity(repo) != pin.identity:
+      return subprocess.CompletedProcess(completed.args, 1, "",
+        "error: the repository was moved or replaced during the fetch; try again")
     return completed
   finally:
-    shutil.rmtree(shadow, ignore_errors=True)
+    pin.close()
+    if shadow is not None:
+      shutil.rmtree(shadow, ignore_errors=True)
 
 
 def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
@@ -1233,13 +1330,22 @@ def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[
 
 
 def _fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
+  pin = trusted_pin(repo, trusted)
   try:
-    policy = repository_policy(repo, is_trusted(repo, trusted))
+    return _fetch_pinned(repo, pin)
+  finally:
+    if pin is not None:
+      pin.close()
+
+
+def _fetch_pinned(repo: Repository, pin: "Pin | None") -> dict[str, Any]:
+  try:
+    policy = replace(TRUSTED_POLICY, pin=pin) if pin is not None else repository_policy(repo, False)
   except (OSError, subprocess.TimeoutExpired) as error:
     return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
             "operation": "fetch", "attempts": 0, "message": str(error)[:240]}
   try:
-    remote = run_git(repo, ["remote", "get-url", "origin"], config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
+    remote = run_git(repo, ["remote", "get-url", "origin"], config=policy.read, env=policy.read_env, sandbox=policy.sandboxed, pin=policy.pin)
   except (OSError, subprocess.TimeoutExpired):
     remote = None
   if remote is None or remote.returncode != 0:
@@ -1260,7 +1366,7 @@ def _fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict
         completed = shadow_fetch(repo, policy)
       else:
         completed = run_git(repo, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
-                            FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env)
+                            FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env, pin=policy.pin)
     except InspectionError as error:
       return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
               "operation": "fetch", "attempts": attempts, "message": str(error)[:240]}

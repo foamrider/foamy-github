@@ -89,3 +89,26 @@ test('status rows carry optional lfs/trusted booleans', () => {
   assert.equal(parsed.repos[0].trusted, false)
   assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{...row, lfs:'yes'}]})).ok, false)
 })
+
+test('trust edits compose over the newest queued save (untrust B then C)', () => {
+  const A = {path:'/a', identity:'1:1:1'}, B = {path:'/b', identity:'2:2:2'}, C = {path:'/c', identity:'3:3:3'}
+  const effective = {trustedRepositories: [A, B, C]}
+  let waiting = []
+  // First edit while another save is in flight: queued.
+  const first = Model.withTrust(Model.trustBase(effective, waiting), B, false)
+  waiting = [{key: 'inotifyEnabled', value: false}, {key: 'trustedRepositories', value: first}]
+  const second = Model.withTrust(Model.trustBase(effective, waiting), C, false)
+  assert.deepEqual(second, [A], 'B must stay untrusted')
+  // The old composition (effective settings only) restored B:
+  assert.deepEqual(Model.withTrust(Model.trustedRepositories(effective), C, false), [A, B])
+})
+
+test('fetch helper output is validated before reporting', () => {
+  assert.equal(Model.fetchOutcome(1, '', 'error: cannot create cache lock').status, 'error')
+  assert.equal(Model.fetchOutcome(1, '', 'error: cannot create cache lock').message, 'error: cannot create cache lock')
+  assert.equal(Model.fetchOutcome(1, '{}', '').status, 'error')
+  assert.equal(Model.fetchOutcome(1, 'garbage', '').message, 'Repository synchronization failed')
+  assert.deepEqual(Model.fetchOutcome(1, JSON.stringify({ok: false, failures: [{}, {}]}), ''), {status: 'done', message: '', failed: 2})
+  assert.equal(Model.fetchOutcome(0, JSON.stringify({ok: true, failures: []}), '').failed, 0)
+  assert.equal(Model.fetchOutcome(0, JSON.stringify({busy: true, message: 'x'}), '').status, 'busy')
+})

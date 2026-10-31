@@ -28,7 +28,7 @@ class GitErrorsTest(unittest.TestCase):
     self.assertEqual(result["message"], "No origin remote configured. Add one in lazygit, then refresh.")
     self.assertFalse(result["ok"])
     self.assertEqual(result["attempts"], 0)
-    git.assert_called_once_with(repo, ["remote", "get-url", "origin"], config=(), env=(), sandbox=False)
+    git.assert_called_once_with(repo, ["remote", "get-url", "origin"], config=(), env=(), sandbox=False, pin=None)
     sleep.assert_not_called()
 
   def test_configured_remote_still_fetches(self):

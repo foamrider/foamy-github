@@ -351,17 +351,15 @@ Item {
     stderr: StdioCollector { id: syncError; waitForEnd: true }
     onExited: function(exitCode) {
       root.syncing = false
-      var result = null
-      try { result = JSON.parse(String(syncOutput.text || "{}")) } catch (e) {}
-      if (result && result.busy) {
-        root.setActionStatus(result.message || "Repository synchronization is already running")
-      } else if (result) {
-        var failed = (result.failures || []).length
-        root.actionMessages = failed > 0 ? [{label: "%1 repositories failed to fetch", values: [failed], count: failed}]
+      var outcome = Model.fetchOutcome(exitCode, syncOutput.text, syncError.text)
+      if (outcome.status === "busy") {
+        root.setActionStatus(outcome.message || "Repository synchronization is already running")
+      } else if (outcome.status === "done") {
+        root.actionMessages = outcome.failed > 0 ? [{label: "%1 repositories failed to fetch", values: [outcome.failed], count: outcome.failed}]
           : [{label: "Fetch complete", values: []}]
       } else {
         root.setActionStatus("")
-        root.operationError = String(syncError.text || "Repository synchronization failed").trim()
+        root.operationError = outcome.message
       }
       actionMessageTimer.restart()
       root.refresh()

@@ -93,6 +93,16 @@ ShellRoot {
         panels[1].setTrusted(lfsRepo, false)
         check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === "[]", "untrusting removes it")
         check(view1.lfsRepositories.length === 0, "no Git LFS section without LFS repositories")
+        // Trust edits queued behind an in-flight save compose (Codex: the
+        // second edit used to undo the first).
+        var prefs1 = panels[1].prefs
+        prefs1.inFlight = true
+        panels[1].setTrusted({ path: "/r/a", identity: "1:1:1" }, true)
+        panels[1].setTrusted({ path: "/r/b", identity: "2:2:2" }, true)
+        var queued = prefs1.waiting.filter(function(item) { return item.key === "trustedRepositories" })
+        check(queued.length === 1 && queued[0].value.length === 2, "queued trust edits compose")
+        prefs1.waiting = []
+        prefs1.inFlight = false
         panels[1].close()
         panels[0].destroy()
       } else if (n === 3) {

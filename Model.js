@@ -149,6 +149,30 @@ function isTrusted(list, repo) {
   return !!repo && (list || []).some(function(entry) { return entry.path === repo.path && entry.identity === repo.identity })
 }
 
+// The list a trust edit must start from: the newest queued save of
+// trustedRepositories if one waits behind an in-flight save, else the
+// effective settings (saved + in flight). Composing over anything older
+// would undo an earlier queued edit (untrust B, then C, restoring B).
+function trustBase(effectiveSettings, waiting) {
+  var queued = (waiting || []).filter(function(item) { return item && item.key === "trustedRepositories" })
+  return queued.length > 0 ? trustedRepositories({ trustedRepositories: queued[queued.length - 1].value })
+    : trustedRepositories(effectiveSettings)
+}
+
+// What a fetch helper run means: "busy", "done" (with failures) or "error".
+// A non-zero exit without a structured result is an error (stderr), never
+// "Fetch complete".
+function fetchOutcome(exitCode, stdout, stderr) {
+  var result = null
+  try { result = JSON.parse(String(stdout || "")) } catch (e) {}
+  var structured = !!result && typeof result === "object" && !Array.isArray(result)
+    && (result.busy === true || (typeof result.ok === "boolean" && Array.isArray(result.failures)))
+  if (structured && result.busy === true) return { status: "busy", message: String(result.message || ""), failed: 0 }
+  if (structured) return { status: "done", message: "", failed: result.failures.length }
+  var detail = String(stderr || "").trim().slice(0, 240)
+  return { status: "error", message: detail || "Repository synchronization failed", failed: 0, exitCode: exitCode }
+}
+
 // The trusted list with `repo` (its path and identity) added or removed.
 function withTrust(list, repo, trusted) {
   var out = (list || []).filter(function(entry) { return entry.path !== repo.path })
@@ -245,6 +269,8 @@ if (typeof module !== "undefined") {
     trustedRepositories: trustedRepositories,
     withTrust: withTrust,
     isTrusted: isTrusted,
+    trustBase: trustBase,
+    fetchOutcome: fetchOutcome,
     lfsRepos: lfsRepos,
     validTrustedList: validTrustedList,
     syncErrorText: syncErrorText
