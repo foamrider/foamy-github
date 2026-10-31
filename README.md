@@ -85,7 +85,7 @@ below.
 | Transports (`ext::`, `fd::`, `file://`, remote helpers, `remote.*.vcs`, `protocol.*`, every subsection spelling) | none | only http(s), ssh and git, plus remote helpers your own config allows `always` (`user` isn't enough for an automatic fetch) |
 | Local origins (a path, `file://`, relative, `~`, or an `insteadOf` rewrite to one) | — | skipped: "Automatic fetch skipped: local origins need a trusted repository." Trusted repositories fetch them |
 | Symlinked or foreign-owned Git-directory paths (`objects`, `refs/remotes/origin`, `packed-refs`, `shallow`, …), `objects/info/alternates` | — | fetch refused with a message (alternates: untrusted only) |
-| On-demand fetches of missing objects from a promisor remote (partial clone) | off (`GIT_NO_LAZY_FETCH=1`, and no transport on older Git) | — |
+| On-demand fetches of missing objects from a promisor remote (partial clone) | off (`GIT_NO_LAZY_FETCH=1`, and no transport on older Git). Trusted repositories fetch them like Git in a terminal | — |
 | `remote.*.uploadpack` | — | `--upload-pack=git-upload-pack` |
 | `http.*` / `remote.*.proxy` (proxy, TLS, CA, cookies, extra headers, resolve) | — | never read: your own global/system values (for example a private CA) apply as usual |
 | `core.alternateRefsCommand` | — | neutral |
@@ -132,8 +132,14 @@ symlink swap during a check therefore can't make a trusted check run another
 repository's config, and can't redirect a fetch's objects or ref updates. In that namespace the whole filesystem and the worktree are read-only;
 only the pinned Git directories are writable. `/dev` is a fresh minimal one
 (null, zero, full, random, urandom, tty), so nothing of the host's `/dev`,
-`/dev/shm` included, is reachable; `/proc`, `/tmp` and `/run` (the ssh agent
-socket) are the read-only host view. So a symlink anywhere inside
+`/dev/shm` included, is reachable. It has its own process, IPC and UTS
+namespaces and `/proc`, so no outside process is visible (and
+`/proc/<pid>/root` can't lead back to the host's mounts), and it ends with
+the helper. `/tmp` and `/run` (the ssh agent socket) are the read-only host
+view, and the network is shared. Only your own user ID exists inside, so
+root-owned files appear owned by `nobody`. ssh refuses included config files
+like that, so a copy of `/etc/ssh/ssh_config.d` owned by you, with the same
+content, is mounted over it. So a symlink anywhere inside
 them that points into another repository (for example below
 `refs/remotes/origin`) can't be written through, and the fetch fails
 instead. Helpers that run there (ssh, your credential helpers) can read what
@@ -158,9 +164,10 @@ holds only the repository format, worktree and ignore settings, the
 branch/remote mapping for upstream counts, and the remote URLs; there are no
 filter, fsmonitor, hooks or other driver keys. The URLs are only context, so
 your own `includeIf "hasconfig:remote.*.url:…"` matches as in a terminal (an
-included `core.excludesFile` still applies). Status checks never contact a
-remote, trusted or not: no transport is allowed and a partial clone's missing
-objects are never fetched on demand (`GIT_NO_LAZY_FETCH`). A mid-check edit to the repository's config is
+included `core.excludesFile` still applies). Untrusted status checks never
+contact a remote: no transport is allowed and a partial clone's missing
+objects are never fetched on demand (`GIT_NO_LAZY_FETCH`). Trusted ones
+behave like `git status` in a terminal and may fetch them. A mid-check edit to the repository's config is
 therefore invisible to Git, and Landlock stays on as a second layer. Values
 are kept as Git read them: a bare boolean (`filemode` with no value, which is
 true) stays a bare key, not an empty value (false).

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import concurrent.futures
 import ctypes
 import fcntl
@@ -142,10 +143,10 @@ class GitPolicy:
 # Trusted repositories run their own config, but not their submodules': trust
 # is per repository, and a submodule worktree is a separate repository (whose
 # config would otherwise run during status or an on-demand submodule fetch).
-# Their inspection doesn't contact a remote either: a partial clone's missing
-# object is never fetched on demand during status (the same "reads" rule).
-TRUSTED_POLICY = GitPolicy(read_env=config_environment(READ_TRANSPORT) + READ_ENV,
-                           status=("--ignore-submodules=dirty",), fetch_args=("--no-recurse-submodules",))
+# Otherwise they behave like Git in a terminal: a partial clone's missing
+# object is fetched on demand during status, through the repository's own
+# config (the pinned namespace shares the network).
+TRUSTED_POLICY = GitPolicy(status=("--ignore-submodules=dirty",), fetch_args=("--no-recurse-submodules",))
 DEFAULT_POLICY = GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES + READ_TRANSPORT) + READ_ENV,
                            status=("--ignore-submodules=dirty",),
                            fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
@@ -781,15 +782,57 @@ def bwrap_command() -> list[str]:
           # so no /dev/shm). Only the pinned Git directories are bound
           # writable (Pin.prefix), so a symlink anywhere inside them that
           # points elsewhere (another repository's refs) can't be written
-          # through: the write fails instead. /proc, /tmp and /run (the
-          # ssh agent socket) stay as the read-only host view.
-          command = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev"]
+          # through: the write fails instead. Its own PID, IPC and UTS
+          # namespaces and /proc: no outside process is visible, so
+          # /proc/<pid>/root can't lead back to the host's writable mount
+          # view. /tmp and /run (the ssh agent socket) stay as the
+          # read-only host view, and the network is shared (fetches, and
+          # trusted lazy fetches). Everything dies with the helper.
+          command = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc",
+                     "--unshare-ipc", "--unshare-uts", "--die-with-parent"]
           if subprocess.run([*command, "--", "true"], capture_output=True, timeout=5).returncode == 0:
             found = command
         except (OSError, subprocess.TimeoutExpired):
           pass
       _bwrap = found
     return _bwrap
+
+
+SSH_INCLUDES = "/etc/ssh/ssh_config.d"
+_ssh_copy: "tuple[tuple[tuple[str, int, int], ...], str] | None" = None
+
+
+def ssh_config_mounts() -> list[str]:
+  """A copy of /etc/ssh/ssh_config.d owned by the user, mounted over it.
+
+  The namespace maps only the user's own UID, so root-owned files show up
+  as owned by `nobody`, and ssh refuses any Include'd config that isn't
+  owned by root or the user ("Bad owner or permissions"): every ssh fetch
+  failed. The copy holds the same content (symlinks followed), so ssh reads
+  exactly the system's settings."""
+  global _ssh_copy
+  try:
+    names = sorted(name for name in os.listdir(SSH_INCLUDES) if name.endswith(".conf"))
+    state = tuple((name, (info := os.stat(os.path.join(SSH_INCLUDES, name))).st_mtime_ns, info.st_size) for name in names)
+  except OSError:
+    return []
+  with _probe_lock:
+    if _ssh_copy is None or _ssh_copy[0] != state or not os.path.isdir(_ssh_copy[1]):
+      base = Path(os.environ.get("XDG_RUNTIME_DIR") or cache_dir()) / "foamy-github-ssh"
+      base.mkdir(mode=0o700, exist_ok=True)
+      copy = tempfile.mkdtemp(prefix="ssh_config.d-", dir=base)
+      for name in names:
+        try:
+          with open(os.path.join(SSH_INCLUDES, name), "rb") as source:
+            data = source.read(1 << 20)
+        except OSError:
+          continue                                   # unreadable for the user: ssh can't read it either
+        target = os.open(os.path.join(copy, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(target, "wb") as handle:
+          handle.write(data)
+      _ssh_copy = (state, copy)                      # an older copy may still be in use: removed at exit
+      atexit.register(shutil.rmtree, copy, True)
+    return ["--ro-bind", _ssh_copy[1], SSH_INCLUDES]
 
 
 @dataclass
@@ -816,7 +859,7 @@ class Pin:
     return entries
 
   def prefix(self) -> list[str]:
-    command = list(bwrap_command())
+    command = list(bwrap_command()) + ssh_config_mounts()
     for option, fd, path in self.mounts():
       command += [option, str(fd), path]
     for option, source, destination in self.extra:                # files, after every directory

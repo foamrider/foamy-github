@@ -728,6 +728,44 @@ class TrustModelTest(unittest.TestCase):
     self.assertEqual(self.git("rev-parse", "refs/heads/main", cwd=victim).strip(), before)
     self.assertFalse(any(path.name != "main" for path in (victim / ".git/refs/heads").iterdir()))
 
+  @unittest.skipUnless(status.bwrap_command(), "needs bubblewrap")
+  def test_symlinks_through_host_procfs_write_nothing(self):
+    # Codex security: the host /proc was visible, so a ref symlink to
+    # /proc/<helper pid>/root/<victim>/.git/refs/heads reached the host's
+    # writable mount view. The namespace now has its own PID namespace and
+    # /proc, where no outside process (and no host root) is visible.
+    outside = subprocess.run([*status.bwrap_command(), "--", "test", "-e", f"/proc/{os.getpid()}"])
+    self.assertNotEqual(outside.returncode, 0, "an outside process is visible in the namespace's /proc")
+    # End to end (where procfs would allow the dereference at all).
+    self.file_remote()
+    upstream = self.root / "upstream"
+    self.git("push", "-q", "origin", "HEAD:refs/heads/evil/main", cwd=upstream)
+    victim = self.root / "victim"
+    subprocess.run(["git", "clone", "-q", str(self.root / "remote.git"), str(victim)], check=True, capture_output=True)
+    self.git("update-ref", "refs/heads/main", self.git("rev-parse", "HEAD").strip(), cwd=victim)
+    before = self.git("rev-parse", "refs/heads/main", cwd=victim).strip()
+    (self.path / ".git/refs/remotes/origin").mkdir(parents=True, exist_ok=True)
+    (self.path / ".git/refs/remotes/origin/evil").symlink_to(f"/proc/{os.getpid()}/root{victim}/.git/refs/heads")
+    result = self.fetched()
+    self.assertFalse(result["ok"], "a write through host /proc was reported as success")
+    self.assertEqual(self.git("rev-parse", "refs/heads/main", cwd=victim).strip(), before)
+    self.assertFalse(any(path.name != "main" for path in (victim / ".git/refs/heads").iterdir()))
+
+  @unittest.skipUnless(status.bwrap_command() and shutil.which("ssh") and os.path.isdir("/etc/ssh/ssh_config.d")
+                       and any(name.endswith(".conf") for name in os.listdir("/etc/ssh/ssh_config.d")),
+                       "needs bubblewrap, ssh and system ssh_config.d includes")
+  def test_ssh_reads_the_system_includes_inside_the_namespace(self):
+    # Only the user's UID is mapped, so root-owned ssh_config.d files looked
+    # owned by nobody and ssh refused them ("Bad owner or permissions"):
+    # every automatic ssh fetch failed. A user-owned copy is mounted over it.
+    pin = status.pin_repository(self.repo)
+    self.addCleanup(pin.close)
+    parsed = subprocess.run([*pin.prefix(), "ssh", "-G", "example.invalid"], capture_output=True, text=True,
+                            pass_fds=pin.fds())
+    self.assertEqual(parsed.returncode, 0, parsed.stderr)
+    host = subprocess.run(["ssh", "-G", "example.invalid"], capture_output=True, text=True).stdout
+    self.assertEqual(sorted(parsed.stdout.splitlines()), sorted(host.splitlines()), "ssh saw different settings")
+
   def test_bare_boolean_in_the_frozen_status_config_stays_true(self):
     # Codex P2: `[core] filemode` (no value, Git: true) was written to the
     # frozen overlay as `filemode = ""` (false), hiding exec-bit changes.
@@ -991,10 +1029,12 @@ class TrustModelTest(unittest.TestCase):
     self.assertEqual(row["dirtyCount"], 0, "the hasconfig include did not apply")
     self.assertNotIn(self.path / "build", watcher.repository_directories(self.repo))
 
-  def test_status_of_a_partial_clone_never_lazy_fetches(self):
-    # The status overlay now carries remote URLs: inspection must still never
-    # contact the promisor remote (GIT_NO_LAZY_FETCH, no transport), even
-    # when status needs a missing blob (rename detection against HEAD).
+  def test_partial_clone_lazy_fetches_only_when_trusted(self):
+    # The status overlay now carries remote URLs: untrusted inspection must
+    # still never contact the promisor remote (GIT_NO_LAZY_FETCH, no
+    # transport), even when status needs a missing blob (rename detection
+    # against HEAD). A trusted repository behaves like Git in a terminal and
+    # downloads it, from inside the pinned namespace.
     upstream = self.root / "lazy-upstream"
     subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
     self.git("config", "uploadpack.allowFilter", "true", cwd=upstream)
@@ -1014,12 +1054,15 @@ class TrustModelTest(unittest.TestCase):
     self.assertNotEqual(git("cat-file", "-e", blob).returncode, 0, "the blob should be missing to start with")
     repo = status.Repository(str(clone), "lazy", "root", "lazy")
     trust = status.parse_trusted(json.dumps([{"path": repo.path, "identity": status.repository_identity(repo)}]))
-    for trusted in (False, trust):
-      with self.subTest(trusted=bool(trusted)):
-        row = status.repository_status(repo, trusted)
-        self.assertIs(row["trusted"], bool(trusted) and bool(status.bwrap_command()))
-        watcher.repository_directories(repo, trusted)
-        self.assertNotEqual(git("cat-file", "-e", blob).returncode, 0, "status fetched a missing blob from the promisor")
+    row = status.repository_status(repo)
+    watcher.repository_directories(repo)
+    self.assertFalse(row["trusted"])
+    self.assertNotEqual(git("cat-file", "-e", blob).returncode, 0, "untrusted status fetched a missing blob")
+    row = status.repository_status(repo, trust)
+    self.assertIs(row["trusted"], bool(status.bwrap_command()))
+    self.assertTrue(row["complete"], row["error"])
+    self.assertEqual(row["dirtyCount"], 1)
+    self.assertEqual(git("cat-file", "-e", blob).returncode, 0, "trusted status did not lazy-fetch like Git does")
 
   def test_shallow_fetch_never_follows_planted_symlinks(self):
     # Codex security: a shallow update must not write through a planted
@@ -1250,11 +1293,8 @@ class NegativeControlTest(unittest.TestCase):
              if name.startswith(("test_fsmonitor", "test_repository_clean", "test_filter_name", "test_global_filter",
                                  "test_lfs_extension", "test_included", "test_fetch_disables",
                                  "test_fetch_runs", "test_fetch_ignores", "test_glob", "test_status_never"))]
-    # The repository's own config, with nothing on top (trusted reads also
-    # close transports and lazy fetches, which would hide the promisor vector).
-    raw = dataclasses.replace(status.TRUSTED_POLICY, read_env=())
-    with patch.object(status, "repository_policy", lambda repo, *rest: raw), \
-         patch.object(status, "untrusted_status_policy", lambda repo: (raw, lambda: None)):
+    with patch.object(status, "repository_policy", lambda repo, *rest: status.TRUSTED_POLICY), \
+         patch.object(status, "untrusted_status_policy", lambda repo: (status.TRUSTED_POLICY, lambda: None)):
       for name in names:
         with self.subTest(vector=name):
           result = unittest.TestResult()
