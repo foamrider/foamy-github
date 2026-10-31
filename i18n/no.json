@@ -133,5 +133,7 @@
   "Use at most 256 trusted repositories.": "Bruk høyst 256 klarerte prosjekter.",
   "Trusted repositories must be absolute paths.": "Klarerte prosjekter må være absolutte stier.",
   "Trust isn't available for this repository's filesystem.": "Klarering er ikke tilgjengelig for filsystemet dette prosjektet ligger på.",
-  "Repository changed; refresh and try again.": "Prosjektet er endret; oppdater og prøv igjen."
+  "Repository changed; refresh and try again.": "Prosjektet er endret; oppdater og prøv igjen.",
+  "More options": "Flere valg",
+  "More information": "Mer informasjon"
 }

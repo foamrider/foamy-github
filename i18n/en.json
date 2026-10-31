@@ -133,5 +133,7 @@
   "Use at most 256 trusted repositories.": "Use at most 256 trusted repositories.",
   "Trusted repositories must be absolute paths.": "Trusted repositories must be absolute paths.",
   "Trust isn't available for this repository's filesystem.": "Trust isn't available for this repository's filesystem.",
-  "Repository changed; refresh and try again.": "Repository changed; refresh and try again."
+  "Repository changed; refresh and try again.": "Repository changed; refresh and try again.",
+  "More options": "More options",
+  "More information": "More information"
 }
