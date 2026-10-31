@@ -103,6 +103,9 @@ FETCH_OVERRIDES = (
   ("credential.interactive", "false"),
 )
 BASE_PROTOCOLS = ("http", "https", "ssh", "git", "file")
+NETWORK_PROTOCOLS = ("http", "https", "ssh", "git")
+LOCAL_PROTOCOLS = ("file", "ext", "fd")
+LOCAL_ORIGIN = "Automatic fetch skipped: local origins need a trusted repository."
 # Inspection never needs a transport (see "reads" above).
 READ_TRANSPORT = (("protocol.allow", "never"),) + tuple((f"protocol.{name}.allow", "never") for name in BASE_PROTOCOLS)
 READ_ENV = (("GIT_NO_LAZY_FETCH", "1"),)
@@ -221,12 +224,16 @@ def repository_policy(repo: "Repository", trusted: bool = False, pin: "Pin | Non
   if "GIT_ASKPASS" not in os.environ:
     # Empty wins over core.askPass and SSH_ASKPASS: unattended runs never prompt.
     env["GIT_ASKPASS"] = ""
-  # Transports: only the usual ones plus remote helpers the user allowed.
-  allowed = list(BASE_PROTOCOLS)
+  # Transports: only network ones, plus remote helpers the user's own config
+  # allows `always` (a `user` policy means "when the user asked", which an
+  # unattended fetch never is). Local transports (file, ext, fd) never: the
+  # origin is repository-controlled.
+  allowed = list(NETWORK_PROTOCOLS)
   for scope, key, value in entries:
     section, name, variable = split_key(key)
     if (scope in TRUSTED_SCOPES and section == "protocol" and name and variable == "allow"
-        and value.lower() in ("always", "user") and name not in allowed and re.fullmatch(r"[A-Za-z0-9+.-]+", name)):
+        and value.lower() == "always" and name not in allowed and name.lower() not in LOCAL_PROTOCOLS
+        and re.fullmatch(r"[A-Za-z0-9+.-]+", name)):
       allowed.append(name)
   env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
   # SSH: the overlay fetch never reads the repository's own config, so its
@@ -1164,6 +1171,44 @@ def refspec_allowed(spec: str) -> bool:
               and not re.search(r"\s|\.\.", spec))
 
 
+FETCH_PATHS = ("objects", "objects/pack", "objects/info", "objects/info/alternates", "refs", "refs/remotes",
+               "refs/remotes/origin", "refs/tags", "packed-refs", "shallow", "FETCH_HEAD", "reftable", "logs",
+               "logs/refs", "logs/refs/remotes", "logs/refs/remotes/origin", "info")
+
+
+def check_fetch_paths(pin: Pin, untrusted: bool) -> None:
+  """Refuse to fetch when a path the fetch reads or writes in the Git or
+  common directory is a symlink or not the user's own: Git would follow it
+  into another repository (objects, remote-tracking refs). Untrusted
+  repositories also may not use objects/info/alternates, which redirects
+  object reads and writes."""
+  uid = os.getuid()
+  for fd in dict.fromkeys(fd for fd, _ in pin.binds[1:]):
+    for name in FETCH_PATHS:
+      try:
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+      except FileNotFoundError:
+        continue
+      except NotADirectoryError:
+        raise InspectionError(f"Automatic fetch skipped: unexpected {name} in the Git directory. Fetch it in lazygit.")
+      if stat.S_ISLNK(info.st_mode) or info.st_uid != uid:
+        raise InspectionError(f"Automatic fetch skipped: {name} in the Git directory is a symlink or not yours. "
+                              "Fetch it in lazygit.")
+      if untrusted and name == "objects/info/alternates":
+        raise InspectionError("Automatic fetch skipped: the repository borrows objects from another one "
+                              "(objects/info/alternates). Fetch it in lazygit.")
+
+
+def is_local_url(url: str) -> bool:
+  """Git's rule: `scheme://` is a URL (file:// is local), `host:path` with no
+  slash before the colon is scp-style ssh, anything else is a local path."""
+  if "://" in url:
+    return url.lower().startswith("file://")
+  if url.lower().startswith(("ext::", "fd::", "file:")):
+    return True
+  return not re.match(r"^[^/]*:", url) or url.startswith(("./", "../", "/", "~"))
+
+
 def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedProcess[str] | None:
   """Fetch an untrusted repository with its own config replaced.
 
@@ -1235,6 +1280,14 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
       if os.path.lexists(os.path.join(directory, "config.worktree")):
         extra.append(("--ro-bind", empty, os.path.join(directory, "config.worktree")))
     overlay = replace(pin, extra=tuple(extra))
+    check_fetch_paths(pin, untrusted=True)
+    # The origin as Git will use it (the user's insteadOf applied): a local
+    # path or file:// would read another repository on this machine, chosen
+    # by the repository, so only trusted repositories fetch those.
+    asked = run_git(repo, ["ls-remote", "--get-url", "origin"], config=READ_CONFIG, sandbox=True, pin=overlay)
+    effective = asked.stdout.strip() if asked.returncode == 0 else ""
+    if not effective or is_local_url(effective):
+      raise InspectionError(LOCAL_ORIGIN)
     env = dict(policy.fetch_env)
     if "GIT_SSH_COMMAND" not in os.environ and "GIT_SSH" not in os.environ:
       configured = run_git(repo, ["config", "--get", "core.sshCommand"], config=READ_CONFIG, sandbox=True, pin=overlay)
@@ -1308,6 +1361,7 @@ def _fetch_pinned(repo: Repository, pin: Pin, untrusted: bool) -> dict[str, Any]
       if policy.sandboxed:
         completed = overlay_fetch(repo, policy)
       else:
+        check_fetch_paths(pin, untrusted=False)
         completed = run_git(repo, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
                             FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env, pin=policy.pin)
     except InspectionError as error:

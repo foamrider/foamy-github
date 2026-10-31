@@ -82,7 +82,9 @@ below.
 | `core.sshCommand` (repository-local) | — | never read: custom SSH commands in a repository's own config apply only to trusted repositories. Your global one, `GIT_SSH_COMMAND`, or `ssh -o BatchMode=yes` is used |
 | `core.askPass`, prompts | — | off: `GIT_ASKPASS=""` unless you set it, `SSH_ASKPASS_REQUIRE=never`, SSH `BatchMode` |
 | `core.gitProxy` (repository-local) | — | never read |
-| Transports (`ext::`, `fd::`, remote helpers, `remote.*.vcs`, `protocol.*`, every subsection spelling) | none | only http(s), ssh, git and file, plus helpers you allowed globally |
+| Transports (`ext::`, `fd::`, `file://`, remote helpers, `remote.*.vcs`, `protocol.*`, every subsection spelling) | none | only http(s), ssh and git, plus remote helpers your own config allows `always` (`user` isn't enough for an automatic fetch) |
+| Local origins (a path, `file://`, relative, `~`, or an `insteadOf` rewrite to one) | — | skipped: "Automatic fetch skipped: local origins need a trusted repository." Trusted repositories fetch them |
+| Symlinked or foreign-owned Git-directory paths (`objects`, `refs/remotes/origin`, `packed-refs`, `shallow`, …), `objects/info/alternates` | — | fetch refused with a message (alternates: untrusted only) |
 | On-demand fetches of missing objects from a promisor remote (partial clone) | off (`GIT_NO_LAZY_FETCH=1`, and no transport on older Git) | — |
 | `remote.*.uploadpack` | — | `--upload-pack=git-upload-pack` |
 | `http.*` / `remote.*.proxy` (proxy, TLS, CA, cookies, extra headers, resolve) | — | never read: your own global/system values (for example a private CA) apply as usual |

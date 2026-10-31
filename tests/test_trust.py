@@ -72,12 +72,33 @@ class TrustModelTest(unittest.TestCase):
     time.sleep(.01)
     (self.path / "file.txt").write_text("two\n")
 
+  def served(self, relative):
+    """git:// URL for a repository under the test root (a local git daemon):
+    untrusted automatic fetches only use network origins."""
+    if not hasattr(self, "_daemon_port"):
+      import socket
+      with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+      daemon = subprocess.Popen(["git", "daemon", "--reuseaddr", "--export-all", f"--base-path={self.root}",
+                                 "--listen=127.0.0.1", f"--port={port}", str(self.root)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+      self.addCleanup(lambda: (daemon.terminate(), daemon.wait(5)))
+      deadline = time.monotonic() + 5
+      while time.monotonic() < deadline:
+        with socket.socket() as attempt:
+          if attempt.connect_ex(("127.0.0.1", port)) == 0:
+            break
+        time.sleep(.05)
+      self._daemon_port = port
+    return f"git://127.0.0.1:{self._daemon_port}/{relative}"
+
   def file_remote(self):
     remote = self.root / "remote.git"
     subprocess.run(["git", "clone", "-q", "--bare", str(self.path), str(remote)], check=True)
-    self.git("remote", "add", "origin", str(remote))
+    self.git("remote", "add", "origin", self.served("remote.git"))
     upstream = self.root / "upstream"
-    subprocess.run(["git", "clone", "-q", str(remote), str(upstream)], check=True)
+    subprocess.run(["git", "clone", "-q", str(remote), str(upstream)], check=True, capture_output=True)
     (upstream / "new.txt").write_text("new\n")
     self.git("add", "new.txt", cwd=upstream)
     self.git("commit", "-qm", "new", cwd=upstream)
@@ -399,7 +420,9 @@ class TrustModelTest(unittest.TestCase):
     (self.path / ".git/objects/info").mkdir(exist_ok=True)
     (self.path / ".git/objects/info/alternates").write_text(f"{remote}/objects\n")
     self.git("config", "core.alternateRefsCommand", self.evil)
-    self.assertTrue(self.fetched()["ok"])
+    result = self.fetched()                                    # alternates: refused for untrusted fetches
+    self.assertFalse(result["ok"])
+    self.assertIn("alternates", result["message"])
     self.assertNotRun()
 
   def recording_server(self, tls_context=None, cookie=False):
@@ -597,14 +620,52 @@ class TrustModelTest(unittest.TestCase):
   def test_origin_url_from_the_users_own_config(self):
     # Codex: a global (or globally included) remote.origin.url must work
     # when the repository has none of its own.
-    remote = self.file_remote()
+    self.file_remote()
+    url = self.served("remote.git")
     self.git("config", "--unset", "remote.origin.url")
-    (self.root / "remote.inc").write_text(f'[remote "origin"]\n\turl = {remote}\n')
-    for config in (f'[remote "origin"]\n\turl = {remote}\n', f"[include]\n\tpath = {self.root / 'remote.inc'}\n"):
+    (self.root / "remote.inc").write_text(f'[remote "origin"]\n\turl = {url}\n')
+    for config in (f'[remote "origin"]\n\turl = {url}\n', f"[include]\n\tpath = {self.root / 'remote.inc'}\n"):
       with self.subTest(config=config):
         self.global_config(config)
         result = self.fetched()
         self.assertTrue(result["ok"], result)
+
+  def test_user_protocol_policy_is_not_unattended_permission(self):
+    # Codex P1: protocol.<x>.allow=user means "when the user asked"; an
+    # automatic fetch must not treat it as allowed.
+    self.global_config("[protocol \"ext\"]\n\tallow = user\n")
+    self.git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
+    self.assertFalse(self.fetched()["ok"])
+    self.assertNotRun()
+    env = dict(status.repository_policy(self.repo).fetch_env)
+    self.assertNotIn("ext", env["GIT_ALLOW_PROTOCOL"].split(":"))
+    self.assertNotIn("file", env["GIT_ALLOW_PROTOCOL"].split(":"))
+
+  def test_symlinked_git_dir_paths_refuse_the_fetch(self):
+    # Codex P2: a symlinked objects dir or refs/remotes/origin would send the
+    # fetch's writes into another (victim) repository.
+    self.file_remote()
+    victim = self.root / "victim"
+    subprocess.run(["git", "clone", "-q", str(self.root / "remote.git"), str(victim)], check=True, capture_output=True)
+    old = self.git("rev-parse", "HEAD").strip()
+    self.git("update-ref", "refs/remotes/origin/main", old, cwd=victim)
+    self.git("pack-refs", "--all", cwd=victim)
+    self.git("update-ref", "refs/remotes/origin/main", old, cwd=victim)
+    for name, target in (("refs/remotes/origin", victim / ".git/refs/remotes/origin"), ("objects", victim / ".git/objects")):
+      with self.subTest(path=name):
+        link = self.path / ".git" / name
+        aside = link.with_name(link.name + ".aside")
+        if link.exists():
+          os.rename(link, aside)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target)
+        result = self.fetched()
+        self.assertFalse(result["ok"])
+        self.assertIn(name, result["message"])
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main", cwd=victim).strip(), old)
+        link.unlink()
+        if aside.exists():
+          os.rename(aside, link)
 
   def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
     # Codex security: trust was checked on the path, then Git reopened it.
@@ -688,37 +749,34 @@ class TrustModelTest(unittest.TestCase):
     self.assertEqual(real("refs/remotes/origin/main"), head)
     self.assertFalse(list((Path(os.environ["XDG_CACHE_HOME"]) / "foamy-github/overlay").iterdir()))   # no leftovers
 
-  def test_relative_and_non_utf8_local_origins_fetch(self):
-    # Codex: `../remote.git` resolved from the shadow instead of the
-    # repository, and a 0xff byte in an absolute origin raised while writing
-    # the shadow config (aborting the whole sync).
-    remote = self.file_remote()
-    for url in ("../remote.git", "./../remote.git"):
-      with self.subTest(url=url):
-        self.git("remote", "set-url", "origin", url)
-        self.assertTrue(self.fetched()["ok"], self.fetched())
-    odd = Path(os.fsdecode(os.fsencode(str(self.root)) + b"/remote\xff.git"))
-    os.rename(remote, odd)
-    subprocess.run([b"git", b"-C", os.fsencode(self.path), b"remote", b"set-url", b"origin", os.fsencode(odd)], check=True)
-    result = self.fetched()
-    self.assertTrue(result["ok"], result)
+  def trust_self(self):
+    return status.parse_trusted(json.dumps([{"path": self.repo.path, "identity": status.repository_identity(self.repo)}]))
 
-  def test_user_insteadof_and_home_paths_resolve_like_git(self):
-    # Codex: the user's insteadOf applies first (Git itself is asked), and
-    # `~/` / `~user/` expand to a home directory, also after a rewrite.
-    self.file_remote()                                     # $HOME/remote.git (HOME is the test root)
-    cases = (("alias/remote.git", '[url "../"]\n\tinsteadOf = alias/\n[url "../nope/"]\n\tinsteadOf = ali\n'),
-             ("~/remote.git", ""),
-             (f"~{os.environ.get('USER') or __import__('getpass').getuser()}/remote.git", ""),
-             ("home:remote.git", '[url "~/"]\n\tinsteadOf = home:\n'))
+  def test_local_origins_need_a_trusted_repository(self):
+    # Codex P1: a repository-chosen local origin (path, file://, relative,
+    # ~, or an insteadOf rewrite to a local path) reads another repository
+    # on this machine: untrusted automatic fetches skip it, trusted ones fetch.
+    remote = self.file_remote()
+    odd = Path(os.fsdecode(os.fsencode(str(self.root)) + b"/remote\xff.git"))
+    shutil.copytree(remote, odd)
+    cases = [("../remote.git", ""), ("./../remote.git", ""), (str(remote), ""), ("file://" + str(remote), ""),
+             ("~/remote.git", ""), ("alias/remote.git", '[url "../"]\n\tinsteadOf = alias/\n'),
+             ("home:remote.git", '[url "~/"]\n\tinsteadOf = home:\n'), (os.fsencode(odd), "")]
     for url, config in cases:
       with self.subTest(url=url):
         self.global_config(config)
-        self.git("remote", "set-url", "origin", url)
+        subprocess.run([b"git", b"-C", os.fsencode(self.path), b"remote", b"set-url", b"origin",
+                        url if isinstance(url, bytes) else os.fsencode(url)], check=True)
         result = self.fetched()
-        if url.startswith("~") and not url.startswith("~/") and Path(os.path.expanduser(url.split("/")[0])) != self.root:
-          continue                                         # ~user isn't the test HOME here
-        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["message"], status.LOCAL_ORIGIN)
+        trusted = status.fetch_repository(self.repo, self.trust_self())
+        self.assertTrue(trusted["ok"], trusted)
+    # A network origin rewritten by the user's insteadOf still fetches untrusted.
+    self.global_config(f'[url "{self.served("")}"]\n\tinsteadOf = served:\n')
+    self.git("remote", "set-url", "origin", "served:remote.git")
+    self.assertTrue(self.fetched()["ok"], self.fetched())
+
   def test_one_failing_repository_does_not_abort_the_sync(self):
     good = self.repo
     self.file_remote()
@@ -740,7 +798,7 @@ class TrustModelTest(unittest.TestCase):
     self.git("config", "uploadpack.allowFilter", "true", cwd=upstream)
     self.git("commit", "-q", "--allow-empty", "-m", "one", cwd=upstream)
     clone = self.root / "pc-clone"
-    subprocess.run(["git", "clone", "-q", "--filter=blob:none", "file://" + str(upstream), str(clone)], check=True,
+    subprocess.run(["git", "clone", "-q", "--filter=blob:none", self.served("pc-upstream"), str(clone)], check=True,
                    capture_output=True)
     # Like a Git 2.43 clone: promisor + filter only, no extensions.partialClone.
     subprocess.run(["git", "-C", str(clone), "config", "--unset-all", "extensions.partialclone"], capture_output=True)
@@ -766,7 +824,7 @@ class TrustModelTest(unittest.TestCase):
     for message in ("one", "two"):
       self.git("commit", "-q", "--allow-empty", "-m", message, cwd=upstream)
     clone = self.root / "sh-clone"
-    subprocess.run(["git", "clone", "-q", "--depth=1", "file://" + str(upstream), str(clone)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", "--depth=1", self.served("sh-upstream"), str(clone)], check=True, capture_output=True)
     self.git("commit", "-q", "--allow-empty", "-m", "three", cwd=upstream)
     for name in ("shallow.foamy", "shallow.lock"):
       (clone / ".git" / name).symlink_to(outside)
@@ -790,7 +848,7 @@ class TrustModelTest(unittest.TestCase):
         self.git("config", "uploadpack.allowFilter", "true", cwd=upstream)
         clone = base / "clone"
         extra = {"reftable": ["--ref-format=reftable"], "shallow": ["--depth=1"], "partial": ["--filter=blob:none"]}.get(variant, [])
-        subprocess.run(["git", "clone", "-q", *extra, "file://" + str(upstream), str(clone)], check=True, capture_output=True)
+        subprocess.run(["git", "clone", "-q", *extra, self.served(f"{variant}/upstream"), str(clone)], check=True, capture_output=True)
         path = clone
         if variant == "worktree":
           path = base / "wt"
