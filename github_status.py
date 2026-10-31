@@ -12,6 +12,7 @@ import os
 import re
 import selectors
 import shlex
+import shutil
 import stat
 import signal
 import struct
@@ -170,6 +171,7 @@ def config_environment(pairs: Sequence[tuple[str, str]]) -> tuple[tuple[str, str
 
 @dataclass(frozen=True)
 class GitPolicy:
+  sandboxed: bool = False
   read: tuple[str, ...] = ()
   read_env: tuple[tuple[str, str], ...] = ()
   status: tuple[str, ...] = ()
@@ -179,7 +181,7 @@ class GitPolicy:
 
 
 TRUSTED_POLICY = GitPolicy()
-DEFAULT_POLICY = GitPolicy(read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES + READ_TRANSPORT) + READ_ENV,
+DEFAULT_POLICY = GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES + READ_TRANSPORT) + READ_ENV,
                            status=("--ignore-submodules=dirty",),
                            fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
 
@@ -190,7 +192,8 @@ def config_entries(repo: "Repository") -> list[tuple[str, str, str]]:
   def consume(chunk: bytes):
     output.extend(chunk)
   # Listing config runs nothing; the read flags only guard against future changes.
-  result = read_git(repo, ["config", "--show-scope", "--includes", "--list", "-z"], 8, consume, MAX_CAPTURE_BYTES * 4, READ_CONFIG)
+  result = read_git(repo, ["config", "--show-scope", "--includes", "--list", "-z"], 8, consume, MAX_CAPTURE_BYTES * 4, READ_CONFIG,
+                    sandbox=True)
   if result.returncode:
     raise InspectionError(concise_error(result, "Could not read the repository's Git config. Open it in lazygit."))
   parts = bytes(output).split(b"\0")
@@ -283,8 +286,18 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   if "GIT_ASKPASS" not in os.environ:
     # Empty wins over core.askPass and SSH_ASKPASS: unattended runs never prompt.
     env["GIT_ASKPASS"] = ""
-  if any(scope in LOCAL_SCOPES and key.lower() == "core.gitproxy" for scope, key, _ in entries):
-    # core.gitProxy is first-match: only the environment beats a local entry.
+  # Exec-capable fetch settings are closed in ways no later config edit can
+  # undo (the repository can change between the snapshot and the fetch):
+  # GIT_ALLOW_PROTOCOL overrides every protocol.* setting, and core.gitProxy
+  # is first-match, so only the environment beats a repository entry.
+  allowed = list(BASE_PROTOCOLS)
+  for scope, key, value in entries:
+    section, name, variable = split_key(key)
+    if (scope in TRUSTED_SCOPES and section == "protocol" and name and variable == "allow"
+        and value.lower() in ("always", "user") and name not in allowed and re.fullmatch(r"[A-Za-z0-9+.-]+", name)):
+      allowed.append(name)
+  env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
+  if "GIT_PROXY_COMMAND" not in os.environ:
     env["GIT_PROXY_COMMAND"] = ""
   if "GIT_SSH_COMMAND" not in os.environ:
     # GIT_SSH_COMMAND beats every core.sshCommand, so a local one never runs
@@ -299,7 +312,7 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
       env["GIT_SSH_COMMAND"] = shlex.quote(os.environ["GIT_SSH"])
     else:
       env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
-  return GitPolicy(read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
+  return GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
                    fetch=READ_CONFIG, fetch_env=config_environment(fetch) + tuple(sorted(env.items())),
                    fetch_args=FETCH_ARGUMENTS)
 
@@ -529,10 +542,69 @@ def collect_repositories(folders: list[str | FolderConfig] | None = None) -> lis
   return sorted(repositories.values(), key=lambda repo: repo.label.lower())
 
 
+# --- Execution sandbox for untrusted reads ---------------------------------------------
+# Overrides are derived from a config snapshot, but every Git command re-reads
+# the repository's config, so a repository changed during a check (an include
+# adding filter.race.clean) could slip past per-name overrides. Untrusted read
+# commands therefore run under a Landlock execute restriction (util-linux
+# setpriv): only the Git binary and its ELF interpreter may be executed, so no
+# filter, hook, fsmonitor hook, shell or helper can run, whatever the config
+# says. Git then treats a filter as failed: plain filters pass content through
+# (status stays correct), `required` ones fail the check (fail closed). Where
+# setpriv or Landlock is unavailable the snapshot overrides still apply (see
+# the README trust model for the residual race).
+_sandbox: list[str] | None = None
+
+
+def elf_interpreter(path: str) -> str:
+  """PT_INTERP of a 64-bit little-endian ELF (the dynamic loader), or ""."""
+  try:
+    with open(path, "rb") as handle:
+      data = handle.read(1 << 16)
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+      return ""
+    phoff = struct.unpack_from("<Q", data, 0x20)[0]
+    phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    for index in range(phnum):
+      kind, _flags, offset, _vaddr, _paddr, size = struct.unpack_from("<IIQQQQ", data, phoff + index * phentsize)
+      if kind == 3:
+        return os.fsdecode(data[offset:offset + size].rstrip(b"\0"))
+  except (OSError, struct.error):
+    pass
+  return ""
+
+
+def sandbox_command() -> list[str]:
+  """setpriv … /path/to/git, or [] when exec can't be restricted here."""
+  global _sandbox
+  if _sandbox is not None:
+    return _sandbox
+  _sandbox = []
+  setpriv, git = shutil.which("setpriv"), shutil.which("git")
+  if not setpriv or not git:
+    return _sandbox
+  git = os.path.realpath(git)
+  command = [setpriv, "--landlock-access", "fs:execute", "--landlock-rule", f"path-beneath:execute:{git}"]
+  interpreter = elf_interpreter(git)
+  if interpreter:
+    command += ["--landlock-rule", f"path-beneath:execute:{interpreter}"]
+  try:
+    works = subprocess.run([*command, git, "--version"], capture_output=True, timeout=5).returncode == 0
+    # The restriction must really bite: a shell may not start under it.
+    blocked = subprocess.run([*command, "/bin/sh", "-c", "exit 0"], capture_output=True, timeout=5).returncode != 0
+  except (OSError, subprocess.TimeoutExpired):
+    works = blocked = False
+  if works and blocked:
+    _sandbox = [*command, git]
+  return _sandbox
+
+
 def read_git(repo: Repository, arguments: list[str], timeout: float,
              consume: Callable[[bytes], None], output_limit: int | None,
-             config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = ()) -> subprocess.CompletedProcess[str]:
+             config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = (),
+             sandbox: bool = False) -> subprocess.CompletedProcess[str]:
   deadline = time.monotonic() + timeout
+  git = (sandbox_command() if sandbox else []) or ["git"]
   global _spawning, _main_spawning
   if _terminating:
     raise InspectionError("Stopping.")
@@ -543,7 +615,7 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
       _main_spawning = True
     try:
       process = subprocess.Popen(
-        ["git", *config, "-C", repo.path, *arguments],
+        [*git, *config, "-C", repo.path, *arguments],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,
         # Read-only status must not rewrite the index and wake our own watcher.
@@ -611,14 +683,14 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
 
 
 def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Sequence[str] = READ_CONFIG,
-            env: Sequence[tuple[str, str]] = ()) -> subprocess.CompletedProcess[str]:
+            env: Sequence[tuple[str, str]] = (), sandbox: bool = False) -> subprocess.CompletedProcess[str]:
   output = bytearray()
   def consume(chunk: bytes):
     output.extend(chunk[:max(0, MAX_CAPTURE_BYTES - len(output))])
   # Mutating operations must not be interrupted just for verbose progress.
   # Retain bounded diagnostics while continuing to drain their output.
   mutating = arguments[0] in ("fetch", "push", "pull", "merge")
-  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env)
+  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env, sandbox)
   # Byte-exact, as above: branch, upstream and Git-dir paths go back into
   # Git arguments and file paths, so they must round-trip.
   result.stdout = os.fsdecode(bytes(output))
@@ -626,7 +698,7 @@ def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Se
 
 
 def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes], None], timeout: int = 15,
-                config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = ()):
+                config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = (), sandbox: bool = False):
   pending = bytearray()
   def read(chunk: bytes):
     pending.extend(chunk)
@@ -639,7 +711,7 @@ def git_records(repo: Repository, arguments: list[str], consume: Callable[[bytes
     del pending[:start]
     if len(pending) > MAX_RECORD_BYTES:
       raise InspectionError("Git status entry is too long. Open the repository in lazygit.")
-  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES, config, env)
+  result = read_git(repo, arguments, timeout, read, MAX_STATUS_BYTES, config, env, sandbox)
   if result.returncode:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   if pending:
@@ -660,7 +732,7 @@ def dirty_entries(repo: Repository, policy: GitPolicy = DEFAULT_POLICY) -> int:
     # In porcelain v1 -z, a rename/copy has a second path, not a second entry.
     rename_path = b"R" in record[:2] or b"C" in record[:2]
   git_records(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=normal", *policy.status], consume,
-              config=policy.read, env=policy.read_env)
+              config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
   if rename_path:
     raise InspectionError("Git returned an incomplete rename. Try Refresh again.")
   return count
@@ -676,7 +748,7 @@ def command_text(repo: Repository, arguments: list[str], timeout: int = 8) -> st
 
 def checked_text(repo: Repository, arguments: list[str], allowed: tuple[int, ...] = (),
                  policy: GitPolicy = DEFAULT_POLICY) -> str:
-  result = run_git(repo, arguments, config=policy.read, env=policy.read_env)
+  result = run_git(repo, arguments, config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
   if result.returncode != 0 and result.returncode not in allowed:
     raise InspectionError(concise_error(result, "Could not inspect the repository. Open it in lazygit."))
   return metadata(result.stdout.strip()) if result.returncode == 0 else ""
@@ -814,7 +886,7 @@ def uses_lfs(repo: "Repository", policy: "GitPolicy") -> bool:
     if len(names) < MAX_ATTRIBUTE_FILES:
       names.append(record)
   git_records(repo, ["ls-files", "-z", "--", ":(glob).gitattributes", ":(glob)**/.gitattributes"], consume,
-              config=policy.read, env=policy.read_env)
+              config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
   candidates += [Path(repo.path) / os.fsdecode(name) for name in names]
   return any(LFS_ATTRIBUTE.search(read_bounded(candidate)) for candidate in candidates)
 
@@ -932,7 +1004,7 @@ def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[
     return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
             "operation": "fetch", "attempts": 0, "message": str(error)[:240]}
   try:
-    remote = run_git(repo, ["remote", "get-url", "origin"], config=policy.read, env=policy.read_env)
+    remote = run_git(repo, ["remote", "get-url", "origin"], config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
   except (OSError, subprocess.TimeoutExpired):
     remote = None
   if remote is None or remote.returncode != 0:

@@ -7,6 +7,7 @@ Local Git repository status, fetch, push, and pull.
 ## Install
 
 Requires Omarchy 4.5 (also loads on 4.0.6, in English), Git, Python 3, Bash,
+util-linux `setpriv` with Landlock (both standard on Omarchy),
 `jq` and `wl-clipboard`. Opening a repository requires `lazygit` and Omarchy's
 terminal launcher; **Browse for folder** uses `qml6` and `hyprctl`.
 
@@ -89,7 +90,30 @@ misparsed.
 | Commit-graph write | — | off |
 
 Include files (`include.path`, `includeIf`) are covered: the overrides come
-after them. Your global Git config, credential helpers (for example `gh auth
+after them.
+
+The overrides are worked out from a snapshot of the repository's config, but
+each Git command reads the config again. A repository changed during a check,
+for example by an include adding a filter that `.gitattributes` already
+selects, could slip past them. So untrusted **status checks** also run under a
+[Landlock](https://docs.kernel.org/userspace-api/landlock.html) execute
+restriction (`setpriv` from util-linux): only the Git binary and its loader
+may be executed, so no filter, hook, shell or helper can start at all.
+
+A plain filter that can't run passes the content through, so counts stay
+right. A `required` one fails the check, which then shows **Status
+unavailable**. This costs about 1.5 ms per repository check (10.4 vs 8.9 ms,
+7 Git calls). **Automatic fetches** can't run under that restriction, because
+they need ssh and your credential helpers. Their command-running settings are
+closed in ways a later config change can't undo: hooks, credential helpers and
+`core.sshCommand` through command-scope or environment overrides,
+transports through `GIT_ALLOW_PROTOCOL`, `core.gitProxy` through
+`GIT_PROXY_COMMAND`, and upload-pack and maintenance on the command line.
+
+Where `setpriv` or Landlock is missing (Omarchy's kernel and util-linux have
+both), status checks fall back to the snapshot overrides alone. A repository
+rewritten during a check could then still run a filter; the trust settings
+can't close that gap. Your global Git config, credential helpers (for example `gh auth
 git-credential`) and SSH agent keep working. Repository-local credential
 helpers and unusual repository-local SSH commands don't apply to automatic
 fetches: such a repository shows the authentication error on its row, and you

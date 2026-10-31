@@ -225,6 +225,59 @@ class TrustModelTest(unittest.TestCase):
     self.assertTrue(status.repository_status(self.repo)["complete"])
     self.assertNotRun()
 
+  def inject_after_snapshot(self, edit):
+    """Run `edit` right after the policy's config snapshot (Codex: config can
+    change between the snapshot and the Git commands that use it)."""
+    real = status.config_entries
+    def snapshot_then_edit(repo):
+      entries = real(repo)
+      edit()
+      return entries
+    patcher = patch.object(status, "config_entries", side_effect=snapshot_then_edit)
+    patcher.start()
+    self.addCleanup(patcher.stop)
+
+  @unittest.skipUnless(status.sandbox_command(), "setpriv with Landlock is unavailable here")
+  def test_config_added_after_the_snapshot_cannot_run_a_filter(self):
+    (self.path / ".gitattributes").write_text("*.txt filter=race\n")
+    included = self.root / "race.inc"
+    included.write_text(f'[filter "race"]\n\tclean = {self.script("race-clean", "cat")} %f\n')
+    self.dirty_tracked_file()
+    self.inject_after_snapshot(lambda: self.git("config", "include.path", str(included)))
+    row = status.repository_status(self.repo)
+    self.assertTrue(row["complete"], row["error"])      # the failed filter passes content through
+    self.assertEqual(row["dirtyCount"], 2)
+    self.assertNotRun()
+    # Without the exec restriction (no setpriv/Landlock) this race is real:
+    # the README documents it as the residual risk of that fallback.
+    self.git("config", "--unset", "include.path")
+    with patch.object(status, "_sandbox", []):
+      status.repository_status(self.repo)
+    self.assertTrue(self.marker.exists(), "control: the race fires without the sandbox")
+
+  @unittest.skipUnless(status.sandbox_command(), "setpriv with Landlock is unavailable here")
+  def test_sandbox_blocks_every_program_and_required_filters_fail_closed(self):
+    (self.path / ".gitattributes").write_text("*.txt filter=race\n")
+    self.dirty_tracked_file()
+    self.inject_after_snapshot(lambda: [self.git("config", "filter.race.clean", str(self.script("race-clean", "cat"))),
+                                        self.git("config", "filter.race.required", "true"),
+                                        self.git("config", "core.fsmonitor", str(self.script("fsmonitor")))])
+    row = status.repository_status(self.repo)
+    self.assertFalse(row["complete"])                   # required filter can't run: unknown, not clean
+    self.assertNotRun()
+
+  def test_fetch_settings_added_after_the_snapshot_cannot_run_anything(self):
+    for url, edit in ((f"ext::sh -c {self.evil.replace(' ', '% ')}", ("protocol.ext.allow", "always")),
+                      ("git://127.0.0.1:1/repo", ("core.gitProxy", str(self.script("gitproxy"))))):
+      with self.subTest(url=url):
+        self.git("remote", "remove", "origin") if "origin" in self.git("remote") else None
+        self.git("remote", "add", "origin", url)
+        with patch.object(status, "config_entries", side_effect=lambda repo, real=status.config_entries, edit=edit: (
+            lambda entries: (self.git("config", *edit), entries)[1])(real(repo))):
+          self.assertFalse(self.fetched()["ok"])
+        self.git("config", "--unset-all", edit[0])
+    self.assertNotRun()
+
   def test_trusted_config_keeps_the_repository_behaviour(self):
     self.git("config", "core.fsmonitor", self.evil)
     status.repository_status(self.repo, trusted=True)

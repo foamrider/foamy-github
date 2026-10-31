@@ -105,7 +105,7 @@ def repository_directories(repo: status.Repository, trusted: "bool | status.Trus
       if len(ignored) > status.MAX_WATCHES:
         raise status.InspectionError("Ignored directory limit reached. Use timed refresh or select narrower repository folders.")
   status.git_records(repo, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], ignore,
-                     config=policy.read, env=policy.read_env)
+                     config=policy.read, env=policy.read_env, sandbox=policy.sandboxed)
   paths: set[Path] = set()
   budget = status.ScanBudget()
 

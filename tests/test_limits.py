@@ -24,6 +24,11 @@ class GitLimitsTest(unittest.TestCase):
                                                "XDG_CACHE_HOME": str(self.root / "cache")})
     self.environment.start()
     self.addCleanup(self.environment.stop)
+    # These tests replace git with a fake script on PATH; the Landlock sandbox
+    # would run the real git (and refuse the script's interpreter).
+    sandbox = patch.object(status, "_sandbox", [])
+    sandbox.start()
+    self.addCleanup(sandbox.stop)
 
   def script(self, code):
     self.git.write_text(f"#!{sys.executable}\nimport os, sys, time\n" + code)
