@@ -58,15 +58,15 @@ Item {
     readonly property bool refreshing: false
     readonly property bool repositoryActionRunning: false
     readonly property bool busy: false
-    // Every repository found (Settings lists those using LFS, plus trusted
-    // ones: Work/old-site stopped using LFS but keeps its trust record).
+    // Every repository found (Settings lists only those using LFS: neither
+    // .dotfiles nor Work/old-site, which stopped using LFS but keeps its trust record).
     readonly property var repos: preview.previewState === "settings-no-lfs" ? preview.sample : [
       preview.row(".dotfiles", "main", 0, 0, 1, { identity: "65:512:1" }),
       preview.row("Personal/game-assets", "main", 0, 0, 12, { usesLfs: true, trusted: false, identity: "65:2048:1" }),
       preview.row("Work/design-system", "main", 0, 0, 0, { usesLfs: true, trusted: true, identity: "65:1024:1" }),
       preview.row("Work/old-site", "main", 0, 0, 0, { trusted: true, identity: "65:4096:1" })
     ]
-    readonly property var lfsRepos: Model.lfsRepos(repos, preview.trusted)
+    readonly property var lfsRepos: Model.lfsRepos(repos)
     function fetch() {}
     function pushRepository(repo) {}
     function pullRepository(repo) {}

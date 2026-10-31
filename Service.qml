@@ -63,7 +63,7 @@ Item {
     else args.push("--trusted-json", JSON.stringify(trustedRepositories))
     return args
   }
-  readonly property var lfsRepos: Model.lfsRepos(repos, trustedRepositories)
+  readonly property var lfsRepos: Model.lfsRepos(repos)
   readonly property var repos: status.repos || []
   // Shown in the popup: local changes, ahead/behind, or a failed last fetch (its error is on the row).
   readonly property var affectedRepos: Model.displayedRepos(repos)

@@ -211,10 +211,10 @@ seen.
 - **Trusted:** a quiet **LFS** chip replaces the (i). That repository runs its
   own Git config, including LFS, hooks and filters, in automatic checks and
   fetches, so its counts are exact.
-- **Settings → Git LFS** lists only LFS repositories, each with a toggle,
-  plus any repository you trusted earlier that no longer uses LFS (so you can
-  still turn that trust off). The section is hidden when there are none.
-  Trust for repositories that aren't found anymore is kept, not deleted.
+- **Settings → Git LFS** lists only LFS repositories, each with a toggle. The
+  section is hidden when none is found. Trust you gave a repository that no
+  longer uses LFS, or that isn't found anymore, is kept as it is, not deleted;
+  it just isn't listed.
 
 Trust is stored as the repository's real path (symlinks resolved) plus the
 identity of its Git directory: device, inode and birth time
@@ -227,8 +227,7 @@ so and stay untrusted. The identity offered is the one of the directories the
 check actually inspected (its pin). When you trust a repository, the panel
 pins it again and saves trust only if the identity still matches; otherwise
 it says "Repository changed; refresh and try again" and saves nothing.
-Repositories that don't use LFS never show any of this (except a trust you
-gave one earlier, in Settings).
+Repositories that don't use LFS never show any of this.
 
 **From the earlier global switch:** if you had turned on **Trust repository
 config** (an earlier build of 1.1) for all repositories, the panel migrates it

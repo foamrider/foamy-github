@@ -81,20 +81,20 @@ test('per-repository trust: entries carry path and identity', () => {
   assert.deepEqual(Model.lfsRepos(rows).map(r => r.label), ['A', 'b'])
 })
 
-test('Settings lists repositories using LFS, plus ones still trusted; other trust records stay', () => {
+test('Settings lists only repositories using LFS; trust records of others stay', () => {
   const dotfiles = {label:'.dotfiles', path:'/home/me/.dotfiles', identity:'1:1:1', usesLfs:false}
   const assets = {label:'assets', path:'/home/me/assets', identity:'2:2:2', usesLfs:true}
   const site = {label:'site', path:'/home/me/site', identity:'3:3:3', usesLfs:false}
-  assert.deepEqual(Model.lfsRepos([dotfiles, assets, site], []).map(r => r.label), ['assets'])
-  assert.deepEqual(Model.lfsRepos([dotfiles, site], []), [], 'no LFS repository: the section hides')
-  // A repository that stopped using LFS but is trusted stays listed, so trust in effect can be revoked.
+  assert.deepEqual(Model.lfsRepos([dotfiles, assets, site]).map(r => r.label), ['assets'])
+  assert.deepEqual(Model.lfsRepos([dotfiles, site]), [], 'no LFS repository: the section hides')
+  // A trusted repository that stopped using LFS isn't listed (even when the
+  // backend reports it trusted), but its record stays.
+  assert.deepEqual(Model.lfsRepos([dotfiles, assets, {...site, trusted:true}]).map(r => r.label), ['assets'])
   const trusted = [{path: site.path, identity: site.identity}, {path: '/gone', identity: '9:9:9'}]
-  assert.deepEqual(Model.lfsRepos([dotfiles, assets, site], trusted).map(r => r.label), ['assets', 'site'])
-  // A stale record (re-cloned: other identity) doesn't list it.
-  assert.deepEqual(Model.lfsRepos([{...site, identity:'4:4:4'}], trusted), [])
-  // Toggling one repository never drops another's record, found or not.
+  // Toggling one repository never drops another's record, listed, found or not.
   assert.deepEqual(Model.withTrust(trusted, assets, true).map(e => e.path), ['/home/me/site', '/gone', '/home/me/assets'])
-  assert.deepEqual(Model.withTrust(trusted, site, false).map(e => e.path), ['/gone'])
+  assert.deepEqual(Model.withTrust(trusted, assets, false), trusted)
+  assert.deepEqual(Model.trustedRepositories({trustedRepositories: trusted}), trusted)
 })
 
 test('status rows carry optional usesLfs/trusted booleans', () => {

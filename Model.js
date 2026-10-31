@@ -180,12 +180,11 @@ function withTrust(list, repo, trusted) {
   return out
 }
 
-// Repositories Settings → Git LFS lists, by label: those that use Git LFS,
-// plus any with a trust record in `trusted` (trustedRepositories), so trust
-// in effect stays visible and revocable, e.g. for a repository that stopped
-// using LFS. Records of repositories not found are kept, never pruned.
-function lfsRepos(repos, trusted) {
-  return (repos || []).filter(function(repo) { return !!repo && (repo.usesLfs === true || isTrusted(trusted, repo)) })
+// Repositories Settings → Git LFS lists, by label: only those that use Git
+// LFS. Trust records of other repositories (one that stopped using LFS, or
+// isn't found) are kept as they are, never pruned; they just aren't listed.
+function lfsRepos(repos) {
+  return (repos || []).filter(function(repo) { return !!repo && repo.usesLfs === true })
     .sort(function(a, b) { return String(a.label).toLowerCase() < String(b.label).toLowerCase() ? -1 : 1 })
 }
 
