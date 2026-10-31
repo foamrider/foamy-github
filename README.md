@@ -156,7 +156,10 @@ Trust is stored as the repository's real path (symlinks resolved) plus the
 identity of its Git directory: device, inode and birth time
 (`trustedRepositories`). A moved or renamed repository is untrusted again, and
 so is a different repository that later appears at the same path (deleted and
-re-cloned, or swapped in). It shows the (i) again.
+re-cloned, or swapped in). It shows the (i) again. On a filesystem without a
+birth time (`statx` reports none), device and inode alone could be reused by
+a replacement, so trust isn't offered there: the (i) and the Settings row say
+so and stay untrusted.
 Repositories that don't use LFS never show any of this.
 
 **From the earlier global switch:** if you had turned on **Trust repository

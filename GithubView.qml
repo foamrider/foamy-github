@@ -125,6 +125,7 @@ PanelKeyCatcher {
     if (index < 0) return
     var info = stops.infos.indexOf(index)
     if (info >= 0) {
+      if (!repos[info].identity) return       // trust isn't available on this filesystem
       root.trustRequested(repos[info], true)
       lfsAnchor = null
       lfsRepo = null
@@ -496,7 +497,9 @@ PanelKeyCatcher {
           required property var modelData
           width: lfsSection.width
           label: String(modelData.label)
-          description: String(modelData.path)
+          description: modelData.identity ? String(modelData.path)
+            : FoamyI18n.t("Trust isn't available for this repository's filesystem.")
+          enabled: !!modelData.identity
           checked: Model.isTrusted(root.trustedList, modelData)
           onClicked: root.trustRequested(modelData, !checked)
         }
@@ -510,6 +513,9 @@ PanelKeyCatcher {
   // (i) or the popover, and flips above the (i) near the bottom edge.
   property Item lfsAnchor: null
   property var lfsRepo: null
+  // Trust needs a non-reusable repository identity (the Git directory's birth
+  // time); on filesystems without one the helper reports no identity.
+  readonly property bool lfsTrustable: !!lfsRepo && !!lfsRepo.identity
   function lfsPopoverFor(anchor, repo, wanted) {
     if (wanted && repo) { lfsAnchor = anchor; lfsRepo = repo; lfsLinger.stop() }
     else if (lfsAnchor === anchor) lfsLinger.restart()
@@ -565,6 +571,7 @@ PanelKeyCatcher {
       Text {
         width: parent.width
         text: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.")
+          + (root.lfsTrustable ? "" : "\n" + FoamyI18n.t("Trust isn't available for this repository's filesystem."))
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignLeft
@@ -577,7 +584,8 @@ PanelKeyCatcher {
         label: FoamyI18n.t("Trust this repository")
         foreground: FoamyPalette.text
         // Enter on the (i) trusts; show that by highlighting this button.
-        hasCursor: !!root.lfsAnchor && root.lfsAnchor.hasCursor === true
+        hasCursor: root.lfsTrustable && !!root.lfsAnchor && root.lfsAnchor.hasCursor === true
+        enabled: root.lfsTrustable
         onClicked: {
           if (root.lfsRepo) root.trustRequested(root.lfsRepo, true)
           root.lfsAnchor = null

@@ -756,7 +756,12 @@ def repository_identity(repo: "Repository") -> str:
     info = os.stat(directories[0], follow_symlinks=False)
   except OSError:
     return ""
-  return f"{info.st_dev}:{info.st_ino}:{birth_time_ns(directories[0])}"
+  born = birth_time_ns(directories[0])
+  if born <= 0:
+    # No birth time on this filesystem: device and inode alone can be reused
+    # by a replacement, so this repository can't be trusted (fail closed).
+    return ""
+  return f"{info.st_dev}:{info.st_ino}:{born}"
 
 
 @dataclass(frozen=True)
@@ -792,6 +797,8 @@ def parse_trusted(raw: str) -> Trust:
             and isinstance(item.get("identity"), str) and 0 < len(item["identity"]) <= 128
             and len(os.fsencode(item["path"])) <= MAX_METADATA_BYTES):
       raise ValueError("Trusted repositories must be a list of repositories")
+    if not re.fullmatch(r"\d+:\d+:[1-9]\d*", item["identity"]):
+      continue                              # no birth time (or malformed): trusts nothing
     entries.add((os.path.realpath(item["path"]), item["identity"]))
   return Trust(entries=frozenset(entries))
 
@@ -1047,15 +1054,34 @@ def list_refs(repo: Repository, prefixes: Sequence[str], sandbox: bool, env: Seq
   return refs
 
 
-def resolve_origin(url: str, repo: Repository) -> str:
-  """Git resolves a relative local remote (`../remote.git`, `./x`) from the
-  repository's top level; the shadow lives elsewhere, so make it absolute.
-  URLs (`scheme://`) and scp-style `host:path` stay as they are."""
+def rewrite_url(url: str, user: Sequence[tuple[str, str]]) -> str:
+  """Git's url.<base>.insteadOf rewrite, from the user's own config only:
+  the longest matching prefix wins."""
+  best_prefix, best_base = "", None
+  for key, value in user:
+    section, base, variable = split_key(key)
+    if section == "url" and has_subsection(key) and variable == "insteadof" and value \
+        and url.startswith(value) and len(value) > len(best_prefix):
+      best_prefix, best_base = value, base
+  return url if best_base is None else best_base + url[len(best_prefix):]
+
+
+def is_relative_local(url: str) -> bool:
   if "://" in url or os.path.isabs(url):
-    return url
-  if re.match(r"^[^/]*:", url) and not url.startswith(("./", "../")):
-    return url
-  return os.path.join(repo.path, url)
+    return False
+  return not (re.match(r"^[^/]*:", url) and not url.startswith(("./", "../")))   # scp-style host:path
+
+
+def resolve_origin(url: str, repo: Repository, user: Sequence[tuple[str, str]] = ()) -> str:
+  """The origin as the shadow should see it. Git resolves a relative local
+  remote (`../remote.git`, `./x`) from the repository's top level, after the
+  user's insteadOf rewrites; the shadow lives elsewhere. So when the rewritten
+  URL is relative and local, store it absolute; otherwise keep the original
+  and let Git rewrite it with the same (frozen) user config, exactly once."""
+  rewritten = rewrite_url(url, user)
+  if is_relative_local(rewritten):
+    return os.path.join(repo.path, rewritten)
+  return url
 
 
 def replace_in_directory(directory: Path, name: str, data: bytes, mode: int = 0o644) -> None:
@@ -1120,7 +1146,8 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
     raise InspectionError("Unsupported object format. Fetch this repository in lazygit.")
   refspecs = [spec for spec in local.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
     or ["+refs/heads/*:refs/remotes/origin/*"]
-  remote = [("remote.origin.url", resolve_origin(urls[0], repo))] + [("remote.origin.fetch", spec) for spec in refspecs]
+  user = user_config(repo)
+  remote = [("remote.origin.url", resolve_origin(urls[0], repo, user))] + [("remote.origin.fetch", spec) for spec in refspecs]
   tagopt = (local.get("remote.origin.tagopt") or [""])[-1]
   if tagopt in ("--no-tags", "--tags"):
     remote.append(("remote.origin.tagopt", tagopt))
@@ -1145,7 +1172,7 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
     (shadow / "objects").mkdir()
     # Byte-exact writes (os.fsencode), matching how config and refs are read.
     (shadow / "HEAD").write_bytes(b"ref: refs/heads/main\n")
-    (shadow / "config").write_bytes(os.fsencode(config_text(core + user_config(repo) + remote)))
+    (shadow / "config").write_bytes(os.fsencode(config_text(core + user + remote)))
     (shadow / "packed-refs").write_bytes(os.fsencode("# pack-refs with: sorted \n" + "".join(
       f"{oid} {name}\n" for name, oid in sorted(before.items()))))
     shallow = common / "shallow"

@@ -498,6 +498,20 @@ class TrustModelTest(unittest.TestCase):
     result = self.fetched()
     self.assertTrue(result["ok"], result)
 
+  def test_user_insteadof_applies_before_relative_resolution(self):
+    # Codex: a global url.<base>.insteadOf (e.g. alias/) is applied first, as
+    # Git does; only a still-relative local result is resolved.
+    self.file_remote()
+    self.global_config('[url "../"]\n\tinsteadOf = alias/\n[url "../nope/"]\n\tinsteadOf = ali\n')
+    self.git("remote", "set-url", "origin", "alias/remote.git")
+    result = self.fetched()
+    self.assertTrue(result["ok"], result)
+    user = [("url.https://example.com/.insteadof", "gh:"), ("url.https://example.com/org/.insteadof", "gh:org/")]
+    self.assertEqual(status.rewrite_url("gh:org/repo", user), "https://example.com/org/repo")   # longest prefix
+    self.assertEqual(status.resolve_origin("gh:org/repo", self.repo, user), "gh:org/repo")      # Git rewrites it
+    self.assertEqual(status.resolve_origin("alias/x", self.repo, [("url.../.insteadof", "alias/")]),
+                     os.path.join(self.repo.path, "../x"))
+
   def test_one_failing_repository_does_not_abort_the_sync(self):
     good = self.repo
     self.file_remote()
@@ -918,6 +932,28 @@ class PerRepositoryTrustTest(unittest.TestCase):
     os.rename(repo.path, self.root / "aside")
     os.rename(swapped.path, repo.path)                                       # swap another one in
     self.assertFalse(trust.covers(status.Repository(repo.path, "trusted", "root", "trusted")))
+
+  def test_no_birth_time_means_no_trust(self):
+    # Codex security: without a birth time, device+inode can be reused by a
+    # replacement, so trust is neither offered nor applied (fail closed).
+    repo, run = self.make_repo("nobtime", {".gitattributes": "* filter=lfs\n"})
+    marker = self.root / "nobtime.ran"
+    identity = status.repository_identity(repo)
+    trust = status.parse_trusted(json.dumps([{"path": repo.path, "identity": identity}]))
+    self.assertTrue(trust.covers(repo))
+    with patch.object(status, "birth_time_ns", return_value=0):
+      self.assertEqual(status.repository_identity(repo), "")
+      self.assertFalse(trust.covers(repo))
+      run("config", "core.fsmonitor", f"touch {marker}")
+      row = status.repository_status(repo, trust)
+      self.assertFalse(row["trusted"])
+      self.assertEqual(row["identity"], "")                   # the UI offers no trust
+      self.assertFalse(marker.exists())
+      # A replacement reusing the inode (same dev:ino, no birth time) stays untrusted.
+      info = os.stat(Path(repo.path) / ".git")
+      reused = status.parse_trusted(json.dumps([{"path": repo.path, "identity": f"{info.st_dev}:{info.st_ino}:0"}]))
+      self.assertEqual(reused.entries, frozenset())
+      self.assertFalse(reused.covers(repo))
 
   def test_trusted_list_is_validated(self):
     for raw in ("{}", "[1]", "not json", '[{"path": "rel", "identity": "1"}]', '[{"path": "/a"}]'):

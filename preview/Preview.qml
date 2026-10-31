@@ -28,7 +28,7 @@ Item {
 
   readonly property bool lfsTrusted: previewState === "lfs-trusted"
   readonly property var lfsSample: [
-    row("Personal/game-assets", "main", 0, 0, 12, { lfs: true, trusted: lfsTrusted }),
+    row("Personal/game-assets", "main", 0, 0, 12, { lfs: true, trusted: lfsTrusted, identity: "65:2048:1" }),
     row(".dotfiles", "main", 0, 0, 1),
     row("Personal/foamy-kit", "main", 0, 0, 10, { syncError: "No origin remote configured. Add one in lazygit, then refresh." }),
     row("Work/api-gateway", "main", 0, 2, 0)
@@ -55,7 +55,7 @@ Item {
     readonly property bool repositoryActionRunning: false
     readonly property bool busy: false
     readonly property var lfsRepos: [
-      preview.row("Personal/game-assets", "main", 0, 0, 12, { lfs: true, trusted: false }),
+      preview.row("Personal/game-assets", "main", 0, 0, 12, { lfs: true, trusted: false, identity: "65:2048:1" }),
       preview.row("Work/design-system", "main", 0, 0, 0, { lfs: true, trusted: true, identity: "65:1024:1" })
     ]
     function fetch() {}
