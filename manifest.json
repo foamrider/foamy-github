@@ -22,7 +22,7 @@
       "fetchIntervalSec": 900,
       "repositoryFolders": [],
       "inotifyEnabled": true,
-      "trustRepositoryConfig": false
+      "trustedRepositories": []
     },
     "schema": [
       {
@@ -48,12 +48,6 @@
         "max": 86400,
         "step": 300,
         "defaultValue": 900
-      },
-      {
-        "key": "trustRepositoryConfig",
-        "type": "boolean",
-        "label": "Trust repository config (let repositories run their own Git commands during automatic checks and fetches)",
-        "defaultValue": false
       }
     ]
   },

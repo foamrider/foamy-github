@@ -69,6 +69,9 @@ Panel {
 
   // repositoryFolders: a list of {path, depth}, validated by Model.parseFolderRows.
   readonly property var fields: Schema.fields.concat([{
+    key: "trustedRepositories", type: "array", maxItems: 256, defaultValue: [],
+    validate: function(value) { return Model.validTrustedList(value) }
+  }, {
     key: "repositoryFolders", type: "array", maxItems: 32, defaultValue: [],
     validate: function(value) { var parsed = Model.parseFolderRows(value); return parsed.error ? parsed.error : true }
   }])
@@ -84,6 +87,31 @@ Panel {
   function save(key, value) {
     settingsError = ""
     prefs.save(key, value)
+  }
+
+  // Per-repository trust (offered for Git LFS repositories).
+  function setTrusted(path, trusted) {
+    if (!path) return
+    settingsError = ""
+    prefs.save("trustedRepositories", Model.withTrust(Model.trustedRepositories(prefs.effectiveSettings), String(path), trusted))
+  }
+
+  // One-time migration of the old global "Trust repository config" switch:
+  // after the first complete scan, the Git LFS repositories found then become
+  // trusted (the only place trust still shows), and the switch is cleared.
+  property bool legacyMigrated: false
+  function migrateLegacyTrust() {
+    if (legacyMigrated || !member.isLeader || !Service.legacyTrustAll) return
+    if (Service.lastChecked <= 0 || Service.status.ok === false || Service.refreshing) return
+    legacyMigrated = true
+    var trusted = Model.trustedRepositories(prefs.effectiveSettings)
+    Service.lfsRepos.forEach(function(repo) { trusted = Model.withTrust(trusted, String(repo.path), true) })
+    prefs.save("trustedRepositories", trusted)
+    prefs.save("trustRepositoryConfig", false)
+  }
+  Connections {
+    target: Service
+    function onLastCheckedChanged() { root.migrateLegacyTrust() }
   }
 
   function saveFolders(rows) {
@@ -190,6 +218,7 @@ Panel {
         onSettingsRequested: root.openSettings()
         onSettingsClosed: root.closeSettings()
         onSaveRequested: function(key, value) { root.save(key, value) }
+        onTrustRequested: function(path, trusted) { root.setTrusted(path, trusted) }
         onFoldersEdited: function(rows) { root.saveFolders(rows) }
         onBrowseRequested: function(index) { root.browseFolder(index) }
         onRetryRequested: prefs.retry()

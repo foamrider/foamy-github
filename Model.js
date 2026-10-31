@@ -42,6 +42,9 @@ function parseStatus(raw) {
       if (!repo || typeof repo.complete !== "boolean" || typeof repo.affected !== "boolean")
         return failedStatus("Invalid repository status")
       if (repo.syncError === undefined) repo.syncError = ""
+      if (repo.lfs === undefined) repo.lfs = false
+      if (repo.trusted === undefined) repo.trusted = false
+      if (typeof repo.lfs !== "boolean" || typeof repo.trusted !== "boolean") return failedStatus("Invalid repository status")
       for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error", "syncError"]) {
         if (typeof repo[field] !== "string" || repo[field].length > 4096)
           return failedStatus("Invalid repository status")
@@ -123,6 +126,38 @@ function displayedRepos(repos) {
   })
 }
 
+// Trusted repository paths from settings (absolute, de-duplicated, bounded).
+function trustedRepositories(settings) {
+  var value = settings ? settings.trustedRepositories : undefined
+  var list = value === undefined || value === null ? [] : JSON.parse(JSON.stringify(value))
+  if (!Array.isArray(list)) return []
+  var out = []
+  for (var i = 0; i < list.length && out.length < 256; i++)
+    if (typeof list[i] === "string" && list[i].charAt(0) === "/" && out.indexOf(list[i]) < 0) out.push(list[i])
+  return out
+}
+
+// The trusted list with `path` added or removed.
+function withTrust(list, path, trusted) {
+  var out = (list || []).filter(function(item) { return item !== path })
+  if (trusted) out.push(path)
+  return out
+}
+
+// Repositories that use Git LFS, by label (Settings lists only these).
+function lfsRepos(repos) {
+  return (repos || []).filter(function(repo) { return !!repo && repo.lfs === true })
+    .sort(function(a, b) { return String(a.label).toLowerCase() < String(b.label).toLowerCase() ? -1 : 1 })
+}
+
+// Validation for the trustedRepositories setting.
+function validTrustedList(value) {
+  if (!Array.isArray(value) || value.length > 256) return "Use at most 256 trusted repositories."
+  for (var i = 0; i < value.length; i++)
+    if (typeof value[i] !== "string" || value[i].charAt(0) !== "/" || value[i].length > 4096) return "Trusted repositories must be absolute paths."
+  return true
+}
+
 // The inline fetch error after a row's status line ("main · 3 changed · …").
 function syncErrorText(repo, tr) {
   tr = tr || translate
@@ -191,6 +226,10 @@ if (typeof module !== "undefined") {
     repositoryMeta: repositoryMeta,
     watchRetry: watchRetry,
     displayedRepos: displayedRepos,
+    trustedRepositories: trustedRepositories,
+    withTrust: withTrust,
+    lfsRepos: lfsRepos,
+    validTrustedList: validTrustedList,
     syncErrorText: syncErrorText
   }
 }

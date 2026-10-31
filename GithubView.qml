@@ -37,14 +37,27 @@ PanelKeyCatcher {
   signal settingsErrorReported(string message)
   signal switchPanelRequested(int direction)
   signal repositoryRequested(var repo)
+  signal trustRequested(string path, bool trusted)
 
   readonly property var repos: service ? service.affectedRepos : []
   readonly property var totals: service ? service.totals : Model.defaultStatus().totals
   readonly property var sync: service ? service.sync : Model.defaultStatus().sync
   readonly property bool busy: !!service && service.busy
   readonly property bool hasFailures: sync.failures.length > 0
-  readonly property int refreshStop: repos.length
-  readonly property int settingsStop: repos.length + 1
+  // Cursor stops: each row, then its Git LFS (i) when the repository is
+  // untrusted, then Refresh and Settings.
+  readonly property var stops: {
+    var rows = [], infos = [], count = 0
+    for (var i = 0; i < repos.length; i++) {
+      rows.push(count++)
+      infos.push(repos[i] && repos[i].lfs === true && repos[i].trusted !== true ? count++ : -1)
+    }
+    return { rows: rows, infos: infos, count: count }
+  }
+  readonly property int refreshStop: stops.count
+  readonly property int settingsStop: stops.count + 1
+  readonly property var trustedList: Model.trustedRepositories(settings)
+  readonly property var lfsRepositories: service && service.lfsRepos ? service.lfsRepos : []
   readonly property string healthText: {
     if (!service) return ""
     if (service.syncing) return FoamyI18n.t("Fetching repositories…")
@@ -69,7 +82,7 @@ PanelKeyCatcher {
   implicitHeight: editingSettings ? settingsPage.implicitHeight : list.contentHeight
   blocked: editingSettings
 
-  FoamyCursor { id: cursor; count: root.repos.length + 2 }   // rows, refresh, settings
+  FoamyCursor { id: cursor; count: root.stops.count + 2 }   // rows (+ LFS info), refresh, settings
 
   onMoveRequested: function(dx, dy) { cursor.move(dy !== 0 ? dy : dx) }
   onActivateRequested: root.activate(cursor.index)
@@ -93,14 +106,31 @@ PanelKeyCatcher {
   Connections {
     target: cursor
     function onIndexChanged() {
-      if (cursor.index >= 0 && cursor.index < root.repos.length) list.positionViewAtIndex(cursor.index, ListView.Contain)
-      else if (cursor.index >= root.repos.length) list.positionViewAtBeginning()
+      var row = root.rowForStop(cursor.index)
+      if (row >= 0) list.positionViewAtIndex(row, ListView.Contain)
+      else if (cursor.index >= root.refreshStop) list.positionViewAtBeginning()
     }
   }
 
+  function rowForStop(index) {
+    var row = stops.rows.indexOf(index)
+    return row >= 0 ? row : stops.infos.indexOf(index)
+  }
+
+  // Preview/tests: put the cursor on a row's Git LFS (i) (opens its popover).
+  function clearCursor() { cursor.reset() }
+  function showLfsInfo(row) { if (row >= 0 && row < stops.infos.length && stops.infos[row] >= 0) cursor.hover(stops.infos[row]) }
+
   function activate(index) {
     if (index < 0) return
-    if (index < repos.length) root.repositoryRequested(repos[index])
+    var info = stops.infos.indexOf(index)
+    if (info >= 0) {
+      root.trustRequested(String(repos[info].path), true)
+      lfsAnchor = null
+      lfsRepo = null
+      cursor.hover(stops.rows[info])          // stay on that repository once its (i) goes
+    }
+    else if (stops.rows.indexOf(index) >= 0) root.repositoryRequested(repos[stops.rows.indexOf(index)])
     else if (index === refreshStop) { if (!busy) service.fetch() }
     else if (index === settingsStop) root.settingsRequested()
   }
@@ -423,15 +453,136 @@ PanelKeyCatcher {
       }
     }
 
+    // Git LFS: per-repository trust, only when an LFS repository was found.
     FoamySettingsSection {
+      id: lfsSection
       width: parent.width
-      title: FoamyI18n.t("Security")
-      FoamyToggle {
+      visible: root.lfsRepositories.length > 0
+      RowLayout {
         width: parent.width
-        label: FoamyI18n.t("Trust repository config")
-        description: FoamyI18n.t("Let repositories in these folders run their own Git commands (hooks, fsmonitor, filters, custom SSH or credential helpers) during automatic checks and fetches. Turn on only if you trust every repository here.")
-        checked: Prefs.value(Schema.fields, root.settings, "trustRepositoryConfig")
-        onClicked: root.saveRequested("trustRepositoryConfig", !checked)
+        spacing: FoamyStyle.gapSmall
+        Text {
+          text: FoamyI18n.t("Git LFS")
+          textFormat: Text.PlainText
+          color: FoamyPalette.secondaryText
+          font.family: FoamyStyle.fontFamily
+          font.pixelSize: FoamyStyle.font.bodySmall
+          font.weight: Font.DemiBold
+          Accessible.role: Accessible.Heading
+        }
+        FoamyAction {
+          implicitWidth: FoamyStyle.iconSize + FoamyStyle.gapSmall * 2
+          implicitHeight: implicitWidth
+          iconName: "info"
+          iconSize: FoamyStyle.iconSize - 2
+          foreground: FoamyPalette.secondaryText
+          tooltipText: FoamyI18n.t("Automatic checks run Git without a repository's own settings, filters and hooks, so nothing in a repository can run code just by being in these folders. For Git LFS that means files you edited may show as changed until Git refreshes. A trusted repository runs its own Git settings, including LFS, during automatic checks and fetches, so its counts are exact. Trust applies to the repository at that exact path; moving or renaming it removes the trust.")
+        }
+        Item { Layout.fillWidth: true }
+      }
+      Text {
+        width: lfsSection.width
+        text: FoamyI18n.t("Turn on for repositories you trust. They then run their own Git LFS settings during automatic checks.")
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignLeft
+        color: FoamyPalette.mutedText
+        font.family: FoamyStyle.fontFamily
+        font.pixelSize: FoamyStyle.font.bodySmall
+      }
+      Repeater {
+        model: root.lfsRepositories
+        FoamyToggle {
+          required property var modelData
+          width: lfsSection.width
+          label: String(modelData.label)
+          description: String(modelData.path)
+          checked: root.trustedList.indexOf(String(modelData.path)) >= 0
+          onClicked: root.trustRequested(String(modelData.path), !checked)
+        }
+      }
+    }
+  }
+
+  // ---- Git LFS popover ------------------------------------------------------------------
+  // One popover under the hovered / cursor-selected row (i). It lives in the
+  // popup body (not a separate window), stays while the pointer is over the
+  // (i) or the popover, and flips above the (i) near the bottom edge.
+  property Item lfsAnchor: null
+  property var lfsRepo: null
+  function lfsPopoverFor(anchor, repo, wanted) {
+    if (wanted && repo) { lfsAnchor = anchor; lfsRepo = repo; lfsLinger.stop() }
+    else if (lfsAnchor === anchor) lfsLinger.restart()
+  }
+  Timer {
+    id: lfsLinger
+    interval: 250                                   // time to move the pointer into the popover
+    onTriggered: if (!lfsHover.hovered) { root.lfsAnchor = null; root.lfsRepo = null }
+  }
+  Rectangle {
+    id: lfsPopover
+    readonly property bool shown: root.opened && !root.editingSettings && root.lfsAnchor !== null && root.lfsAnchor.visible
+      && root.lfsRepo !== null && root.lfsRepo.trusted !== true
+    readonly property point at: {
+      list.contentY                                   // re-place while the list scrolls
+      return root.lfsAnchor ? root.lfsAnchor.mapToItem(root, 0, 0) : Qt.point(0, 0)
+    }
+    readonly property bool above: at.y + (root.lfsAnchor ? root.lfsAnchor.height : 0) + FoamyStyle.gapSmall + height > root.height - FoamyStyle.gap
+    z: 10
+    visible: opacity > 0
+    opacity: shown ? 1 : 0
+    Behavior on opacity { NumberAnimation { duration: lfsPopover.shown ? FoamyMotion.fadeIn : FoamyMotion.fadeOut } }
+    width: Math.min(root.width - FoamyStyle.padding * 2, 300)
+    height: lfsContent.implicitHeight + FoamyStyle.gapLarge * 2
+    // Start-aligned with the (i), kept inside the popup, mirrored in RTL.
+    x: Math.max(FoamyStyle.gap, Math.min(root.width - width - FoamyStyle.gap,
+         FoamyI18n.rightToLeft ? at.x + (root.lfsAnchor ? root.lfsAnchor.width : 0) - width : at.x))
+    y: above ? at.y - height - FoamyStyle.gapSmall : at.y + (root.lfsAnchor ? root.lfsAnchor.height : 0) + FoamyStyle.gapSmall
+    radius: FoamyStyle.radius
+    color: Commons.Color.popups.background
+    border.width: FoamyStyle.borderWidth
+    border.color: FoamyPalette.border
+    Accessible.role: Accessible.ToolTip
+    Accessible.name: FoamyI18n.t("This repository uses Git LFS")
+    HoverHandler { id: lfsHover; onHoveredChanged: if (!hovered) lfsLinger.restart() }
+    Column {
+      id: lfsContent
+      x: FoamyStyle.gapLarge
+      y: FoamyStyle.gapLarge
+      width: parent.width - FoamyStyle.gapLarge * 2
+      spacing: FoamyStyle.gap
+      Text {
+        width: parent.width
+        text: FoamyI18n.t("This repository uses Git LFS")
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignLeft
+        color: FoamyPalette.text
+        font.family: FoamyStyle.fontFamily
+        font.pixelSize: FoamyStyle.font.subtitle
+        font.weight: Font.DemiBold
+      }
+      Text {
+        width: parent.width
+        text: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.")
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignLeft
+        color: FoamyPalette.secondaryText
+        font.family: FoamyStyle.fontFamily
+        font.pixelSize: FoamyStyle.font.bodySmall
+      }
+      FoamyAction {
+        iconName: "check"
+        label: FoamyI18n.t("Trust this repository")
+        foreground: FoamyPalette.text
+        // Enter on the (i) trusts; show that by highlighting this button.
+        hasCursor: !!root.lfsAnchor && root.lfsAnchor.hasCursor === true
+        onClicked: {
+          if (root.lfsRepo) root.trustRequested(String(root.lfsRepo.path), true)
+          root.lfsAnchor = null
+          root.lfsRepo = null
+        }
       }
     }
   }
@@ -474,8 +625,12 @@ PanelKeyCatcher {
       : repo.behind > 0 ? FoamyPalette.info : FoamyPalette.success
 
     height: content.implicitHeight + FoamyStyle.rowPadding * 2
-    hasCursor: cursor.at(rowIndex)
-    onHovered: cursor.hover(rowIndex)
+    readonly property int rowStop: root.stops.rows[rowIndex] !== undefined ? root.stops.rows[rowIndex] : -1
+    readonly property int infoStop: root.stops.infos[rowIndex] !== undefined ? root.stops.infos[rowIndex] : -1
+    readonly property bool lfs: !!repo && repo.lfs === true
+    readonly property bool trusted: !!repo && repo.trusted === true
+    hasCursor: cursor.at(rowStop)
+    onHovered: cursor.hover(rowStop)
     Accessible.role: Accessible.ListItem
     Accessible.name: repo ? String(repo.label) : ""
     Accessible.description: meta + (syncError ? " · " + syncError : "")
@@ -518,13 +673,18 @@ PanelKeyCatcher {
           id: statusLine
           Layout.fillWidth: true
           Layout.minimumWidth: 0
+          spacing: 0
           readonly property bool hasError: repoRow.syncError !== "" && !repoRow.unavailable
+          readonly property real badgeSpace: lfsBadge.visible ? lfsBadge.width + FoamyStyle.gapSmall : 0
           readonly property bool errorInline: hasError
-            && metaText.implicitWidth + Math.min(errorMetrics.advanceWidth, width * 0.4) <= width
+            && metaText.implicitWidth + badgeSpace + Math.min(errorMetrics.advanceWidth, width * 0.4) <= width
           TextMetrics { id: errorMetrics; font: errorText.font; text: " · " + repoRow.syncError }
           Text {
             id: metaText
-            width: statusLine.errorInline ? implicitWidth : statusLine.width
+            width: statusLine.errorInline ? implicitWidth
+              : repoRow.unavailable ? statusLine.width : Math.min(implicitWidth, statusLine.width - statusLine.badgeSpace)
+            height: Math.max(implicitHeight, lfsBadge.visible ? lfsBadge.height : 0)
+            verticalAlignment: Text.AlignVCenter
             text: repoRow.meta
             textFormat: Text.PlainText
             wrapMode: repoRow.unavailable ? Text.WordWrap : Text.NoWrap
@@ -534,10 +694,58 @@ PanelKeyCatcher {
             font.family: FoamyStyle.fontFamily
             font.pixelSize: FoamyStyle.font.bodySmall
           }
+          // Git LFS: an (i) with a popover offering trust, or an "LFS" chip once trusted.
+          Item {
+            id: lfsBadge
+            visible: repoRow.lfs && !repoRow.unavailable
+            width: (repoRow.trusted ? chip.width : info.width) + FoamyStyle.gapSmall
+            height: repoRow.trusted ? chip.height : info.height
+            Rectangle {
+              id: chip
+              visible: repoRow.trusted
+              x: FoamyStyle.gapSmall
+              width: chipText.implicitWidth + FoamyStyle.gap * 2
+              height: chipText.implicitHeight + FoamyStyle.gapTiny * 2
+              radius: FoamyStyle.pillRadius(height)
+              color: Qt.alpha(FoamyPalette.success, 0.16)
+              Accessible.role: Accessible.StaticText
+              Accessible.name: FoamyI18n.t("Git LFS, trusted")
+              Text {
+                id: chipText
+                anchors.centerIn: parent
+                text: FoamyI18n.t("LFS")
+                textFormat: Text.PlainText
+                color: FoamyPalette.onSurface(FoamyPalette.success)
+                font.family: FoamyStyle.fontFamily
+                font.pixelSize: FoamyStyle.font.caption
+                font.weight: Font.DemiBold
+              }
+            }
+            FoamyAction {
+              id: info
+              visible: !repoRow.trusted
+              x: FoamyStyle.gapSmall
+              implicitWidth: FoamyStyle.iconSize + FoamyStyle.gapSmall * 2
+              implicitHeight: implicitWidth
+              iconName: "info"
+              iconSize: FoamyStyle.iconSize - 2
+              foreground: FoamyPalette.secondaryText
+              hasCursor: cursor.at(repoRow.infoStop)
+              Accessible.name: FoamyI18n.t("This repository uses Git LFS")
+              Accessible.description: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.")
+              onHoveredChanged: {
+                if (hovered) cursor.hover(repoRow.infoStop)
+                root.lfsPopoverFor(info, repoRow.repo, hovered || hasCursor)
+              }
+              onHasCursorChanged: root.lfsPopoverFor(info, repoRow.repo, hovered || hasCursor)
+              onClicked: cursor.hover(repoRow.infoStop)
+              Component.onDestruction: root.lfsPopoverFor(info, null, false)
+            }
+          }
           Text {
             id: errorText
             visible: statusLine.hasError
-            width: statusLine.errorInline ? Math.max(0, statusLine.width - metaText.width) : statusLine.width
+            width: statusLine.errorInline ? Math.max(0, statusLine.width - metaText.width - statusLine.badgeSpace) : statusLine.width
             text: (statusLine.errorInline ? " · " : "") + repoRow.syncError
             textFormat: Text.PlainText
             elide: Text.ElideRight

@@ -1,5 +1,6 @@
 """Repository-local Git config must not run commands during automatic work."""
 import dataclasses
+import json
 import os
 from pathlib import Path
 import shutil
@@ -519,3 +520,97 @@ class ScanBudgetTest(unittest.TestCase):
               subprocess.run(["git", "-C", str(big), "init", "-q"], check=True, capture_output=True)
               watcher.repository_directories(status.Repository(str(big), "big", "d", "big"))
           self.assertLessEqual(len(consumed), 12)
+
+
+class PerRepositoryTrustTest(unittest.TestCase):
+  """Per-repository trust for Git LFS repositories (replaces the global switch)."""
+
+  def setUp(self):
+    temporary = tempfile.TemporaryDirectory()
+    self.addCleanup(temporary.cleanup)
+    self.root = Path(temporary.name)
+    patcher = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.root / "cache"), "HOME": str(self.root),
+                                      "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+    patcher.start()
+    self.addCleanup(patcher.stop)
+
+  def make_repo(self, name, files=None):
+    path = self.root / name
+    path.mkdir(parents=True)
+    run = lambda *args: subprocess.run(["git", "-C", str(path), "-c", "user.name=T", "-c", "user.email=t@e.invalid",
+                                        "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+    run("init", "-q", "-b", "main")
+    for relative, text in (files or {"file.txt": "one\n"}).items():
+      (path / relative).parent.mkdir(parents=True, exist_ok=True)
+      (path / relative).write_text(text)
+    run("add", "-A")
+    run("commit", "-qm", "init")
+    return status.Repository(str(path.resolve()), name, "root", name), run
+
+  def test_detection_from_attributes_and_lfs_directory(self):
+    root_attr, _ = self.make_repo("root-attr", {".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n"})
+    nested, _ = self.make_repo("nested", {"assets/.gitattributes": "*.psd filter=lfs -text\n", "a.txt": "a\n"})
+    store, _ = self.make_repo("store")
+    (Path(store.path) / ".git/lfs").mkdir()
+    plain, _ = self.make_repo("plain", {".gitattributes": "*.txt text eol=lf\n# filter=lfsish\n"})
+    for repo, expected in ((root_attr, True), (nested, True), (store, True), (plain, False)):
+      with self.subTest(repo=repo.name):
+        row = status.repository_status(repo)
+        self.assertTrue(row["complete"], row["error"])
+        self.assertIs(row["lfs"], expected)
+        self.assertFalse(row["trusted"])
+
+  def test_detection_runs_no_repository_code_and_survives_hostile_files(self):
+    marker = self.root / "pwned"
+    repo, run = self.make_repo("hostile", {".gitattributes": "* filter=lfs\n", ".lfsconfig": "[lfs]\n\textension = x\n"})
+    nested = Path(repo.path) / "sub"
+    nested.mkdir()
+    (nested / ".gitattributes").symlink_to("/dev/zero")
+    run("add", "sub/.gitattributes")
+    # Hostile config last, so only the code under test runs Git from here on.
+    for key, value in (("core.fsmonitor", f"touch {marker}"), ("filter.lfs.clean", f"touch {marker}; cat"),
+                       ("filter.lfs.process", f"touch {marker}"), ("lfs.extension.x.clean", f"touch {marker}; cat")):
+      run("config", key, value)
+    (Path(repo.path) / "file.txt").write_text("changed\n")
+    row = status.repository_status(repo)
+    self.assertTrue(row["complete"], row["error"])
+    self.assertTrue(row["lfs"])
+    self.assertFalse(marker.exists())
+    # Detection reads attribute files with bounded, no-follow, non-blocking
+    # reads: a FIFO or a symlink to an endless file can't stall it.
+    attributes = Path(repo.path) / ".gitattributes"
+    attributes.unlink()
+    os.mkfifo(attributes)                   # no Git command reads the worktree after this
+    started = time.monotonic()
+    self.assertFalse(status.uses_lfs(repo, status.repository_policy(repo)))
+    self.assertLess(time.monotonic() - started, 5)
+    self.assertFalse(marker.exists())
+
+  def test_trust_applies_only_to_that_exact_repository(self):
+    markers = {name: self.root / f"{name}.ran" for name in ("a", "b")}
+    repos = {}
+    for name in ("a", "b"):
+      repo, run = self.make_repo(name, {".gitattributes": "*.txt filter=lfs\n", "file.txt": "x\n"})
+      run("config", "core.fsmonitor", f"touch {markers[name]}")
+      repos[name] = repo
+    link = self.root / "link-to-a"
+    link.symlink_to(repos["a"].path)
+    trust = status.parse_trusted(json.dumps([str(link)]))   # symlinks resolve to the real path
+    rows = {row["name"]: row for row in status.status_payload(
+      [{"path": str(self.root), "depth": 1}], trust)["repos"]}
+    self.assertTrue(rows["a"]["trusted"] and rows["a"]["lfs"])
+    self.assertFalse(rows["b"]["trusted"])
+    self.assertTrue(markers["a"].exists(), "a trusted repository runs its own config")
+    self.assertFalse(markers["b"].exists(), "an untrusted repository stays hardened")
+
+  def test_moved_repository_is_untrusted_again(self):
+    repo, run = self.make_repo("orig", {".gitattributes": "* filter=lfs\n"})
+    trust = status.parse_trusted(json.dumps([repo.path]))
+    moved = self.root / "moved"
+    Path(repo.path).rename(moved)
+    self.assertFalse(trust.covers(status.Repository(str(moved), "moved", "root", "moved")))
+
+  def test_trusted_list_is_validated(self):
+    for raw in ("{}", '["relative"]', "[1]", "not json"):
+      with self.assertRaises(ValueError):
+        status.parse_trusted(raw)

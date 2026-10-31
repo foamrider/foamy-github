@@ -80,6 +80,12 @@ ShellRoot {
         check(view1.settingsError !== "", "invalid folders are reported, not saved")
         panels[1].saveFolders([{ path: "~/GitHub", depth: 3 }])
         check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.repositoryFolders) === JSON.stringify([{ path: "~/GitHub", depth: 3 }]), "folders saved as an array")
+        panels[1].setTrusted("/home/me/GitHub/lfs-repo", true)
+        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === JSON.stringify(["/home/me/GitHub/lfs-repo"]), "trusting a repository saves its path")
+        check(Plugin.Service.helperArguments().indexOf("--trusted-json") >= 0, "helpers get the trusted list")
+        panels[1].setTrusted("/home/me/GitHub/lfs-repo", false)
+        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === "[]", "untrusting removes it")
+        check(view1.lfsRepositories.length === 0, "no Git LFS section without LFS repositories")
         panels[1].close()
         panels[0].destroy()
       } else if (n === 3) {

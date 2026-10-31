@@ -39,7 +39,7 @@ the next bar panel.
 | Detect changes automatically | on | Updates through filesystem notifications (inotify); recommended |
 | Refresh every | 30 seconds | Timed refresh; with automatic detection it is only the fallback. **Off** turns polling off |
 | Fetch remotes every | 15 minutes | Background `git fetch` of every repository |
-| Trust repository config | off | See [Trust model](#trust-model) |
+| Git LFS: trust per repository | none | Shown only when a Git LFS repository is found. See [Trust model](#trust-model) |
 
 Settings save in place (`bar.shell.updateEntryInline`, else `omarchy bar set`).
 
@@ -65,7 +65,7 @@ include) and its attributes can make Git run programs. A repository unpacked
 from an untrusted archive into one of your folders could otherwise run code
 just by being there.
 
-So unless you trust repository config, every automatic Git command runs with
+So unless you trust that repository, every automatic Git command runs with
 overrides that Git applies after all config files and includes. They are
 passed as `GIT_CONFIG_COUNT`/`KEY`/`VALUE` pairs, so key names can't be
 misparsed.
@@ -103,9 +103,33 @@ on one repository and run with its normal Git config and hooks, exactly like
 Requires Git 2.31 or later (`GIT_CONFIG_COUNT`); `--no-auto-maintenance`
 needs 2.29.
 
-Turn on **Trust repository config** only if you trust every repository in
-these folders: the widget then uses each repository's config as is, like
-before 1.1.
+### Per-repository trust (Git LFS)
+
+Trust is per repository. It only matters for repositories that use Git LFS,
+because there the hardened checks can't run LFS's own filter. A repository
+counts as using LFS when a tracked `.gitattributes` (or `info/attributes`)
+sets `filter=lfs`, or its Git directory has an `lfs/` folder. Detection reads
+these files with bounded, no-follow reads and runs nothing from the repository.
+
+- **Untrusted LFS repository:** an (i) after its status line explains that LFS
+  files you edited may show as changed until Git refreshes. Hover it, or move
+  the keyboard cursor onto it, then choose **Trust this repository** (Enter).
+- **Trusted:** a quiet **LFS** chip replaces the (i). That repository runs its
+  own Git config, including LFS, hooks and filters, in automatic checks and
+  fetches, so its counts are exact.
+- **Settings → Git LFS** lists only LFS repositories, each with a toggle. The
+  section is hidden when none is found.
+
+Trust is stored as the repository's real path (`trustedRepositories`), with
+symlinks resolved. A moved or renamed repository is untrusted again.
+Repositories that don't use LFS never show any of this.
+
+**From the earlier global switch:** if you had turned on **Trust repository
+config** (an earlier build of 1.1) for all repositories, the panel migrates it
+once. After
+the first complete scan, the LFS repositories found then become trusted and
+the global switch is cleared. Non-LFS repositories lose nothing visible: trust
+only changed fsmonitor speed and hooks for them.
 
 ## Limits
 

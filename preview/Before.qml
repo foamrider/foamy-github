@@ -10,7 +10,7 @@ Item {
   id: preview
   required property QtObject bar
   required property Item anchorItem
-  property var previewStates: ["repositories", "settings"]
+  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "settings"]   // dev had no LFS UI: lfs-* show its repository list
   property string previewState: "repositories"
   property int settleMs: 2500
   property var popup: null

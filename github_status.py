@@ -11,6 +11,7 @@ import os
 import re
 import selectors
 import shlex
+import stat
 import signal
 import subprocess
 import sys
@@ -664,11 +665,100 @@ def checked_text(repo: Repository, arguments: list[str], allowed: tuple[int, ...
   return metadata(result.stdout.strip()) if result.returncode == 0 else ""
 
 
-def repository_status(repo: Repository, trusted: bool = False) -> dict[str, Any]:
+# --- Per-repository trust and Git LFS detection ------------------------------------
+@dataclass(frozen=True)
+class Trust:
+  """Which repositories run their own Git config in automatic work: all of them
+  (the legacy global switch) or the ones at these exact real paths. A moved or
+  renamed repository is untrusted again; symlinks are resolved on both sides."""
+  everything: bool = False
+  paths: frozenset[str] = frozenset()
+
+  def covers(self, repo: "Repository") -> bool:
+    return self.everything or os.path.realpath(repo.path) in self.paths
+
+
+def parse_trusted(raw: str) -> Trust:
+  try:
+    paths = json.loads(raw)
+  except json.JSONDecodeError as error:
+    raise ValueError("Trusted repositories must be a JSON list") from error
+  if not isinstance(paths, list) or len(paths) > MAX_REPOSITORIES or not all(
+      isinstance(path, str) and path.startswith("/") and len(os.fsencode(path)) <= MAX_METADATA_BYTES for path in paths):
+    raise ValueError("Trusted repositories must be a list of absolute paths")
+  return Trust(paths=frozenset(os.path.realpath(path) for path in paths))
+
+
+def is_trusted(repo: "Repository", trusted: "bool | Trust") -> bool:
+  return trusted.covers(repo) if isinstance(trusted, Trust) else bool(trusted)
+
+
+MAX_ATTRIBUTE_FILES = 64
+MAX_ATTRIBUTE_BYTES = 64 * 1024
+LFS_ATTRIBUTE = re.compile(rb"(^|\s)filter=lfs(\s|$)", re.MULTILINE)
+
+
+def read_bounded(path: Path, limit: int = MAX_ATTRIBUTE_BYTES) -> bytes:
+  """At most `limit` bytes of a regular file; symlinks, FIFOs and devices read as empty."""
+  try:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+  except OSError:
+    return b""
+  try:
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+      return b""
+    return os.read(descriptor, limit)
+  except OSError:
+    return b""
+  finally:
+    os.close(descriptor)
+
+
+def git_directories(repo: "Repository") -> list[Path]:
+  """The repository's git dir and common dir, read from files (no Git process)."""
+  dot_git = Path(repo.path) / ".git"
+  if dot_git.is_dir() and not dot_git.is_symlink():
+    git_dir = dot_git
+  else:
+    first = read_bounded(dot_git, MAX_METADATA_BYTES).split(b"\n", 1)[0].decode("utf-8", "replace")
+    if not first.startswith("gitdir: "):
+      return []
+    git_dir = (Path(repo.path) / first[len("gitdir: "):].strip()).resolve()
+  directories = [git_dir]
+  common = read_bounded(git_dir / "commondir", MAX_METADATA_BYTES).decode("utf-8", "replace").strip()
+  if common:
+    directories.append((git_dir / common).resolve())
+  return directories
+
+
+def uses_lfs(repo: "Repository", policy: "GitPolicy") -> bool:
+  """Whether the repository uses Git LFS, without running anything it controls:
+  an lfs/ directory in its Git dir, or `filter=lfs` in a tracked .gitattributes
+  (listed by ls-files under the hardened read policy, read with bounded,
+  no-follow reads) or in info/attributes."""
+  directories = git_directories(repo)
+  if any((directory / "lfs").is_dir() for directory in directories):
+    return True
+  candidates = [directory / "info/attributes" for directory in directories]
+  names: list[bytes] = []
+  def consume(record: bytes):
+    if len(names) < MAX_ATTRIBUTE_FILES:
+      names.append(record)
+  git_records(repo, ["ls-files", "-z", "--", ":(glob).gitattributes", ":(glob)**/.gitattributes"], consume,
+              config=policy.read, env=policy.read_env)
+  candidates += [Path(repo.path) / os.fsdecode(name) for name in names]
+  return any(LFS_ATTRIBUTE.search(read_bounded(candidate)) for candidate in candidates)
+
+
+def repository_status(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
+  trusted = is_trusted(repo, trusted)
   row = {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0,
-         "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": ""}
+         "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": "",
+         "lfs": False, "trusted": trusted}
   try:
     policy = repository_policy(repo, trusted)
+    # Detection always uses the hardened policy, even for trusted repositories.
+    row["lfs"] = uses_lfs(repo, policy if not trusted else repository_policy(repo, False))
     branch = checked_text(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], (1,), policy)
     if branch:
       upstream = checked_text(repo, ["for-each-ref", "--format=%(upstream:short)", "--", "refs/heads/" + branch], policy=policy)
@@ -710,7 +800,7 @@ def marker_is_running() -> bool:
   return True
 
 
-def status_payload(folders: list[str | FolderConfig] | None = None, trusted: bool = False) -> dict[str, Any]:
+def status_payload(folders: list[str | FolderConfig] | None = None, trusted: "bool | Trust" = False) -> dict[str, Any]:
   repositories = collect_repositories(folders)
   # Git status can touch many worktrees; cap parallelism to keep the panel refresh
   # responsive without turning it into a disk-I/O burst.
@@ -766,9 +856,9 @@ def concise_error(completed: subprocess.CompletedProcess[str] | None, fallback: 
   return message if len(message) <= 240 else message[:237] + "…"
 
 
-def fetch_repository(repo: Repository, trusted: bool = False) -> dict[str, Any]:
+def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
   try:
-    policy = repository_policy(repo, trusted)
+    policy = repository_policy(repo, is_trusted(repo, trusted))
   except (OSError, subprocess.TimeoutExpired) as error:
     return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
             "operation": "fetch", "attempts": 0, "message": str(error)[:240]}
@@ -818,7 +908,7 @@ def repository_for_path(path: str, folders: list[str | FolderConfig] | None = No
 
 
 def repository_action(mode: str, path: str, folders: list[str | FolderConfig] | None = None,
-                      trusted: bool = False) -> dict[str, Any]:
+                      trusted: "bool | Trust" = False) -> dict[str, Any]:
   repo = repository_for_path(path, folders)
   if repo is None:
     return {"ok": False, "message": "Repository is not tracked by this panel"}
@@ -886,7 +976,7 @@ def repository_action(mode: str, path: str, folders: list[str | FolderConfig] | 
       remove_marker()
 
 
-def synchronize(folders: list[str | FolderConfig] | None = None, trusted: bool = False) -> dict[str, Any]:
+def synchronize(folders: list[str | FolderConfig] | None = None, trusted: "bool | Trust" = False) -> dict[str, Any]:
   lock_path = cache_dir() / "sync.lock"
   with lock_path.open("w", encoding="utf-8") as lock:
     try:
@@ -928,15 +1018,17 @@ def main() -> int:
   parser.add_argument("command", nargs="?", default="status", choices=["status", "fetch", "push", "pull"])
   parser.add_argument("repository", nargs="?")
   parser.add_argument("--folders-json", default=json.dumps(DEFAULT_FOLDERS))
+  parser.add_argument("--trusted-json", default="[]",
+                      help="repositories (absolute paths) whose own Git config runs in automatic checks and fetches")
   parser.add_argument("--trust-repository-config", action="store_true",
-                      help="let repositories' own Git config run commands during automatic checks and fetches")
+                      help="legacy: trust every repository (migrated to --trusted-json by the panel)")
   args = parser.parse_args()
   install_signal_handlers(remove_marker)
   if (args.command in ("push", "pull")) != (args.repository is not None):
     parser.error("Only push and pull require a repository path")
   try:
     folders = parse_folders(args.folders_json)
-    trusted = args.trust_repository_config
+    trusted = Trust(everything=True) if args.trust_repository_config else parse_trusted(args.trusted_json)
     if args.command == "status":
       payload = status_payload(folders, trusted)
     elif args.command == "fetch":

@@ -93,9 +93,9 @@ class Inotify:
         yield path, name, mask
 
 
-def repository_directories(repo: status.Repository, trusted: bool = False) -> set[Path]:
+def repository_directories(repo: status.Repository, trusted: "bool | status.Trust" = False) -> set[Path]:
   root = Path(repo.path)
-  policy = status.repository_policy(repo, trusted)
+  policy = status.repository_policy(repo, status.is_trusted(repo, trusted))
   # Git identifies ignored trees in one call; never recurse into dependency/build
   # trees, but retain directories containing tracked files even if now ignored.
   ignored: set[Path] = set()
@@ -178,7 +178,7 @@ def discovery_directories(folders: list[status.FolderConfig]) -> set[Path]:
 
 
 class RepositoryWatcher:
-  def __init__(self, folders: list[status.FolderConfig], trusted: bool = False):
+  def __init__(self, folders: list[status.FolderConfig], trusted: "bool | status.Trust" = False):
     self.folders = folders
     self.trusted = trusted
     self.roots = [Path(folder["path"]).expanduser().resolve() for folder in folders]
@@ -279,12 +279,14 @@ class RepositoryWatcher:
 def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--folders-json", required=True)
+  parser.add_argument("--trusted-json", default="[]")
   parser.add_argument("--trust-repository-config", action="store_true")
   args = parser.parse_args()
   status.install_signal_handlers()
   watcher = None
   try:
-    watcher = RepositoryWatcher(status.parse_folders(args.folders_json), args.trust_repository_config)
+    trusted = status.Trust(everything=True) if args.trust_repository_config else status.parse_trusted(args.trusted_json)
+    watcher = RepositoryWatcher(status.parse_folders(args.folders_json), trusted)
     watcher.run()
   except (OSError, ValueError) as error:
     # The QML service decides whether polling is enabled and explains recovery.

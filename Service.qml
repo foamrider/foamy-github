@@ -50,13 +50,20 @@ Item {
   readonly property var repositoryFolders: Model.repositoryFolders(settings)
   readonly property string folderArguments: JSON.stringify(repositoryFolders)
   onFolderArgumentsChanged: Qt.callLater(function() { root.restartWatcher(true) })
-  readonly property bool trustRepositoryConfig: setting("trustRepositoryConfig", false) === true
-  onTrustRepositoryConfigChanged: Qt.callLater(function() { root.restartWatcher(true) })
+  // Per-repository trust: absolute paths whose own Git config runs in
+  // automatic checks (the panel offers it for Git LFS repositories). The old
+  // global switch stays honoured until the panel migrates it once.
+  readonly property bool legacyTrustAll: setting("trustRepositoryConfig", false) === true
+  readonly property var trustedRepositories: Model.trustedRepositories(settings)
+  readonly property string trustArguments: legacyTrustAll ? "*" : JSON.stringify(trustedRepositories)
+  onTrustArgumentsChanged: Qt.callLater(function() { root.restartWatcher(true) })
   function helperArguments() {
     var args = ["--folders-json", folderArguments]
-    if (trustRepositoryConfig) args.push("--trust-repository-config")
+    if (legacyTrustAll) args.push("--trust-repository-config")
+    else args.push("--trusted-json", JSON.stringify(trustedRepositories))
     return args
   }
+  readonly property var lfsRepos: Model.lfsRepos(repos)
   readonly property var repos: status.repos || []
   // Shown in the popup: local changes, ahead/behind, or a failed last fetch (its error is on the row).
   readonly property var affectedRepos: Model.displayedRepos(repos)
