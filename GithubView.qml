@@ -426,11 +426,10 @@ PanelKeyCatcher {
           }
         }
       }
-      FoamyAction {
+      FoamyButton {
         iconName: "plus"
-        label: FoamyI18n.t("Add folder")
+        text: FoamyI18n.t("Add folder")
         focusable: true
-        foreground: FoamyPalette.secondaryText
         tooltipText: folderRows.count >= 32 ? FoamyI18n.t("You can add up to 32 folders.") : ""
         actionEnabled: folderRows.count < 32 && !root.browsing
         onClicked: root.addFolder()
