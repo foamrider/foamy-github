@@ -12,6 +12,7 @@ import os
 import re
 import selectors
 import shlex
+import secrets
 import shutil
 import stat
 import signal
@@ -884,7 +885,7 @@ def repository_status(repo: Repository, trusted: "bool | Trust" = False) -> dict
     row.update(branch=branch, upstream=upstream, ahead=ahead, behind=behind,
                dirty=dirty_count > 0, dirtyCount=dirty_count,
                affected=ahead > 0 or behind > 0 or dirty_count > 0, complete=True)
-  except (OSError, subprocess.TimeoutExpired) as error:
+  except (OSError, subprocess.TimeoutExpired, ValueError) as error:
     # Unknown must never become clean, nor hide this repository from the panel.
     row["error"] = str(error)[:240]
   return row
@@ -1046,6 +1047,60 @@ def list_refs(repo: Repository, prefixes: Sequence[str], sandbox: bool, env: Seq
   return refs
 
 
+def resolve_origin(url: str, repo: Repository) -> str:
+  """Git resolves a relative local remote (`../remote.git`, `./x`) from the
+  repository's top level; the shadow lives elsewhere, so make it absolute.
+  URLs (`scheme://`) and scp-style `host:path` stay as they are."""
+  if "://" in url or os.path.isabs(url):
+    return url
+  if re.match(r"^[^/]*:", url) and not url.startswith(("./", "../")):
+    return url
+  return os.path.join(repo.path, url)
+
+
+def replace_in_directory(directory: Path, name: str, data: bytes, mode: int = 0o644) -> None:
+  """Atomically replace `directory/name` with `data` without following any
+  symlink the repository's owner (or anyone who can write there) planted: the
+  directory is opened with O_NOFOLLOW, the temporary file is created
+  exclusively under a random name with O_NOFOLLOW, then renamed over `name`
+  (rename never follows a symlink at the destination)."""
+  directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+  try:
+    temporary = f".{name}.foamy-{secrets.token_hex(8)}"
+    file_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                      dir_fd=directory_fd)
+    try:
+      with os.fdopen(file_fd, "wb", closefd=False) as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(file_fd)
+      os.fchmod(file_fd, mode)
+    finally:
+      os.close(file_fd)
+    try:
+      os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    except OSError:
+      os.unlink(temporary, dir_fd=directory_fd)
+      raise
+  finally:
+    os.close(directory_fd)
+
+
+def read_regular(path: Path, limit: int) -> bytes | None:
+  """A regular file's bytes (no symlinks, FIFOs or devices), None if absent,
+  InspectionError if it is something else or larger than `limit`."""
+  try:
+    info = os.lstat(path)
+  except FileNotFoundError:
+    return None
+  if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+    raise InspectionError(f"Unexpected {path.name} file. Fetch this repository in lazygit.")
+  data = read_bounded(path, limit + 1)
+  if len(data) > limit:
+    raise InspectionError(f"Unexpected {path.name} file. Fetch this repository in lazygit.")
+  return data
+
+
 def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedProcess[str] | None:
   entries = list(policy.snapshot)
   local: dict[str, list[str]] = {}
@@ -1065,13 +1120,16 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
     raise InspectionError("Unsupported object format. Fetch this repository in lazygit.")
   refspecs = [spec for spec in local.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
     or ["+refs/heads/*:refs/remotes/origin/*"]
-  remote = [("remote.origin.url", urls[0])] + [("remote.origin.fetch", spec) for spec in refspecs]
+  remote = [("remote.origin.url", resolve_origin(urls[0], repo))] + [("remote.origin.fetch", spec) for spec in refspecs]
   tagopt = (local.get("remote.origin.tagopt") or [""])[-1]
   if tagopt in ("--no-tags", "--tags"):
     remote.append(("remote.origin.tagopt", tagopt))
   core = [("core.repositoryformatversion", "1"), ("core.bare", "true"), ("extensions.objectformat", format_)]
-  partial = (local.get("extensions.partialclone") or [""])[-1]
-  if partial == "origin":
+  # A partial clone: Git 2.43 records only remote.origin.promisor and
+  # partialclonefilter; older clones also extensions.partialClone.
+  filters = local.get("remote.origin.partialclonefilter", [])
+  promisor = (local.get("remote.origin.promisor") or ["false"])[-1].lower() in ("true", "yes", "on", "1")
+  if promisor or filters or (local.get("extensions.partialclone") or [""])[-1] == "origin":
     core.append(("extensions.partialclone", "origin"))
     remote.append(("remote.origin.promisor", "true"))
     for spec in local.get("remote.origin.partialclonefilter", [])[-1:]:
@@ -1085,13 +1143,15 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
   try:
     (shadow / "refs").mkdir()
     (shadow / "objects").mkdir()
-    (shadow / "HEAD").write_text("ref: refs/heads/main\n")
-    (shadow / "config").write_text(config_text(core + user_config(repo) + remote))
-    (shadow / "packed-refs").write_text("# pack-refs with: sorted \n" + "".join(
-      f"{oid} {name}\n" for name, oid in sorted(before.items())))
+    # Byte-exact writes (os.fsencode), matching how config and refs are read.
+    (shadow / "HEAD").write_bytes(b"ref: refs/heads/main\n")
+    (shadow / "config").write_bytes(os.fsencode(config_text(core + user_config(repo) + remote)))
+    (shadow / "packed-refs").write_bytes(os.fsencode("# pack-refs with: sorted \n" + "".join(
+      f"{oid} {name}\n" for name, oid in sorted(before.items()))))
     shallow = common / "shallow"
-    if shallow.is_file():
-      shutil.copyfile(shallow, shadow / "shallow")
+    original_shallow = read_regular(shallow, MAX_STATUS_BYTES)
+    if original_shallow is not None:
+      (shadow / "shallow").write_bytes(original_shallow)
     view = Repository(str(shadow), repo.name, repo.owner, repo.label)
     env = list(policy.fetch_env) + list(SHADOW_ISOLATION) + [("GIT_OBJECT_DIRECTORY", str(objects))]
     completed = run_git(view, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
@@ -1115,12 +1175,14 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
         commands.append(f"create {name} {new}")
       else:
         commands.append(f"update {name} {new} {old}")
-    if (shadow / "shallow").is_file() and shallow.is_file() and (shadow / "shallow").read_bytes() != shallow.read_bytes():
-      shutil.copyfile(shadow / "shallow", common / "shallow.foamy")
-      os.replace(common / "shallow.foamy", shallow)
+    if original_shallow is not None and (shadow / "shallow").is_file():
+      updated = (shadow / "shallow").read_bytes()
+      if updated != original_shallow:
+        # The only file written inside the repository's Git directory.
+        replace_in_directory(common, "shallow", updated)
     if commands:
       updates = shadow / "updates"
-      updates.write_text("\n".join(commands) + "\n")
+      updates.write_bytes(os.fsencode("\n".join(commands) + "\n"))
       with updates.open("rb") as stdin:
         applied = run_git(repo, ["update-ref", "--stdin"], FETCH_TIMEOUT_SECONDS, policy.read, policy.read_env,
                           sandbox=True, stdin=stdin)
@@ -1133,6 +1195,17 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
 
 
 def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
+  """Fetch one repository; any failure becomes this repository's result, so
+  one bad repository never aborts the whole synchronization."""
+  try:
+    return _fetch_repository(repo, trusted)
+  except Exception as error:   # noqa: BLE001 - isolate one repository's failure
+    return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
+            "operation": "fetch", "attempts": 0,
+            "message": (str(error) or type(error).__name__)[:240]}
+
+
+def _fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
   try:
     policy = repository_policy(repo, is_trusted(repo, trusted))
   except (OSError, subprocess.TimeoutExpired) as error:

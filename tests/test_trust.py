@@ -18,6 +18,7 @@ import github_watch as watcher
 
 
 class TrustModelTest(unittest.TestCase):
+  _real_policy = staticmethod(status.repository_policy)
   def setUp(self):
     temporary = tempfile.TemporaryDirectory()
     self.addCleanup(temporary.cleanup)
@@ -481,6 +482,80 @@ class TrustModelTest(unittest.TestCase):
     self.assertEqual(real("refs/remotes/origin/gone"), "")          # pruned
     self.assertEqual(real("refs/remotes/origin/main"), head)
     self.assertFalse(list((Path(os.environ["XDG_CACHE_HOME"]) / "foamy-github/shadow").iterdir()))
+
+  def test_relative_and_non_utf8_local_origins_fetch(self):
+    # Codex: `../remote.git` resolved from the shadow instead of the
+    # repository, and a 0xff byte in an absolute origin raised while writing
+    # the shadow config (aborting the whole sync).
+    remote = self.file_remote()
+    for url in ("../remote.git", "./../remote.git"):
+      with self.subTest(url=url):
+        self.git("remote", "set-url", "origin", url)
+        self.assertTrue(self.fetched()["ok"], self.fetched())
+    odd = Path(os.fsdecode(os.fsencode(str(self.root)) + b"/remote\xff.git"))
+    os.rename(remote, odd)
+    subprocess.run([b"git", b"-C", os.fsencode(self.path), b"remote", b"set-url", b"origin", os.fsencode(odd)], check=True)
+    result = self.fetched()
+    self.assertTrue(result["ok"], result)
+
+  def test_one_failing_repository_does_not_abort_the_sync(self):
+    good = self.repo
+    self.file_remote()
+    bad = status.Repository(str(self.root / "bad"), "bad", "root", "bad")
+    with patch.object(status, "collect_repositories", return_value=[bad, good]), \
+         patch.object(status, "repository_policy", side_effect=lambda repo, trusted=False:
+                      (_ for _ in ()).throw(UnicodeEncodeError("utf-8", "x", 0, 1, "boom")) if repo is bad
+                      else status.__dict__["_real_policy"](repo, trusted)):
+      status.__dict__["_real_policy"] = TrustModelTest._real_policy
+      result = status.synchronize([str(self.root)])
+    by_path = {item["path"]: item for item in result["failures"]}
+    self.assertIn(bad.path, by_path)
+    self.assertNotIn(good.path, by_path)
+
+  def test_blobless_partial_clone_stays_blobless(self):
+    # Codex: Git 2.43 records only remote.origin.promisor/partialclonefilter.
+    upstream = self.root / "pc-upstream"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+    self.git("config", "uploadpack.allowFilter", "true", cwd=upstream)
+    self.git("commit", "-q", "--allow-empty", "-m", "one", cwd=upstream)
+    clone = self.root / "pc-clone"
+    subprocess.run(["git", "clone", "-q", "--filter=blob:none", "file://" + str(upstream), str(clone)], check=True,
+                   capture_output=True)
+    # Like a Git 2.43 clone: promisor + filter only, no extensions.partialClone.
+    subprocess.run(["git", "-C", str(clone), "config", "--unset-all", "extensions.partialclone"], capture_output=True)
+    (upstream / "asset.bin").write_text("large asset\n")
+    self.git("add", "asset.bin", cwd=upstream)
+    self.git("commit", "-q", "-m", "asset", cwd=upstream)
+    blob = self.git("rev-parse", "HEAD:asset.bin", cwd=upstream).strip()
+    result = status.fetch_repository(status.Repository(str(clone), "pc", "root", "pc"))
+    self.assertTrue(result["ok"], result)
+    self.assertEqual(subprocess.run(["git", "-C", str(clone), "rev-parse", "refs/remotes/origin/main"], capture_output=True,
+                                    text=True).stdout.strip(), self.git("rev-parse", "HEAD", cwd=upstream).strip())
+    missing = subprocess.run(["git", "-C", str(clone), "cat-file", "-e", blob], capture_output=True,
+                             env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
+    self.assertNotEqual(missing.returncode, 0, "the new blob was downloaded: the clone's filter was dropped")
+
+  def test_shallow_update_never_follows_a_planted_symlink(self):
+    # Codex security: a predictable temporary name in the Git dir, written
+    # with a symlink-following copy, overwrote an outside file.
+    outside = self.root / "outside.txt"
+    outside.write_text("precious\n")
+    git_dir = self.path / ".git"
+    (git_dir / "shallow.foamy").symlink_to(outside)                      # the old predictable name
+    with patch.object(status.secrets, "token_hex", return_value="fixed"):
+      (git_dir / ".shallow.foamy-fixed").symlink_to(outside)           # and the random name, guessed
+      with self.assertRaises(FileExistsError):
+        status.replace_in_directory(git_dir, "shallow", b"attacker\n")
+    self.assertEqual(outside.read_text(), "precious\n")
+    (git_dir / ".shallow.foamy-fixed").unlink()
+    status.replace_in_directory(git_dir, "shallow", b"0" * 40 + b"\n")
+    self.assertEqual((git_dir / "shallow").read_bytes(), b"0" * 40 + b"\n")
+    self.assertEqual(outside.read_text(), "precious\n")
+    # A symlinked shallow file itself is refused, not read or followed.
+    (git_dir / "shallow").unlink()
+    (git_dir / "shallow").symlink_to(outside)
+    with self.assertRaises(status.InspectionError):
+      status.read_regular(git_dir / "shallow", 1024)
 
   def test_frozen_fetch_handles_reftable_sha256_and_worktrees(self):
     for variant in ("reftable", "sha256", "worktree", "shallow", "partial"):
