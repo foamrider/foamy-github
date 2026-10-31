@@ -90,8 +90,10 @@ Item {
     }
   }
 
-  // Put the keyboard cursor on the first row's (i): its popover opens.
+  // Open the first row's Git LFS note, with the keyboard cursor on its LFS
+  // button (restarted on every state: the body is kept between states).
   Timer {
+    id: lfsTimer
     interval: 300
     running: !!popup.bodyItem
     onTriggered: {
@@ -105,5 +107,5 @@ Item {
     running: !!popup.bodyItem && (preview.previewState === "settings-lfs" || preview.previewState === "settings-no-lfs")
     onTriggered: popup.bodyItem.showSettingsEnd()
   }
-  onPreviewStateChanged: if (popup.bodyItem) popup.bodyItem.clearCursor()
+  onPreviewStateChanged: if (popup.bodyItem) { popup.bodyItem.clearCursor(); lfsTimer.restart() }
 }

@@ -205,14 +205,16 @@ count: git-lfs creates one in any repository it touches and keeps it after a
 repository stops using LFS. A `.gitattributes` only in a subdirectory isn't
 seen.
 
-- **Untrusted LFS repository:** an (i) after its status line explains that LFS
-  files you edited may show as changed until Git refreshes. Hover it, or move
-  the keyboard cursor onto it, then choose **Trust this repository** (Enter).
-- **Trusted:** a quiet **LFS** chip replaces the (i). That repository runs its
+- **Untrusted LFS repository:** an **(i) LFS** button after its status line.
+  Click it (or Enter on it with the keyboard cursor) to open a note under the
+  row: LFS files you edited may show as changed until Git refreshes, and a
+  **Trust this repository** button. Click the button again to fold the note.
+- **Trusted:** a quiet **LFS** chip replaces the button. That repository runs its
   own Git config, including LFS, hooks and filters, in automatic checks and
   fetches, so its counts are exact.
-- **Settings → Git LFS** lists only LFS repositories, each with a toggle. The
-  section is hidden when none is found. Trust you gave a repository that no
+- **Settings → Git LFS** lists only LFS repositories, each with a toggle; the
+  (i) beside the title opens the full explanation inline. The section is
+  hidden when none is found. Trust you gave a repository that no
   longer uses LFS, or that isn't found anymore, is kept as it is, not deleted;
   it just isn't listed.
 
@@ -220,10 +222,10 @@ Trust is stored as the repository's real path (symlinks resolved) plus the
 identity of its Git directory: device, inode and birth time
 (`trustedRepositories`). A moved or renamed repository is untrusted again, and
 so is a different repository that later appears at the same path (deleted and
-re-cloned, or swapped in). It shows the (i) again. On a filesystem without a
-birth time (`statx` reports none), device and inode alone could be reused by
-a replacement, so trust isn't offered there: the (i) and the Settings row say
-so and stay untrusted. The identity offered is the one of the directories the
+re-cloned, or swapped in). It shows the LFS button again. On a filesystem
+without a birth time (`statx` reports none), device and inode alone could be
+reused by a replacement, so trust isn't offered there: the row's LFS note and
+the Settings row say so and stay untrusted. The identity offered is the one of the directories the
 check actually inspected (its pin). When you trust a repository, the panel
 pins it again and saves trust only if the identity still matches; otherwise
 it says "Repository changed; refresh and try again" and saves nothing.

@@ -44,16 +44,21 @@ PanelKeyCatcher {
   readonly property var sync: service ? service.sync : Model.defaultStatus().sync
   readonly property bool busy: !!service && service.busy
   readonly property bool hasFailures: sync.failures.length > 0
-  // Cursor stops: each row, then its Git LFS (i) when the repository is
-  // untrusted, then Refresh and Settings.
+  // Cursor stops: each row, then its "LFS" button when the repository uses
+  // Git LFS and is untrusted, then (note open, trust available) its "Trust
+  // this repository" button; then Refresh and Settings.
   readonly property var stops: {
-    var rows = [], infos = [], count = 0
+    var rows = [], infos = [], trusts = [], count = 0
     for (var i = 0; i < repos.length; i++) {
+      var lfs = !!repos[i] && repos[i].usesLfs === true && repos[i].trusted !== true && repos[i].complete !== false
       rows.push(count++)
-      infos.push(repos[i] && repos[i].usesLfs === true && repos[i].trusted !== true ? count++ : -1)
+      infos.push(lfs ? count++ : -1)
+      trusts.push(lfs && repos[i].path === lfsNotePath && !!repos[i].identity ? count++ : -1)
     }
-    return { rows: rows, infos: infos, count: count }
+    return { rows: rows, infos: infos, trusts: trusts, count: count }
   }
+  // The repository (path) whose Git LFS note is open under its row: one at a time.
+  property string lfsNotePath: ""
   readonly property int refreshStop: stops.count
   readonly property int settingsStop: stops.count + 1
   readonly property var trustedList: Model.trustedRepositories(settings)
@@ -82,7 +87,7 @@ PanelKeyCatcher {
   implicitHeight: editingSettings ? settingsPage.implicitHeight : list.contentHeight
   blocked: editingSettings
 
-  FoamyCursor { id: cursor; count: root.stops.count + 2 }   // rows (+ LFS info), refresh, settings
+  FoamyCursor { id: cursor; count: root.stops.count + 2 }   // rows (+ LFS, trust), refresh, settings
 
   onMoveRequested: function(dx, dy) { cursor.move(dy !== 0 ? dy : dx) }
   onActivateRequested: root.activate(cursor.index)
@@ -92,7 +97,7 @@ PanelKeyCatcher {
     if (text === "s" || text === "S") root.settingsRequested()
     else if ((text === "r" || text === "R") && !root.busy) root.service.fetch()
   }
-  onOpenedChanged: if (!opened) cursor.reset()
+  onOpenedChanged: if (!opened) { cursor.reset(); lfsNotePath = "" }
   onEditingSettingsChanged: {
     if (editingSettings) {
       loadFolders()
@@ -114,24 +119,35 @@ PanelKeyCatcher {
 
   function rowForStop(index) {
     var row = stops.rows.indexOf(index)
-    return row >= 0 ? row : stops.infos.indexOf(index)
+    if (row < 0) row = stops.infos.indexOf(index)
+    return row >= 0 ? row : stops.trusts.indexOf(index)
   }
 
-  // Preview/tests: put the cursor on a row's Git LFS (i) (opens its popover).
-  function clearCursor() { cursor.reset() }
-  function showLfsInfo(row) { if (row >= 0 && row < stops.infos.length && stops.infos[row] >= 0) cursor.hover(stops.infos[row]) }
+  // Open or fold a repository's Git LFS note (the cursor stays where it is).
+  function toggleLfsNote(repo) {
+    if (!repo) return
+    lfsNotePath = lfsNotePath === repo.path ? "" : String(repo.path)
+  }
+
+  // Preview/tests: open a row's Git LFS note with the cursor on its LFS button.
+  function clearCursor() { cursor.reset(); lfsNotePath = "" }
+  function showLfsInfo(row) {
+    if (row < 0 || row >= stops.infos.length || stops.infos[row] < 0) return
+    lfsNotePath = String(repos[row].path)
+    cursor.hover(stops.infos[row])
+  }
   // Preview: scroll Settings to its end (the Git LFS section, when shown).
   function showSettingsEnd() { settingsPage.keepVisible(lfsSection.visible ? lfsSection : refreshSection) }
 
   function activate(index) {
     if (index < 0) return
     var info = stops.infos.indexOf(index)
-    if (info >= 0) {
-      if (!repos[info].identity) return       // trust isn't available on this filesystem
-      root.trustRequested(repos[info], true)
-      lfsAnchor = null
-      lfsRepo = null
-      cursor.hover(stops.rows[info])          // stay on that repository once its (i) goes
+    var trust = stops.trusts.indexOf(index)
+    if (info >= 0) toggleLfsNote(repos[info])
+    else if (trust >= 0) {
+      root.trustRequested(repos[trust], true)
+      lfsNotePath = ""
+      cursor.hover(stops.rows[trust])         // stay on that repository once its LFS button goes
     }
     else if (stops.rows.indexOf(index) >= 0) root.repositoryRequested(repos[stops.rows.indexOf(index)])
     else if (index === refreshStop) { if (!busy) service.fetch() }
@@ -458,42 +474,14 @@ PanelKeyCatcher {
     }
 
     // Git LFS: per-repository trust, only when a repository using LFS was found.
+    // The long explanation is the section's (i) note, not a tooltip.
     FoamySettingsSection {
       id: lfsSection
       width: parent.width
       visible: root.lfsRepositories.length > 0
-      RowLayout {
-        width: parent.width
-        spacing: FoamyStyle.gapSmall
-        Text {
-          text: FoamyI18n.t("Git LFS")
-          textFormat: Text.PlainText
-          color: FoamyPalette.secondaryText
-          font.family: FoamyStyle.fontFamily
-          font.pixelSize: FoamyStyle.font.bodySmall
-          font.weight: Font.DemiBold
-          Accessible.role: Accessible.Heading
-        }
-        FoamyAction {
-          implicitWidth: FoamyStyle.iconSize + FoamyStyle.gapSmall * 2
-          implicitHeight: implicitWidth
-          iconName: "info"
-          iconSize: FoamyStyle.iconSize - 2
-          foreground: FoamyPalette.secondaryText
-          tooltipText: FoamyI18n.t("Automatic checks run Git without a repository's own settings, filters and hooks, so nothing in a repository can run code just by being in these folders. For Git LFS that means files you edited may show as changed until Git refreshes. A trusted repository runs its own Git settings, including LFS, during automatic checks and fetches, so its counts are exact. Trust applies to the repository at that exact path; moving or renaming it removes the trust.")
-        }
-        Item { Layout.fillWidth: true }
-      }
-      Text {
-        width: lfsSection.width
-        text: FoamyI18n.t("Turn on for repositories you trust. They then run their own Git LFS settings during automatic checks.")
-        textFormat: Text.PlainText
-        wrapMode: Text.WordWrap
-        horizontalAlignment: Text.AlignLeft
-        color: FoamyPalette.mutedText
-        font.family: FoamyStyle.fontFamily
-        font.pixelSize: FoamyStyle.font.bodySmall
-      }
+      title: FoamyI18n.t("Git LFS")
+      description: FoamyI18n.t("Turn on for repositories you trust. They then run their own Git LFS settings during automatic checks.")
+      info: FoamyI18n.t("Automatic checks run Git without a repository's own settings, filters and hooks, so nothing in a repository can run code just by being in these folders. For Git LFS that means files you edited may show as changed until Git refreshes. A trusted repository runs its own Git settings, including LFS, during automatic checks and fetches, so its counts are exact. Trust applies to the repository at that exact path; moving or renaming it removes the trust.")
       Repeater {
         model: root.lfsRepositories
         FoamyToggle {
@@ -505,94 +493,6 @@ PanelKeyCatcher {
           enabled: !!modelData.identity
           checked: Model.isTrusted(root.trustedList, modelData)
           onClicked: root.trustRequested(modelData, !checked)
-        }
-      }
-    }
-  }
-
-  // ---- Git LFS popover ------------------------------------------------------------------
-  // One popover under the hovered / cursor-selected row (i). It lives in the
-  // popup body (not a separate window), stays while the pointer is over the
-  // (i) or the popover, and flips above the (i) near the bottom edge.
-  property Item lfsAnchor: null
-  property var lfsRepo: null
-  // Trust needs a non-reusable repository identity (the Git directory's birth
-  // time); on filesystems without one the helper reports no identity.
-  readonly property bool lfsTrustable: !!lfsRepo && !!lfsRepo.identity
-  function lfsPopoverFor(anchor, repo, wanted) {
-    if (wanted && repo) { lfsAnchor = anchor; lfsRepo = repo; lfsLinger.stop() }
-    else if (lfsAnchor === anchor) lfsLinger.restart()
-  }
-  Timer {
-    id: lfsLinger
-    interval: 250                                   // time to move the pointer into the popover
-    onTriggered: if (!lfsHover.hovered) { root.lfsAnchor = null; root.lfsRepo = null }
-  }
-  Rectangle {
-    id: lfsPopover
-    readonly property bool shown: root.opened && !root.editingSettings && root.lfsAnchor !== null && root.lfsAnchor.visible
-      && root.lfsRepo !== null && root.lfsRepo.trusted !== true
-    readonly property point at: {
-      list.contentY                                   // re-place while the list scrolls
-      return root.lfsAnchor ? root.lfsAnchor.mapToItem(root, 0, 0) : Qt.point(0, 0)
-    }
-    readonly property bool above: at.y + (root.lfsAnchor ? root.lfsAnchor.height : 0) + FoamyStyle.gapSmall + height > root.height - FoamyStyle.gap
-    z: 10
-    visible: opacity > 0
-    opacity: shown ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: lfsPopover.shown ? FoamyMotion.fadeIn : FoamyMotion.fadeOut } }
-    width: Math.min(root.width - FoamyStyle.padding * 2, 300)
-    height: lfsContent.implicitHeight + FoamyStyle.gapLarge * 2
-    // Start-aligned with the (i), kept inside the popup, mirrored in RTL.
-    x: Math.max(FoamyStyle.gap, Math.min(root.width - width - FoamyStyle.gap,
-         FoamyI18n.rightToLeft ? at.x + (root.lfsAnchor ? root.lfsAnchor.width : 0) - width : at.x))
-    y: above ? at.y - height - FoamyStyle.gapSmall : at.y + (root.lfsAnchor ? root.lfsAnchor.height : 0) + FoamyStyle.gapSmall
-    radius: FoamyStyle.radius
-    color: Commons.Color.popups.background
-    border.width: FoamyStyle.borderWidth
-    border.color: FoamyPalette.border
-    Accessible.role: Accessible.ToolTip
-    Accessible.name: FoamyI18n.t("This repository uses Git LFS")
-    HoverHandler { id: lfsHover; onHoveredChanged: if (!hovered) lfsLinger.restart() }
-    Column {
-      id: lfsContent
-      x: FoamyStyle.gapLarge
-      y: FoamyStyle.gapLarge
-      width: parent.width - FoamyStyle.gapLarge * 2
-      spacing: FoamyStyle.gap
-      Text {
-        width: parent.width
-        text: FoamyI18n.t("This repository uses Git LFS")
-        textFormat: Text.PlainText
-        wrapMode: Text.WordWrap
-        horizontalAlignment: Text.AlignLeft
-        color: FoamyPalette.text
-        font.family: FoamyStyle.fontFamily
-        font.pixelSize: FoamyStyle.font.subtitle
-        font.weight: Font.DemiBold
-      }
-      Text {
-        width: parent.width
-        text: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.")
-          + (root.lfsTrustable ? "" : "\n" + FoamyI18n.t("Trust isn't available for this repository's filesystem."))
-        textFormat: Text.PlainText
-        wrapMode: Text.WordWrap
-        horizontalAlignment: Text.AlignLeft
-        color: FoamyPalette.secondaryText
-        font.family: FoamyStyle.fontFamily
-        font.pixelSize: FoamyStyle.font.bodySmall
-      }
-      FoamyAction {
-        iconName: "check"
-        label: FoamyI18n.t("Trust this repository")
-        foreground: FoamyPalette.text
-        // Enter on the (i) trusts; show that by highlighting this button.
-        hasCursor: root.lfsTrustable && !!root.lfsAnchor && root.lfsAnchor.hasCursor === true
-        enabled: root.lfsTrustable
-        onClicked: {
-          if (root.lfsRepo) root.trustRequested(root.lfsRepo, true)
-          root.lfsAnchor = null
-          root.lfsRepo = null
         }
       }
     }
@@ -636,10 +536,21 @@ PanelKeyCatcher {
       : repo.behind > 0 ? FoamyPalette.info : FoamyPalette.success
 
     height: content.implicitHeight + FoamyStyle.rowPadding * 2
+      + (lfsPanel.visible ? lfsPanel.implicitHeight + FoamyStyle.gap : 0)
     readonly property int rowStop: root.stops.rows[rowIndex] !== undefined ? root.stops.rows[rowIndex] : -1
     readonly property int infoStop: root.stops.infos[rowIndex] !== undefined ? root.stops.infos[rowIndex] : -1
+    readonly property int trustStop: root.stops.trusts[rowIndex] !== undefined ? root.stops.trusts[rowIndex] : -1
     readonly property bool lfs: !!repo && repo.usesLfs === true
     readonly property bool trusted: !!repo && repo.trusted === true
+    readonly property bool trustable: !!repo && !!repo.identity
+    // The Git LFS note under the row: open while this is the view's note
+    // (FoamyInfoNote keeps its own `expanded`, so follow it imperatively).
+    readonly property bool noteWanted: lfs && !trusted && !unavailable && !!repo && root.lfsNotePath === repo.path
+    onNoteWantedChanged: {
+      lfsNote.expanded = noteWanted
+      if (noteWanted) Qt.callLater(function() { list.positionViewAtIndex(repoRow.rowIndex, ListView.Contain) })
+    }
+    Component.onCompleted: lfsNote.expanded = noteWanted
     hasCursor: cursor.at(rowStop)
     onHovered: cursor.hover(rowStop)
     Accessible.role: Accessible.ListItem
@@ -650,7 +561,8 @@ PanelKeyCatcher {
       id: content
       anchors.left: parent.left
       anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.top: parent.top
+      anchors.topMargin: FoamyStyle.rowPadding
       anchors.leftMargin: FoamyStyle.rowPadding
       anchors.rightMargin: FoamyStyle.gapSmall
       spacing: FoamyStyle.rowPadding
@@ -705,12 +617,13 @@ PanelKeyCatcher {
             font.family: FoamyStyle.fontFamily
             font.pixelSize: FoamyStyle.font.bodySmall
           }
-          // Git LFS: an (i) with a popover offering trust, or an "LFS" chip once trusted.
+          // Git LFS: an "LFS" button that opens a note (with Trust) under the
+          // row, or an "LFS" chip once trusted.
           Item {
             id: lfsBadge
             visible: repoRow.lfs && !repoRow.unavailable
-            width: (repoRow.trusted ? chip.width : info.width) + FoamyStyle.gapSmall
-            height: repoRow.trusted ? chip.height : info.height
+            width: (repoRow.trusted ? chip.width : lfsButton.width) + FoamyStyle.gapSmall
+            height: repoRow.trusted ? chip.height : lfsButton.height
             Rectangle {
               id: chip
               visible: repoRow.trusted
@@ -733,24 +646,25 @@ PanelKeyCatcher {
               }
             }
             FoamyAction {
-              id: info
+              id: lfsButton
+              objectName: "githubLfsButton"
               visible: !repoRow.trusted
               x: FoamyStyle.gapSmall
-              implicitWidth: FoamyStyle.iconSize + FoamyStyle.gapSmall * 2
-              implicitHeight: implicitWidth
+              implicitHeight: FoamyStyle.iconSize + FoamyStyle.gapSmall * 2
               iconName: "info"
               iconSize: FoamyStyle.iconSize - 2
-              foreground: FoamyPalette.secondaryText
+              label: FoamyI18n.t("LFS")
+              foreground: repoRow.noteWanted ? FoamyPalette.text : FoamyPalette.secondaryText
+              color: active && (repoRow.noteWanted || hasCursor || hovered) ? FoamyPalette.hoverFill : "transparent"
               hasCursor: cursor.at(repoRow.infoStop)
               Accessible.name: FoamyI18n.t("This repository uses Git LFS")
-              Accessible.description: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.")
-              onHoveredChanged: {
-                if (hovered) cursor.hover(repoRow.infoStop)
-                root.lfsPopoverFor(info, repoRow.repo, hovered || hasCursor)
+              Accessible.checkable: true
+              Accessible.checked: repoRow.noteWanted
+              onHoveredChanged: if (hovered) cursor.hover(repoRow.infoStop)
+              onClicked: {
+                cursor.hover(repoRow.infoStop)
+                root.toggleLfsNote(repoRow.repo)
               }
-              onHasCursorChanged: root.lfsPopoverFor(info, repoRow.repo, hovered || hasCursor)
-              onClicked: cursor.hover(repoRow.infoStop)
-              Component.onDestruction: root.lfsPopoverFor(info, null, false)
             }
           }
           Text {
@@ -802,6 +716,37 @@ PanelKeyCatcher {
           foreground: FoamyPalette.secondaryText
           onClicked: root.repositoryRequested(repoRow.repo)
         }
+      }
+    }
+
+    // The Git LFS note, under the status line and in line with it: what the
+    // automatic checks skip, and Trust (when this filesystem allows it).
+    Column {
+      id: lfsPanel
+      visible: repoRow.noteWanted
+      anchors.top: content.bottom
+      anchors.topMargin: FoamyStyle.gap
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.leftMargin: FoamyStyle.rowPadding * 2 + 2     // past the state bar
+      anchors.rightMargin: FoamyStyle.rowPadding
+      spacing: FoamyStyle.gap
+      FoamyInfoNote {
+        id: lfsNote
+        width: parent.width
+        showHeader: false
+        focusable: false
+        text: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.")
+          + (repoRow.trustable ? "" : "\n" + FoamyI18n.t("Trust isn't available for this repository's filesystem."))
+      }
+      FoamyButton {
+        objectName: "githubTrustButton"
+        visible: repoRow.trustable
+        text: FoamyI18n.t("Trust this repository")
+        iconName: "check"
+        hasCursor: cursor.at(repoRow.trustStop)
+        onHoveredChanged: if (hovered) cursor.hover(repoRow.trustStop)
+        onClicked: root.activate(repoRow.trustStop)
       }
     }
   }
