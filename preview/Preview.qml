@@ -1,16 +1,20 @@
 import QtQuick
 import "../kit"
 import ".." as Plugin
+import "../Model.js" as Model
 
 // Preview states for the foamy-kit harness (no processes, mock data only).
 Item {
   id: preview
   required property QtObject bar
   required property Item anchorItem
-  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-error"]
+  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-lfs", "settings-no-lfs", "settings-error"]
   property string previewState: "repositories"
+  property int settleMs: previewState === "settings-lfs" || previewState === "settings-no-lfs" ? 1500 : 600
   readonly property Item popup: popup
   readonly property double now: Date.now() / 1000
+  readonly property var trusted: [{ path: "/home/me/GitHub/Work/design-system", identity: "65:1024:1" },
+    { path: "/home/me/GitHub/Work/old-site", identity: "65:4096:1" }, { path: "/home/me/GitHub/Work/moved-away", identity: "65:8192:1" }]
 
   function row(label, branch, ahead, behind, dirty, extra) {
     return Object.assign({ path: "/home/me/GitHub/" + label, name: label.split("/").pop(), owner: "GitHub", label: label,
@@ -54,10 +58,15 @@ Item {
     readonly property bool refreshing: false
     readonly property bool repositoryActionRunning: false
     readonly property bool busy: false
-    readonly property var lfsRepos: [
+    // Every repository found (Settings lists those using LFS, plus trusted
+    // ones: Work/old-site stopped using LFS but keeps its trust record).
+    readonly property var repos: preview.previewState === "settings-no-lfs" ? preview.sample : [
+      preview.row(".dotfiles", "main", 0, 0, 1, { identity: "65:512:1" }),
       preview.row("Personal/game-assets", "main", 0, 0, 12, { usesLfs: true, trusted: false, identity: "65:2048:1" }),
-      preview.row("Work/design-system", "main", 0, 0, 0, { usesLfs: true, trusted: true, identity: "65:1024:1" })
+      preview.row("Work/design-system", "main", 0, 0, 0, { usesLfs: true, trusted: true, identity: "65:1024:1" }),
+      preview.row("Work/old-site", "main", 0, 0, 0, { trusted: true, identity: "65:4096:1" })
     ]
+    readonly property var lfsRepos: Model.lfsRepos(repos, preview.trusted)
     function fetch() {}
     function pushRepository(repo) {}
     function pullRepository(repo) {}
@@ -72,7 +81,7 @@ Item {
       Plugin.GithubView {
         service: mock
         settings: ({ repositoryFolders: [{ path: "~/GitHub", depth: 2 }, { path: "~/Work", depth: 1 }], inotifyEnabled: true,
-          refreshIntervalSec: 30, fetchIntervalSec: 900, trustedRepositories: [{ path: "/home/me/GitHub/Work/design-system", identity: "65:1024:1" }] })
+          refreshIntervalSec: 30, fetchIntervalSec: 900, trustedRepositories: preview.trusted })
         opened: true
         editingSettings: preview.previewState.indexOf("settings") === 0
         settingsError: preview.previewState === "settings-error" ? "Couldn't save the setting." : ""
@@ -89,6 +98,12 @@ Item {
       popup.bodyItem.clearCursor()
       if (preview.previewState === "lfs-untrusted") popup.bodyItem.showLfsInfo(0)
     }
+  }
+  // Settings → the end of the page (Git LFS, when shown), once the card has its height.
+  Timer {
+    interval: 900
+    running: !!popup.bodyItem && (preview.previewState === "settings-lfs" || preview.previewState === "settings-no-lfs")
+    onTriggered: popup.bodyItem.showSettingsEnd()
   }
   onPreviewStateChanged: if (popup.bodyItem) popup.bodyItem.clearCursor()
 }

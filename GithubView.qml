@@ -120,6 +120,8 @@ PanelKeyCatcher {
   // Preview/tests: put the cursor on a row's Git LFS (i) (opens its popover).
   function clearCursor() { cursor.reset() }
   function showLfsInfo(row) { if (row >= 0 && row < stops.infos.length && stops.infos[row] >= 0) cursor.hover(stops.infos[row]) }
+  // Preview: scroll Settings to its end (the Git LFS section, when shown).
+  function showSettingsEnd() { settingsPage.keepVisible(lfsSection.visible ? lfsSection : refreshSection) }
 
   function activate(index) {
     if (index < 0) return
@@ -418,6 +420,7 @@ PanelKeyCatcher {
     }
 
     FoamySettingsSection {
+      id: refreshSection
       width: parent.width
       title: FoamyI18n.t("Refresh")
       FoamyToggle {
