@@ -207,6 +207,11 @@ def config_entries(repo: "Repository") -> list[tuple[str, str, str]]:
   return entries
 
 
+def has_subsection(key: str) -> bool:
+  """section.subsection.variable (the subsection may be empty) vs section.variable."""
+  return "." in key.partition(".")[2]
+
+
 def split_key(key: str) -> tuple[str, str, str]:
   """(section, subsection, variable); section and variable lowercased, subsection as is."""
   section, _, rest = key.partition(".")
@@ -235,7 +240,8 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   filters: list[str] = []
   for _scope, key, _value in entries:
     section, name, variable = split_key(key)
-    if section == "filter" and name and name not in filters and variable in ("clean", "smudge", "process", "required"):
+    # An empty subsection (`[filter ""]`, selected by `filter=`) is a driver too.
+    if section == "filter" and has_subsection(key) and name not in filters and variable in ("clean", "smudge", "process", "required"):
       filters.append(name)
   for name in filters:
     common += [(f"filter.{name}.clean", ""), (f"filter.{name}.smudge", ""), (f"filter.{name}.process", ""),
@@ -247,7 +253,7 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   closed = {canonical_key(key) for key, _ in READ_TRANSPORT}
   for _scope, key, _value in entries:
     section, name, variable = split_key(key)
-    if section == "protocol" and name and variable == "allow" and canonical_key(key) not in closed:
+    if section == "protocol" and has_subsection(key) and variable == "allow" and canonical_key(key) not in closed:
       closed.add(canonical_key(key))
       read.append((key, "never"))
 

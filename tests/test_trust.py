@@ -150,6 +150,18 @@ class TrustModelTest(unittest.TestCase):
     self.assertTrue(status.repository_status(self.repo)["complete"])
     self.assertNotRun()
 
+  def test_filter_name_empty_is_neutralised(self):
+    # Codex P1: `[filter ""]` selected by `filter=` was skipped (empty name).
+    (self.path / ".gitattributes").write_text("*.txt filter=\n")
+    self.git("config", "filter..clean", f"{self.script('clean')} %f; cat")
+    self.git("config", "filter..required", "true")
+    self.dirty_tracked_file()
+    for sandbox in (True, False):                       # with Landlock and in the fallback
+      with self.subTest(sandbox=sandbox), patch.object(status, "_sandbox", None if sandbox else []):
+        row = status.repository_status(self.repo)
+        self.assertTrue(row["complete"], row["error"])
+        self.assertNotRun()
+
   def test_filter_name_with_invalid_utf8_bytes_is_neutralised(self):
     # Codex security P1: a lossy decode turned `filter.x\xff.clean` into
     # `filter.x\ufffd.clean`, so the override missed the driver the
