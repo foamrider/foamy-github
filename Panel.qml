@@ -93,7 +93,29 @@ Panel {
   function setTrusted(repo, trusted) {
     if (!repo || !repo.path || !repo.identity) return
     settingsError = ""
-    prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, trusted))
+    if (!trusted) {
+      prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, false))
+      return
+    }
+    // Trust is saved only if the repository at that path is still the one
+    // that was inspected: re-verify its identity from a fresh pin first.
+    if (identityCheck.running) return
+    identityCheck.repo = { path: String(repo.path), identity: String(repo.identity) }
+    identityCheck.command = ["python3", Service.helperPath, "identity", identityCheck.repo.path]
+    identityCheck.running = true
+  }
+  Process {
+    id: identityCheck
+    property var repo: null
+    stdout: StdioCollector { id: identityOutput; waitForEnd: true }
+    onExited: function(exitCode) {
+      var current = String(identityOutput.text || "").trim()
+      if (exitCode === 0 && repo && current !== "" && current === repo.identity)
+        prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, true))
+      else
+        root.settingsError = FoamyI18n.t("Repository changed; refresh and try again.")
+      repo = null
+    }
   }
 
   // One-time migration of the old global "Trust repository config" switch:

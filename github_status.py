@@ -148,7 +148,7 @@ DEFAULT_POLICY = GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_env
                            fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
 
 
-def config_entries(repo: "Repository", pin: "Pin | None" = None) -> list[tuple[str, str, str]]:
+def config_entries(repo: "Repository", pin: "Pin | None" = None) -> list[tuple[str, str, str | None]]:
   """(scope, key, value) for every config entry Git would read in repo, includes followed."""
   output = bytearray()
   def consume(chunk: bytes):
@@ -161,11 +161,13 @@ def config_entries(repo: "Repository", pin: "Pin | None" = None) -> list[tuple[s
   parts = bytes(output).split(b"\0")
   entries = []
   for index in range(0, len(parts) - 1, 2):
-    key, _, value = parts[index + 1].partition(b"\n")
+    key, newline, value = parts[index + 1].partition(b"\n")
     # Byte-exact (surrogateescape): an override must name the very bytes Git
     # read, so `filter.x\xff.clean` can't turn into a different `filter.x\ufffd`
     # key. os.fsencode() restores the bytes when Popen builds the environment.
-    entries.append((os.fsdecode(parts[index]), os.fsdecode(key), os.fsdecode(value)))
+    # A key without a value (a bare boolean, which Git reads as true) is
+    # None, distinct from an empty value (false).
+    entries.append((os.fsdecode(parts[index]), os.fsdecode(key), os.fsdecode(value) if newline else None))
   return entries
 
 
@@ -232,7 +234,7 @@ def repository_policy(repo: "Repository", trusted: bool = False, pin: "Pin | Non
   for scope, key, value in entries:
     section, name, variable = split_key(key)
     if (scope in TRUSTED_SCOPES and section == "protocol" and name and variable == "allow"
-        and value.lower() == "always" and name not in allowed and name.lower() not in LOCAL_PROTOCOLS
+        and (value or "").lower() == "always" and name not in allowed and name.lower() not in LOCAL_PROTOCOLS
         and re.fullmatch(r"[A-Za-z0-9+.-]+", name)):
       allowed.append(name)
   env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
@@ -771,12 +773,14 @@ def bwrap_command() -> list[str]:
       bwrap = shutil.which("bwrap")
       if bwrap:
         try:
-          # The whole filesystem read-only (/dev stays as it is, for
-          # /dev/null and ttys). Only the pinned Git directories are bound
+          # The whole filesystem read-only, and a fresh minimal /dev (null,
+          # zero, full, random, urandom, tty; nothing of the host's /dev,
+          # so no /dev/shm). Only the pinned Git directories are bound
           # writable (Pin.prefix), so a symlink anywhere inside them that
           # points elsewhere (another repository's refs) can't be written
-          # through: the write fails instead.
-          command = [bwrap, "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev"]
+          # through: the write fails instead. /proc, /tmp and /run (the
+          # ssh agent socket) stay as the read-only host view.
+          command = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev"]
           if subprocess.run([*command, "--", "true"], capture_output=True, timeout=5).returncode == 0:
             found = command
         except (OSError, subprocess.TimeoutExpired):
@@ -947,6 +951,22 @@ def parse_trusted(raw: str) -> Trust:
   return Trust(entries=frozenset(entries))
 
 
+def current_identity(path: str) -> str:
+  """The pinned identity of the repository at `path` now, or ""."""
+  if not path.startswith("/"):
+    return ""
+  try:
+    pin = pin_repository(Repository(os.path.realpath(path), "", "", ""))
+  except (OSError, ValueError):
+    return ""
+  if pin is None:
+    return ""
+  try:
+    return pin.identity
+  finally:
+    pin.close()
+
+
 def is_trusted(repo: "Repository", trusted: "bool | Trust") -> bool:
   return trusted.covers(repo) if isinstance(trusted, Trust) else bool(trusted)
 
@@ -1056,13 +1076,17 @@ def _repository_status(repo: Repository, pin: Pin | None) -> dict[str, Any]:
   trusted = pin is not None
   row = {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0,
          "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": "",
-         "lfs": False, "trusted": trusted, "identity": repository_identity(repo)}
+         "lfs": False, "trusted": trusted, "identity": ""}
   close: Callable[[], None] = lambda: None
   try:
     if trusted:
       policy = replace(TRUSTED_POLICY, pin=pin)
     else:
       policy, close = untrusted_status_policy(repo)
+    # The identity offered for trust is the one of the directories this very
+    # check inspected (its pin), never a separate read of the path. Without
+    # a pin (no bubblewrap) nothing can be trusted, so none is offered.
+    row["identity"] = policy.pin.identity if policy.pin is not None else ""
     # Detection always uses the hardened policy, even for trusted repositories.
     row["lfs"] = uses_lfs(repo, policy if not trusted else repository_policy(repo, False))
     branch = checked_text(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], (1,), policy)
@@ -1174,8 +1198,9 @@ def config_quote(value: str) -> str:
   return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t") + '"'
 
 
-def config_text(entries: Sequence[tuple[str, str]]) -> str:
-  """A config file holding `entries` (key, value) in order, multi-values kept."""
+def config_text(entries: Sequence[tuple[str, "str | None"]]) -> str:
+  """A config file holding `entries` (key, value) in order, multi-values kept;
+  a None value is written as a bare key (Git: true), never as `= ""` (false)."""
   lines: list[str] = []
   for key, value in entries:
     section, subsection, variable = split_key(key)
@@ -1184,7 +1209,7 @@ def config_text(entries: Sequence[tuple[str, str]]) -> str:
     if "\n" in subsection or "\0" in subsection:
       continue
     header = f"[{section}]" if not has_subsection(key) else f"[{section} {config_quote(subsection)}]"
-    lines += [header, f"\t{variable} = {config_quote(value)}"]
+    lines += [header, f"\t{variable}" if value is None else f"\t{variable} = {config_quote(value)}"]
   return "\n".join(lines) + "\n"
 
 
@@ -1271,7 +1296,7 @@ def status_config(entries: Sequence[tuple[str, str, str]]) -> list[tuple[str, st
   minimal = []
   for scope, key, value in entries:
     if scope in LOCAL_SCOPES and STATUS_KEYS.match(canonical_key(key)) and canonical_key(key) != "extensions.worktreeconfig" \
-        and "\n" not in value:
+        and (value is None or "\n" not in value):
       minimal.append((key, value))
   return minimal
 
@@ -1321,7 +1346,8 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
   local: dict[str, list[str]] = {}
   for scope, key, value in entries:
     if scope in LOCAL_SCOPES:
-      local.setdefault(canonical_key(key), []).append(value)
+      # A bare key is Git's boolean true; it carries no URL, refspec or name.
+      local.setdefault(canonical_key(key), []).append("true" if value is None else value)
   # The origin URL may come from the user's own config (no local entry):
   # then the overlay leaves it out and Git resolves it natively.
   urls = local.get("remote.origin.url", [])
@@ -1581,7 +1607,7 @@ def remove_marker() -> None:
 
 def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("command", nargs="?", default="status", choices=["status", "fetch", "push", "pull"])
+  parser.add_argument("command", nargs="?", default="status", choices=["status", "fetch", "push", "pull", "identity"])
   parser.add_argument("repository", nargs="?")
   parser.add_argument("--folders-json", default=json.dumps(DEFAULT_FOLDERS))
   parser.add_argument("--trusted-json", default="[]",
@@ -1590,6 +1616,11 @@ def main() -> int:
                       help="legacy: trust every repository (migrated to --trusted-json by the panel)")
   args = parser.parse_args()
   install_signal_handlers(remove_marker)
+  if args.command == "identity":
+    # Re-verify before saving trust: the identity of the repository at this
+    # path right now, from a fresh pin ("" when it can't be pinned).
+    print(current_identity(args.repository or ""))
+    return 0
   if (args.command in ("push", "pull")) != (args.repository is not None):
     parser.error("Only push and pull require a repository path")
   try:

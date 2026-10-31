@@ -44,7 +44,8 @@ ShellRoot {
       var bar = barComponent.createObject(shell, { moduleName: "foamy.github" })
       panels.push(component.createObject(host, { bar: bar, x: 1500, y: 0, width: 40, height: 34,
         settings: { repositoryFolders: [], inotifyEnabled: @INOTIFY@, refreshIntervalSec: 30, fetchIntervalSec: 900,
-                    trustRepositoryConfig: true } }))
+                    trustRepositoryConfig: true,
+                    trustedRepositories: [{ path: "/r/a", identity: "1:1:1|2:2:2" }, { path: "/r/b", identity: "3:3:3|4:4:4" }] } }))
     }
     step.start()
   }
@@ -86,26 +87,31 @@ ShellRoot {
         check(view1.settingsError !== "", "invalid folders are reported, not saved")
         panels[1].saveFolders([{ path: "~/GitHub", depth: 3 }])
         check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.repositoryFolders) === JSON.stringify([{ path: "~/GitHub", depth: 3 }]), "folders saved as an array")
-        var lfsRepo = { path: "/home/me/GitHub/lfs-repo", identity: "1:2:3" }
-        panels[1].setTrusted(lfsRepo, true)
-        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === JSON.stringify([lfsRepo]), "trusting saves path and identity")
         check(Plugin.Service.helperArguments().indexOf(Plugin.Service.legacyTrustAll ? "--trust-repository-config" : "--trusted-json") >= 0, "helpers get the trust arguments")
-        panels[1].setTrusted(lfsRepo, false)
-        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.trustedRepositories) === "[]", "untrusting removes it")
         check(view1.lfsRepositories.length === 0, "no Git LFS section without LFS repositories")
         // Trust edits queued behind an in-flight save compose (Codex: the
-        // second edit used to undo the first).
+        // second edit used to undo the first): untrust A, then B.
         var prefs1 = panels[1].prefs
         prefs1.inFlight = true
-        panels[1].setTrusted({ path: "/r/a", identity: "1:1:1" }, true)
-        panels[1].setTrusted({ path: "/r/b", identity: "2:2:2" }, true)
+        panels[1].setTrusted({ path: "/r/a", identity: "1:1:1|2:2:2" }, false)
+        panels[1].setTrusted({ path: "/r/b", identity: "3:3:3|4:4:4" }, false)
         var queued = prefs1.waiting.filter(function(item) { return item.key === "trustedRepositories" })
-        check(queued.length === 1 && queued[0].value.length === 2, "queued trust edits compose")
+        check(queued.length === 1 && queued[0].value.length === 0, "queued trust edits compose")
         prefs1.waiting = []
         prefs1.inFlight = false
+        // Trusting re-verifies the identity from a fresh pin before saving:
+        // the real repository's identity is saved, a stale one refused.
+        panels[1].setTrusted({ path: "@REPO@", identity: "@IDENT@" }, true)
+        panels[2].setTrusted({ path: "@REPO@", identity: "9:9:9|9:9:9" }, true)
         panels[1].close()
         panels[0].destroy()
       } else if (n === 3) {
+        var saved1 = panels[1].bar.saved
+        check(saved1.length > 0 && JSON.stringify(saved1[saved1.length - 1].settings.trustedRepositories).indexOf("@IDENT@") >= 0,
+              "trust saved after re-verifying the identity")
+        check(panels[2].settingsError === "Repository changed; refresh and try again.", "a changed repository is refused")
+        check(!panels[2].bar.saved.some(function(entry) { return JSON.stringify(entry.settings.trustedRepositories || []).indexOf("9:9:9") >= 0 }),
+              "nothing saved for a changed repository")
         check(!panels[1].opened && !panels[1].editingSettings, "settings reset when the popup closes")
         panels[1].openSettings()
         check(panels[1].opened && panels[1].editingSettings, "openSettings() on a closed popup lands on Settings")
@@ -133,6 +139,17 @@ ShellRoot {
 '''
 
 status = 0
+import subprocess
+import tempfile
+sys.path.insert(0, str(PLUGIN))
+import github_status  # noqa: E402
+TRUST_REPO = tempfile.mkdtemp(prefix="foamy-github-runtime-repo-")
+import atexit, shutil  # noqa: E401
+atexit.register(shutil.rmtree, TRUST_REPO, True)
+subprocess.run(["git", "init", "-q", TRUST_REPO], check=True)
+TRUST_IDENTITY = github_status.current_identity(TRUST_REPO)
+SHELL = SHELL.replace("@REPO@", TRUST_REPO).replace("@IDENT@", TRUST_IDENTITY)
+
 for host in (sys.argv[1:] or ["4.0", "4.5"]):
   for mode in ("true", "false"):        # inotifyEnabled: live monitoring, then timed polling
     run = harness.Run(host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-").run(timeout=60)

@@ -132,5 +132,6 @@
   "Automatic checks run Git without a repository's own settings, filters and hooks, so nothing in a repository can run code just by being in these folders. For Git LFS that means files you edited may show as changed until Git refreshes. A trusted repository runs its own Git settings, including LFS, during automatic checks and fetches, so its counts are exact. Trust applies to the repository at that exact path; moving or renaming it removes the trust.": "Automatic checks run Git without a repository's own settings, filters and hooks, so nothing in a repository can run code just by being in these folders. For Git LFS that means files you edited may show as changed until Git refreshes. A trusted repository runs its own Git settings, including LFS, during automatic checks and fetches, so its counts are exact. Trust applies to the repository at that exact path; moving or renaming it removes the trust.",
   "Use at most 256 trusted repositories.": "Use at most 256 trusted repositories.",
   "Trusted repositories must be absolute paths.": "Trusted repositories must be absolute paths.",
-  "Trust isn't available for this repository's filesystem.": "Trust isn't available for this repository's filesystem."
+  "Trust isn't available for this repository's filesystem.": "Trust isn't available for this repository's filesystem.",
+  "Repository changed; refresh and try again.": "Repository changed; refresh and try again."
 }

@@ -708,6 +708,78 @@ class TrustModelTest(unittest.TestCase):
     self.assertFalse((victim / ".git/refs/tags/v1").exists())
 
   @unittest.skipUnless(status.bwrap_command(), "needs bubblewrap")
+  def test_symlinks_into_dev_shm_write_nothing_there(self):
+    # Codex security: /dev was bound writable (--dev-bind), so a ref symlink
+    # into /dev/shm let the fetch write another repository's refs there. The
+    # namespace now has a fresh minimal /dev without the host's /dev/shm.
+    self.file_remote()
+    upstream = self.root / "upstream"
+    self.git("push", "-q", "origin", "HEAD:refs/heads/evil/main", cwd=upstream)
+    shm = Path(tempfile.mkdtemp(prefix="foamy-github-test-", dir="/dev/shm"))
+    self.addCleanup(shutil.rmtree, shm, True)
+    victim = shm / "victim"
+    subprocess.run(["git", "clone", "-q", str(self.root / "remote.git"), str(victim)], check=True, capture_output=True)
+    self.git("update-ref", "refs/heads/main", self.git("rev-parse", "HEAD").strip(), cwd=victim)
+    before = self.git("rev-parse", "refs/heads/main", cwd=victim).strip()
+    (self.path / ".git/refs/remotes/origin").mkdir(parents=True, exist_ok=True)
+    (self.path / ".git/refs/remotes/origin/evil").symlink_to(victim / ".git/refs/heads")
+    result = self.fetched()
+    self.assertFalse(result["ok"], "a write through the /dev/shm symlink was reported as success")
+    self.assertEqual(self.git("rev-parse", "refs/heads/main", cwd=victim).strip(), before)
+    self.assertFalse(any(path.name != "main" for path in (victim / ".git/refs/heads").iterdir()))
+
+  def test_bare_boolean_in_the_frozen_status_config_stays_true(self):
+    # Codex P2: `[core] filemode` (no value, Git: true) was written to the
+    # frozen overlay as `filemode = ""` (false), hiding exec-bit changes.
+    config = self.path / ".git/config"
+    text = config.read_text()
+    self.assertIn("filemode = true", text)
+    config.write_text(text.replace("filemode = true", "filemode"))
+    entries = status.config_entries(self.repo)
+    self.assertIn(("local", "core.filemode", None), entries)
+    self.assertIn("\tfilemode\n", status.config_text(status.status_config(entries)))
+    (self.path / "file.txt").chmod(0o755)
+    row = status.repository_status(self.repo)
+    self.assertTrue(row["complete"], row["error"])
+    self.assertEqual(row["dirtyCount"], 1, "a tracked exec-bit change was hidden")
+    self.assertEqual(self.git("-c", "core.filemode", "status", "--porcelain").strip(), "M file.txt")
+
+  @unittest.skipUnless(status.bwrap_command(), "needs bubblewrap")
+  def test_offered_identity_comes_from_the_inspected_pin(self):
+    # Codex security: the row's identity was read from the path before the
+    # pin, so a swap A -> B -> A could show B's status under A's identity
+    # (or the reverse). The identity is now the pin's, and the panel only
+    # saves trust if a fresh pin still has it.
+    other = self.root / "other"
+    subprocess.run(["git", "init", "-q", str(other)], check=True)
+    aside = self.root / "repo.aside"
+    real_pin = status.pin_repository
+    def swap_then_pin(target):
+      os.rename(self.path, aside)
+      os.rename(other, self.path)                 # A -> B just before the pin
+      try:
+        return real_pin(target)
+      finally:
+        os.rename(self.path, other)
+        os.rename(aside, self.path)               # B -> A after it
+    with patch.object(status, "pin_repository", side_effect=swap_then_pin):
+      row = status.repository_status(self.repo)
+    identity_a = status.current_identity(str(self.path))
+    os.rename(self.path, aside)
+    os.rename(other, self.path)
+    identity_b = status.current_identity(str(self.path))
+    os.rename(self.path, other)
+    os.rename(aside, self.path)
+    self.assertTrue(identity_a and identity_b and identity_a != identity_b)
+    self.assertEqual(row["identity"], identity_b, "the identity did not come from the inspected pin")
+    # A is back: re-verifying the offered identity fails, so nothing is saved.
+    self.assertNotEqual(status.current_identity(str(self.path)), row["identity"])
+    helper = subprocess.run([sys.executable, str(Path(status.__file__)), "identity", str(self.path)],
+                            capture_output=True, text=True, check=True)
+    self.assertEqual(helper.stdout.strip(), identity_a)
+    self.assertEqual(status.current_identity("relative/path"), "")
+
+  @unittest.skipUnless(status.bwrap_command(), "needs bubblewrap")
   def test_config_edited_mid_check_is_invisible_to_status(self):
     # Codex security: the Landlock allowlist includes Git's ELF loader, so a
     # filter added mid-check as `ld-linux … /usr/bin/<payload>` might run.

@@ -129,7 +129,10 @@ directories. Git then runs in a private mount namespace (`bubblewrap`) where
 the repository's paths are bound to exactly those directories. A rename or
 symlink swap during a check therefore can't make a trusted check run another
 repository's config, and can't redirect a fetch's objects or ref updates. In that namespace the whole filesystem and the worktree are read-only;
-only the pinned Git directories are writable. So a symlink anywhere inside
+only the pinned Git directories are writable. `/dev` is a fresh minimal one
+(null, zero, full, random, urandom, tty), so nothing of the host's `/dev`,
+`/dev/shm` included, is reachable; `/proc`, `/tmp` and `/run` (the ssh agent
+socket) are the read-only host view. So a symlink anywhere inside
 them that points into another repository (for example below
 `refs/remotes/origin`) can't be written through, and the fetch fails
 instead. Helpers that run there (ssh, your credential helpers) can read what
@@ -153,7 +156,9 @@ namespace with a frozen minimal config mounted over the repository's own. It
 holds only the repository format, worktree and ignore settings, and the
 branch/remote mapping for upstream counts; there are no filter, fsmonitor,
 hooks or other driver keys. A mid-check edit to the repository's config is
-therefore invisible to Git, and Landlock stays on as a second layer.
+therefore invisible to Git, and Landlock stays on as a second layer. Values
+are kept as Git read them: a bare boolean (`filemode` with no value, which is
+true) stays a bare key, not an empty value (false).
 
 Without bubblewrap the checks fall back to the snapshot overrides plus
 Landlock, which leaves a race: someone who can already write into the
@@ -198,7 +203,10 @@ so is a different repository that later appears at the same path (deleted and
 re-cloned, or swapped in). It shows the (i) again. On a filesystem without a
 birth time (`statx` reports none), device and inode alone could be reused by
 a replacement, so trust isn't offered there: the (i) and the Settings row say
-so and stay untrusted.
+so and stay untrusted. The identity offered is the one of the directories the
+check actually inspected (its pin). When you trust a repository, the panel
+pins it again and saves trust only if the identity still matches; otherwise
+it says "Repository changed; refresh and try again" and saves nothing.
 Repositories that don't use LFS never show any of this.
 
 **From the earlier global switch:** if you had turned on **Trust repository
