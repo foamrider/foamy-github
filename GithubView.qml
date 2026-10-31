@@ -454,7 +454,8 @@ PanelKeyCatcher {
       }
     }
 
-    // Git LFS: per-repository trust, only when an LFS repository was found.
+    // Git LFS: per-repository trust, only when a repository using LFS (or
+    // one already trusted) was found.
     FoamySettingsSection {
       id: lfsSection
       width: parent.width

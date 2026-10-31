@@ -127,7 +127,7 @@ Panel {
     if (Service.lastChecked <= 0 || Service.status.ok === false || Service.refreshing) return
     legacyMigrated = true
     var trusted = Model.trustedRepositories(prefs.effectiveSettings)
-    Service.lfsRepos.forEach(function(repo) { if (repo.identity) trusted = Model.withTrust(trusted, repo, true) })
+    Service.repos.forEach(function(repo) { if (repo && repo.usesLfs === true && repo.identity) trusted = Model.withTrust(trusted, repo, true) })
     prefs.save("trustedRepositories", trusted)
     prefs.save("trustRepositoryConfig", false)
   }
