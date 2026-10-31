@@ -110,8 +110,8 @@ unavailable**. This costs about 1.5 ms per repository check (10.4 vs 8.9 ms,
 and your credential helpers. Instead, Git fetches the repository in place,
 with a read-only minimal config mounted over the repository's own (in a
 private mount namespace, see below). That config holds only the snapshot's
-origin URL, fetch refspecs, tag option, repository format and partial-clone
-settings.
+origin URL (left out when it comes from your own config), fetch refspecs,
+tag option, repository format and partial-clone settings.
 
 Git reads your system and global config natively, against the repository's
 real path. So `includeIf` (gitdir, onbranch, hasconfig), bare booleans, empty
@@ -128,6 +128,11 @@ the repository's paths are bound to exactly those directories. A rename or
 symlink swap during a check therefore can't make a trusted check run another
 repository's config, and can't redirect a fetch's objects or ref updates. This
 applies to trusted checks and fetches, and to every automatic fetch. The
+pin comes first: the trust check and the config snapshot are read through
+it. Every Git command gets `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE`
+pointing at the pinned directories, and read-only copies of the `.git` file
+and `commondir` (as read when pinning) are mounted over the originals, so
+rewriting either can't send Git elsewhere. The
 identity covers the worktree as well as the Git and common directories, so
 a different worktree whose `.git` file points back at the original Git
 directory isn't trusted either. Trust covers one repository: submodule

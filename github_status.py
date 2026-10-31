@@ -145,14 +145,14 @@ DEFAULT_POLICY = GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_env
                            fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
 
 
-def config_entries(repo: "Repository") -> list[tuple[str, str, str]]:
+def config_entries(repo: "Repository", pin: "Pin | None" = None) -> list[tuple[str, str, str]]:
   """(scope, key, value) for every config entry Git would read in repo, includes followed."""
   output = bytearray()
   def consume(chunk: bytes):
     output.extend(chunk)
   # Listing config runs nothing; the read flags only guard against future changes.
   result = read_git(repo, ["config", "--show-scope", "--includes", "--list", "-z"], 8, consume, MAX_CAPTURE_BYTES * 4, READ_CONFIG,
-                    sandbox=True)
+                    sandbox=True, pin=pin)
   if result.returncode:
     raise InspectionError(concise_error(result, "Could not read the repository's Git config. Open it in lazygit."))
   parts = bytes(output).split(b"\0")
@@ -185,10 +185,10 @@ def canonical_key(key: str) -> str:
   return f"{section}.{subsection}.{variable}" if subsection else f"{section}.{variable}"
 
 
-def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
+def repository_policy(repo: "Repository", trusted: bool = False, pin: "Pin | None" = None) -> GitPolicy:
   if trusted:
     return TRUSTED_POLICY
-  entries = config_entries(repo)
+  entries = config_entries(repo, pin)
 
   # Every defined filter driver, from any scope, is switched off.
   common: list[tuple[str, str]] = list(READ_OVERRIDES)
@@ -231,7 +231,7 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
   env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
   # SSH: the overlay fetch never reads the repository's own config, so its
   # core.sshCommand can't apply; overlay_fetch() uses the user's (or BatchMode ssh).
-  return GitPolicy(sandboxed=True, snapshot=tuple(entries), read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
+  return GitPolicy(sandboxed=True, pin=pin, snapshot=tuple(entries), read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
                    fetch=READ_CONFIG, fetch_env=config_environment(fetch) + tuple(sorted(env.items())),
                    fetch_args=FETCH_ARGUMENTS)
 
@@ -473,6 +473,7 @@ def collect_repositories(folders: list[str | FolderConfig] | None = None) -> lis
 # setpriv or Landlock is unavailable the snapshot overrides still apply (see
 # the README trust model for the residual race).
 _sandbox: list[str] | None = None
+_sandbox_lock = threading.Lock()
 
 
 def elf_interpreter(path: str) -> str:
@@ -496,12 +497,17 @@ def elf_interpreter(path: str) -> str:
 def sandbox_command() -> list[str]:
   """setpriv … /path/to/git, or [] when exec can't be restricted here."""
   global _sandbox
-  if _sandbox is not None:
+  with _sandbox_lock:
+    if _sandbox is None:
+      _sandbox = _probe_sandbox()
     return _sandbox
-  _sandbox = []
+
+
+def _probe_sandbox() -> list[str]:
+  result: list[str] = []
   setpriv, git = shutil.which("setpriv"), shutil.which("git")
   if not setpriv or not git:
-    return _sandbox
+    return result
   git = os.path.realpath(git)
   command = [setpriv, "--landlock-access", "fs:execute", "--landlock-rule", f"path-beneath:execute:{git}"]
   interpreter = elf_interpreter(git)
@@ -514,8 +520,8 @@ def sandbox_command() -> list[str]:
   except (OSError, subprocess.TimeoutExpired):
     works = blocked = False
   if works and blocked:
-    _sandbox = [*command, git]
-  return _sandbox
+    result = [*command, git]
+  return result
 
 
 def read_git(repo: Repository, arguments: list[str], timeout: float,
@@ -541,7 +547,8 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
         start_new_session=True,
         pass_fds=pin.fds() if pin is not None else (),
         # Read-only status must not rewrite the index and wake our own watcher.
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", **dict(env)},
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0",
+             **(dict(pin.env) if pin is not None else {}), **dict(env)},
       )
       _children.add(process)
     finally:
@@ -744,18 +751,25 @@ def repository_identity(repo: "Repository") -> str:
 _bwrap: list[str] | None = None
 
 
+_probe_lock = threading.Lock()
+
+
 def bwrap_command() -> list[str]:
+  # Probed once per helper; concurrent first callers wait for the completed
+  # probe (publishing a placeholder early made other threads see "missing").
   global _bwrap
-  if _bwrap is None:
-    _bwrap = []
-    bwrap = shutil.which("bwrap")
-    if bwrap:
-      try:
-        if subprocess.run([bwrap, "--dev-bind", "/", "/", "--", "true"], capture_output=True, timeout=5).returncode == 0:
-          _bwrap = [bwrap, "--dev-bind", "/", "/"]
-      except (OSError, subprocess.TimeoutExpired):
-        pass
-  return _bwrap
+  with _probe_lock:
+    if _bwrap is None:
+      found: list[str] = []
+      bwrap = shutil.which("bwrap")
+      if bwrap:
+        try:
+          if subprocess.run([bwrap, "--dev-bind", "/", "/", "--", "true"], capture_output=True, timeout=5).returncode == 0:
+            found = [bwrap, "--dev-bind", "/", "/"]
+        except (OSError, subprocess.TimeoutExpired):
+          pass
+      _bwrap = found
+    return _bwrap
 
 
 @dataclass
@@ -764,6 +778,8 @@ class Pin:
   identity: str
   common: int                               # fd of the common Git directory
   extra: tuple[tuple[str, str, str], ...] = ()   # further bwrap mounts (option, source, destination)
+  env: tuple[tuple[str, str], ...] = ()          # GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE: no rediscovery
+  files: tuple[str, ...] = ()                    # private copies to delete on close
 
   def prefix(self) -> list[str]:
     command = list(bwrap_command())
@@ -782,42 +798,86 @@ class Pin:
         os.close(fd)
       except OSError:
         pass
+    for name in self.files:
+      try:
+        os.unlink(name)
+      except OSError:
+        pass
 
 
 def open_directory(path: Path | str, dir_fd: int | None = None) -> int:
   return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
 
 
+def read_at(directory_fd: int, name: str, limit: int = MAX_METADATA_BYTES) -> bytes | None:
+  """A small regular file inside an open directory, never following a symlink."""
+  try:
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory_fd)
+  except FileNotFoundError:
+    return None
+  try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+      raise InspectionError(f"Unexpected {name}. Open the repository in lazygit.")
+    return os.read(fd, limit)
+  finally:
+    os.close(fd)
+
+
+def private_copy(data: bytes) -> str:
+  root = cache_dir() / "pins"
+  root.mkdir(mode=0o700, exist_ok=True)
+  descriptor, name = tempfile.mkstemp(prefix="frozen-", dir=root)
+  with os.fdopen(descriptor, "wb") as handle:
+    handle.write(data)
+  return name
+
+
 def pin_repository(repo: "Repository") -> Pin | None:
-  """Open the worktree and its Git directories once; None when pinning isn't
-  possible (no bubblewrap), the caller then fails closed."""
+  """Open the worktree and its Git directories once and freeze how Git finds
+  them; None when pinning isn't possible (no bubblewrap), callers then fail
+  closed. Every child gets GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE pointing at
+  the bound paths (Git never rediscovers through `.git` or `commondir`), and
+  read-only copies of the `.git` file and `commondir`, as read now, are
+  mounted over the originals inside the namespace, so a later rewrite of
+  either has no effect."""
   if not bwrap_command():
     return None
   opened: list[tuple[int, str]] = []
+  files: list[str] = []
+  extra: list[tuple[str, str, str]] = []
   try:
     worktree = open_directory(repo.path)
     opened.append((worktree, repo.path))
+    pointer = None
     try:
       git_dir = open_directory(".git", dir_fd=worktree)      # relative to the pinned worktree
       git_path = Path(repo.path) / ".git"
     except NotADirectoryError:
-      directories = git_directories(repo)                     # a .git file (linked worktree)
-      if not directories:
+      pointer = read_at(worktree, ".git")                      # a .git file (linked worktree, separate git dir)
+      first = os.fsdecode((pointer or b"").split(b"\n", 1)[0])
+      if not first.startswith("gitdir: "):
         raise InspectionError("Could not find the repository's Git directory. Open it in lazygit.")
-      git_path = directories[0]
+      git_path = Path(os.path.normpath(os.path.join(repo.path, first[len("gitdir: "):].strip())))
       git_dir = open_directory(git_path)
+      files.append(private_copy(pointer))
+      extra.append(("--ro-bind", files[-1], os.path.join(repo.path, ".git")))
     opened.append((git_dir, str(git_path)))
-    common = git_dir
-    commondir = read_bounded(Path(f"/proc/self/fd/{git_dir}") / "commondir", MAX_METADATA_BYTES).strip()
-    if commondir:
-      common_path = (git_path / os.fsdecode(commondir)).resolve()
+    common, common_path = git_dir, git_path
+    commondir = read_at(git_dir, "commondir")
+    if commondir is not None:
+      common_path = Path(os.path.normpath(os.path.join(git_path, os.fsdecode(commondir.strip()))))
       common = open_directory(common_path)
       opened.append((common, str(common_path)))
+      files.append(private_copy(commondir))
+      extra.append(("--ro-bind", files[-1], str(git_path / "commondir")))
+    env = (("GIT_DIR", str(git_path)), ("GIT_COMMON_DIR", str(common_path)), ("GIT_WORK_TREE", repo.path))
     return Pin(binds=tuple(opened), identity=combined_identity([directory_identity(fd=fd) for fd, _ in opened]),
-               common=common)
+               common=common, extra=tuple(extra), env=env, files=tuple(files))
   except BaseException:
     for fd, _ in opened:
       os.close(fd)
+    for name in files:
+      os.unlink(name)
     raise
 
 
@@ -1105,8 +1165,10 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
   for scope, key, value in entries:
     if scope in LOCAL_SCOPES:
       local.setdefault(canonical_key(key), []).append(value)
+  # The origin URL may come from the user's own config (no local entry):
+  # then the overlay leaves it out and Git resolves it natively.
   urls = local.get("remote.origin.url", [])
-  if not urls:
+  if not urls and not any(canonical_key(key) == "remote.origin.url" for scope, key, _ in entries if scope in TRUSTED_SCOPES):
     return None
   value_safe = re.compile(r"[A-Za-z0-9:+=._/-]+")
   minimal: list[tuple[str, str]] = []
@@ -1122,7 +1184,8 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
   minimal += extensions
   refspecs = [spec for spec in local.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
     or ["+refs/heads/*:refs/remotes/origin/*"]
-  minimal.append(("remote.origin.url", urls[0]))
+  if urls:
+    minimal.append(("remote.origin.url", urls[0]))
   minimal += [("remote.origin.fetch", spec) for spec in refspecs]
   tagopt = (local.get("remote.origin.tagopt") or [""])[-1]
   if tagopt in ("--no-tags", "--tags"):
@@ -1135,7 +1198,7 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
     minimal.append(("remote.origin.promisor", "true"))
     minimal += [("remote.origin.partialclonefilter", spec) for spec in filters[-1:]]
 
-  pin = pin_repository(repo)
+  pin = policy.pin
   if pin is None:
     raise InspectionError("Automatic fetch needs bubblewrap (bwrap) to run safely. Fetch this repository in lazygit.")
   files: list[str] = []
@@ -1151,7 +1214,7 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
     config = private_file(os.fsencode(config_text(minimal)))
     empty = private_file(b"")
     git_path, common_path = pin.binds[1][1], pin.binds[-1][1]
-    extra = [("--ro-bind", config, os.path.join(common_path, "config"))]
+    extra = list(pin.extra) + [("--ro-bind", config, os.path.join(common_path, "config"))]
     for directory in {git_path, common_path}:
       if os.path.lexists(os.path.join(directory, "config.worktree")):
         extra.append(("--ro-bind", empty, os.path.join(directory, "config.worktree")))
@@ -1168,7 +1231,6 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
         "error: the repository was moved or replaced during the fetch; try again")
     return completed
   finally:
-    pin.close()
     for name in files:
       try:
         os.unlink(name)
@@ -1188,17 +1250,24 @@ def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[
 
 
 def _fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
+  # Pin first; the trust check, the config snapshot and every Git command
+  # then go through that one pin.
   pin = trusted_pin(repo, trusted)
+  untrusted = pin is None
+  if untrusted:
+    pin = pin_repository(repo)
+    if pin is None:
+      return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False, "operation": "fetch", "attempts": 0,
+              "message": "Automatic fetch needs bubblewrap (bwrap) to run safely. Fetch this repository in lazygit."}
   try:
-    return _fetch_pinned(repo, pin)
+    return _fetch_pinned(repo, pin, untrusted)
   finally:
-    if pin is not None:
-      pin.close()
+    pin.close()
 
 
-def _fetch_pinned(repo: Repository, pin: "Pin | None") -> dict[str, Any]:
+def _fetch_pinned(repo: Repository, pin: Pin, untrusted: bool) -> dict[str, Any]:
   try:
-    policy = replace(TRUSTED_POLICY, pin=pin) if pin is not None else repository_policy(repo, False)
+    policy = repository_policy(repo, False, pin) if untrusted else replace(TRUSTED_POLICY, pin=pin)
   except (OSError, subprocess.TimeoutExpired) as error:
     return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
             "operation": "fetch", "attempts": 0, "message": str(error)[:240]}

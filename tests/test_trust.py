@@ -242,8 +242,8 @@ class TrustModelTest(unittest.TestCase):
     """Run `edit` right after the policy's config snapshot (Codex: config can
     change between the snapshot and the Git commands that use it)."""
     real = status.config_entries
-    def snapshot_then_edit(repo):
-      entries = real(repo)
+    def snapshot_then_edit(repo, *args, **kwargs):
+      entries = real(repo, *args, **kwargs)
       edit()
       return entries
     patcher = patch.object(status, "config_entries", side_effect=snapshot_then_edit)
@@ -285,8 +285,8 @@ class TrustModelTest(unittest.TestCase):
       with self.subTest(url=url):
         self.git("remote", "remove", "origin") if "origin" in self.git("remote") else None
         self.git("remote", "add", "origin", url)
-        with patch.object(status, "config_entries", side_effect=lambda repo, real=status.config_entries, edit=edit: (
-            lambda entries: (self.git("config", *edit), entries)[1])(real(repo))):
+        with patch.object(status, "config_entries", side_effect=lambda repo, *rest, real=status.config_entries, edit=edit: (
+            lambda entries: (self.git("config", *edit), entries)[1])(real(repo, *rest))):
           self.assertFalse(self.fetched()["ok"])
         self.git("config", "--unset-all", edit[0])
     self.assertNotRun()
@@ -530,6 +530,82 @@ class TrustModelTest(unittest.TestCase):
     self.assertFalse(row["trusted"], row)
     self.assertNotRun()
 
+  def linked_worktree(self):
+    worktree = self.root / "wt"
+    self.git("worktree", "add", "-q", str(worktree), "-b", "side")
+    return worktree, status.Repository(str(worktree), "wt", "root", "wt")
+
+  def hostile_repo(self, url="", config=()):
+    hostile = self.root / "hostile-gitdir"
+    subprocess.run(["git", "init", "-q", str(hostile)], check=True)
+    if url:
+      self.git("remote", "add", "origin", url, cwd=hostile)
+    for key, value in config:
+      self.git("config", key, value, cwd=hostile)
+    return hostile
+
+  def test_rewritten_git_pointer_after_the_pin_is_ignored(self):
+    # Codex P1: Git rediscovered the Git dir through a mutable .git file.
+    self.file_remote()
+    port, seen = self.recording_server()
+    hostile = self.hostile_repo(f"http://127.0.0.1:{port}/x.git", (("http.extraHeader", "X-Hostile: 1"),
+                                                                    ("core.fsmonitor", self.evil)))
+    worktree, repo = self.linked_worktree()
+    real_pin = status.pin_repository
+    def pin_then_rewrite(target):
+      pin = real_pin(target)
+      (worktree / ".git").write_text(f"gitdir: {hostile / '.git'}\n")
+      return pin
+    with patch.object(status, "pin_repository", side_effect=pin_then_rewrite):
+      result = status.fetch_repository(repo)
+    self.assertEqual(seen, [], "the fetch followed the rewritten .git file")
+    self.assertNotRun()
+    # The pinned repository was fetched; the changed pointer is reported, not followed.
+    self.assertFalse(result["ok"])
+    self.assertIn("moved or replaced", result["message"])
+    # Trusted status of the worktree: the rewritten pointer runs nothing either.
+    (worktree / ".git").write_text(f"gitdir: {self.path / '.git/worktrees/wt'}\n")
+    trust = status.parse_trusted(json.dumps([{"path": repo.path, "identity": status.repository_identity(repo)}]))
+    with patch.object(status, "pin_repository", side_effect=pin_then_rewrite):
+      row = status.repository_status(repo, trust)
+    self.assertTrue(row["trusted"], row)
+    self.assertNotRun()
+
+  def test_worktree_swapped_between_snapshot_and_pin_touches_nothing_else(self):
+    # Codex security: the snapshot was taken before the pin; a worktree
+    # swapped in between pointed the overlay and the writes at another repo.
+    self.file_remote()
+    target = self.root / "target"
+    subprocess.run(["git", "clone", "-q", str(self.root / "remote.git"), str(target)], check=True, capture_output=True)
+    old = self.git("rev-parse", "HEAD").strip()
+    self.git("update-ref", "refs/remotes/origin/main", old, cwd=target)
+    real_entries = status.config_entries
+    swapped = []
+    def snapshot_then_swap(repo, *args, **kwargs):
+      entries = real_entries(repo, *args, **kwargs)
+      if not swapped and repo.path == self.repo.path:
+        swapped.append(True)
+        os.rename(self.path, self.root / "aside")
+        self.path.mkdir()
+        (self.path / ".git").write_text(f"gitdir: {target / '.git'}\n")
+      return entries
+    with patch.object(status, "config_entries", side_effect=snapshot_then_swap):
+      status.fetch_repository(self.repo)
+    self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main", cwd=target).strip(), old,
+                     "the fetch wrote into the repository swapped in after the snapshot")
+
+  def test_origin_url_from_the_users_own_config(self):
+    # Codex: a global (or globally included) remote.origin.url must work
+    # when the repository has none of its own.
+    remote = self.file_remote()
+    self.git("config", "--unset", "remote.origin.url")
+    (self.root / "remote.inc").write_text(f'[remote "origin"]\n\turl = {remote}\n')
+    for config in (f'[remote "origin"]\n\turl = {remote}\n', f"[include]\n\tpath = {self.root / 'remote.inc'}\n"):
+      with self.subTest(config=config):
+        self.global_config(config)
+        result = self.fetched()
+        self.assertTrue(result["ok"], result)
+
   def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
     # Codex security: trust was checked on the path, then Git reopened it.
     hostile_marker = self.root / "swapped.ran"
@@ -648,9 +724,9 @@ class TrustModelTest(unittest.TestCase):
     self.file_remote()
     bad = status.Repository(str(self.root / "bad"), "bad", "root", "bad")
     with patch.object(status, "collect_repositories", return_value=[bad, good]), \
-         patch.object(status, "repository_policy", side_effect=lambda repo, trusted=False:
-                      (_ for _ in ()).throw(UnicodeEncodeError("utf-8", "x", 0, 1, "boom")) if repo is bad
-                      else status.__dict__["_real_policy"](repo, trusted)):
+         patch.object(status, "repository_policy", side_effect=lambda repo, *rest:
+                      (_ for _ in ()).throw(UnicodeEncodeError("utf-8", "x", 0, 1, "boom")) if repo.path == bad.path
+                      else status.__dict__["_real_policy"](repo, *rest)):
       status.__dict__["_real_policy"] = TrustModelTest._real_policy
       result = status.synchronize([str(self.root)])
     by_path = {item["path"]: item for item in result["failures"]}
@@ -908,7 +984,7 @@ class NegativeControlTest(unittest.TestCase):
              if name.startswith(("test_fsmonitor", "test_repository_clean", "test_filter_name", "test_global_filter",
                                  "test_lfs_extension", "test_included", "test_fetch_disables",
                                  "test_fetch_runs", "test_fetch_ignores", "test_glob", "test_status_never"))]
-    with patch.object(status, "repository_policy", lambda repo, trusted=False: status.TRUSTED_POLICY):
+    with patch.object(status, "repository_policy", lambda repo, *rest: status.TRUSTED_POLICY):
       for name in names:
         with self.subTest(vector=name):
           result = unittest.TestResult()
@@ -1106,3 +1182,26 @@ class PerRepositoryTrustTest(unittest.TestCase):
         status.parse_trusted(raw)
     # Bare paths from an earlier build trust nothing.
     self.assertEqual(status.parse_trusted('["/a"]').entries, frozenset())
+
+
+class ProbeCacheTest(unittest.TestCase):
+  def test_concurrent_first_probes_all_see_the_completed_result(self):
+    # Codex: the first caller published an empty placeholder before its
+    # probe finished, so concurrent callers saw "bubblewrap missing".
+    import threading
+    real_run = subprocess.run
+    def slow_run(*args, **kwargs):
+      time.sleep(.3)
+      return real_run(*args, **kwargs)
+    for name, probe in (("_bwrap", status.bwrap_command), ("_sandbox", status.sandbox_command)):
+      with self.subTest(cache=name), patch.object(status, name, None), patch.object(status.subprocess, "run", side_effect=slow_run):
+        expected = None
+        results: list = []
+        threads = [threading.Thread(target=lambda: results.append(probe())) for _ in range(6)]
+        for thread in threads:
+          thread.start()
+        for thread in threads:
+          thread.join()
+        self.assertEqual(len(results), 6)
+        self.assertTrue(all(results), f"{name}: a concurrent caller saw an empty probe result")
+        self.assertEqual(len({tuple(r) for r in results}), 1)
