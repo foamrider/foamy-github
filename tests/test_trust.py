@@ -150,6 +150,39 @@ class TrustModelTest(unittest.TestCase):
     self.assertTrue(status.repository_status(self.repo)["complete"])
     self.assertNotRun()
 
+  def test_filter_name_with_invalid_utf8_bytes_is_neutralised(self):
+    # Codex security P1: a lossy decode turned `filter.x\xff.clean` into
+    # `filter.x\ufffd.clean`, so the override missed the driver the
+    # attributes select and its clean command ran during status.
+    (self.path / ".gitattributes").write_bytes(b"*.txt filter=x\xff\n")
+    subprocess.run([b"git", b"-C", os.fsencode(self.path), b"config", b"filter.x\xff.clean",
+                    os.fsencode(f"{self.script('clean')} %f; cat")], check=True)
+    subprocess.run([b"git", b"-C", os.fsencode(self.path), b"config", b"filter.x\xff.required", b"true"], check=True)
+    self.dirty_tracked_file()
+    row = status.repository_status(self.repo)
+    self.assertFalse(row["trusted"])
+    self.assertTrue(row["complete"], row["error"])
+    self.assertNotRun()
+    # Names round-trip exactly through the environment Git receives.
+    env = dict(status.repository_policy(self.repo).read_env)
+    keys = [os.fsencode(env[f"GIT_CONFIG_KEY_{i}"]) for i in range(int(env["GIT_CONFIG_COUNT"]))]
+    self.assertIn(b"filter.x\xff.clean", keys)
+
+  def test_non_utf8_branch_and_upstream_round_trip(self):
+    # Branch and upstream names go back into Git arguments; a lossy decode
+    # looked up a different (or no) ref.
+    git = lambda *args: subprocess.run([b"git", b"-C", os.fsencode(self.path), b"-c", b"user.name=T",
+                                        b"-c", b"user.email=t@e.invalid", b"-c", b"commit.gpgsign=false", *args],
+                                       check=True, capture_output=True)
+    git(b"branch", b"up\xff")
+    git(b"checkout", b"-q", b"-b", b"feat\xff")
+    git(b"branch", b"--set-upstream-to=up\xff")
+    git(b"commit", b"-q", b"--allow-empty", b"-m", b"ahead")
+    row = status.repository_status(self.repo)
+    self.assertTrue(row["complete"], row["error"])
+    self.assertEqual(os.fsencode(row["branch"]), b"feat\xff")
+    self.assertEqual(row["ahead"], 1)
+
   def test_global_filter_selected_by_repository_attributes_is_off(self):
     # A trusted global filter (e.g. Git LFS) can be steered by repository config.
     self.global_config(f'[filter "globalf"]\n\tclean = {self.script("global-clean", "cat")}\n\trequired = true\n')

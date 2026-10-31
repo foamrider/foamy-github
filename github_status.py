@@ -197,7 +197,10 @@ def config_entries(repo: "Repository") -> list[tuple[str, str, str]]:
   entries = []
   for index in range(0, len(parts) - 1, 2):
     key, _, value = parts[index + 1].partition(b"\n")
-    entries.append((parts[index].decode("utf-8", "replace"), key.decode("utf-8", "replace"), value.decode("utf-8", "replace")))
+    # Byte-exact (surrogateescape): an override must name the very bytes Git
+    # read, so `filter.x\xff.clean` can't turn into a different `filter.x\ufffd`
+    # key. os.fsencode() restores the bytes when Popen builds the environment.
+    entries.append((os.fsdecode(parts[index]), os.fsdecode(key), os.fsdecode(value)))
   return entries
 
 
@@ -616,7 +619,9 @@ def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Se
   # Retain bounded diagnostics while continuing to drain their output.
   mutating = arguments[0] in ("fetch", "push", "pull", "merge")
   result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env)
-  result.stdout = output.decode("utf-8", "replace")
+  # Byte-exact, as above: branch, upstream and Git-dir paths go back into
+  # Git arguments and file paths, so they must round-trip.
+  result.stdout = os.fsdecode(bytes(output))
   return result
 
 
@@ -784,12 +789,12 @@ def git_directories(repo: "Repository") -> list[Path]:
   if dot_git.is_dir() and not dot_git.is_symlink():
     git_dir = dot_git
   else:
-    first = read_bounded(dot_git, MAX_METADATA_BYTES).split(b"\n", 1)[0].decode("utf-8", "replace")
+    first = os.fsdecode(read_bounded(dot_git, MAX_METADATA_BYTES).split(b"\n", 1)[0])
     if not first.startswith("gitdir: "):
       return []
     git_dir = (Path(repo.path) / first[len("gitdir: "):].strip()).resolve()
   directories = [git_dir]
-  common = read_bounded(git_dir / "commondir", MAX_METADATA_BYTES).decode("utf-8", "replace").strip()
+  common = os.fsdecode(read_bounded(git_dir / "commondir", MAX_METADATA_BYTES)).strip()
   if common:
     directories.append((git_dir / common).resolve())
   return directories
