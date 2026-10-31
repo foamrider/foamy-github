@@ -148,7 +148,16 @@ repositories. Without
 bubblewrap, trusted repositories are checked like untrusted ones, and
 automatic fetches of untrusted repositories are skipped with a message.
 
-Where `setpriv` or Landlock is missing (Omarchy's kernel and util-linux have
+With bubblewrap, untrusted status checks also run in the pinned, read-only
+namespace with a frozen minimal config mounted over the repository's own. It
+holds only the repository format, worktree and ignore settings, and the
+branch/remote mapping for upstream counts; there are no filter, fsmonitor,
+hooks or other driver keys. A mid-check edit to the repository's config is
+therefore invisible to Git, and Landlock stays on as a second layer.
+
+Without bubblewrap the checks fall back to the snapshot overrides plus
+Landlock, which leaves a race: someone who can already write into the
+repository could change its config during a check. Where `setpriv` or Landlock is missing (Omarchy's kernel and util-linux have
 both), status checks fall back to the snapshot overrides alone. A repository
 rewritten during a check could then still run a filter; the trust settings
 can't close that gap. Your global Git config, credential helpers (for example `gh auth

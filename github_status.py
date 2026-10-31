@@ -794,14 +794,25 @@ class Pin:
   env: tuple[tuple[str, str], ...] = ()          # GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE: no rediscovery
   files: tuple[str, ...] = ()                    # private copies to delete on close
 
+  def mounts(self) -> list[tuple[str, int, str]]:
+    """Directory binds, ancestors first (a later bind of a parent would hide
+    an earlier child, e.g. <common>/worktrees/<name> below <common>). binds[0]
+    is the worktree: read-only (status and fetch never write it;
+    GIT_OPTIONAL_LOCKS=0 keeps the index untouched); the Git and common
+    directories are the only writable places in the namespace."""
+    entries = [("--ro-bind-fd" if index == 0 else "--bind-fd", fd, path) for index, (fd, path) in enumerate(self.binds)]
+    entries.sort(key=lambda entry: len(Path(entry[2]).parts))           # stable: keeps each mode
+    for later in range(len(entries)):
+      for earlier in range(later):
+        if entries[later][2] != entries[earlier][2] and Path(entries[earlier][2]).is_relative_to(entries[later][2]):
+          raise InspectionError("Could not pin the repository's directories. Open it in lazygit.")
+    return entries
+
   def prefix(self) -> list[str]:
     command = list(bwrap_command())
-    for index, (fd, path) in enumerate(self.binds):
-      # binds[0] is the worktree: read-only (status and fetch never write it;
-      # GIT_OPTIONAL_LOCKS=0 keeps the index untouched). The Git and common
-      # directories are the only writable places in the namespace.
-      command += ["--ro-bind-fd" if index == 0 else "--bind-fd", str(fd), path]
-    for option, source, destination in self.extra:
+    for option, fd, path in self.mounts():
+      command += [option, str(fd), path]
+    for option, source, destination in self.extra:                # files, after every directory
       command += [option, source, destination]
     return command + ["--"]
 
@@ -1046,8 +1057,12 @@ def _repository_status(repo: Repository, pin: Pin | None) -> dict[str, Any]:
   row = {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0,
          "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": "",
          "lfs": False, "trusted": trusted, "identity": repository_identity(repo)}
+  close: Callable[[], None] = lambda: None
   try:
-    policy = replace(TRUSTED_POLICY, pin=pin) if trusted else repository_policy(repo, False)
+    if trusted:
+      policy = replace(TRUSTED_POLICY, pin=pin)
+    else:
+      policy, close = untrusted_status_policy(repo)
     # Detection always uses the hardened policy, even for trusted repositories.
     row["lfs"] = uses_lfs(repo, policy if not trusted else repository_policy(repo, False))
     branch = checked_text(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], (1,), policy)
@@ -1072,6 +1087,8 @@ def _repository_status(repo: Repository, pin: Pin | None) -> dict[str, Any]:
   except (OSError, subprocess.TimeoutExpired, ValueError) as error:
     # Unknown must never become clean, nor hide this repository from the panel.
     row["error"] = str(error)[:240]
+  finally:
+    close()
   return row
 
 
@@ -1218,6 +1235,76 @@ def is_local_url(url: str) -> bool:
   return not re.match(r"^[^/]*:", url) or url.startswith(("./", "../", "/", "~"))
 
 
+def config_overlay(pin: Pin, minimal: Sequence[tuple[str, str]]) -> tuple[Pin, list[str]]:
+  """The pin with a read-only `minimal` config mounted over the repository's
+  own config and an empty file over any config.worktree: Git can't see the
+  repository's config, or any edit to it, while the pin is in use."""
+  root = cache_dir() / "overlay"
+  root.mkdir(mode=0o700, exist_ok=True)
+  files: list[str] = []
+  def private_file(data: bytes) -> str:
+    descriptor, name = tempfile.mkstemp(prefix="config-", dir=root)
+    with os.fdopen(descriptor, "wb") as handle:
+      handle.write(data)
+    files.append(name)
+    return name
+  config = private_file(os.fsencode(config_text(minimal)))
+  empty = private_file(b"")
+  git_path, common_path = pin.binds[1][1], pin.binds[-1][1]
+  extra = list(pin.extra) + [("--ro-bind", config, os.path.join(common_path, "config"))]
+  for directory in dict.fromkeys((git_path, common_path)):
+    if os.path.lexists(os.path.join(directory, "config.worktree")):
+      extra.append(("--ro-bind", empty, os.path.join(directory, "config.worktree")))
+  return replace(pin, extra=tuple(extra), files=()), files
+
+
+# Local settings status needs and that run nothing: repository format,
+# worktree/stat behaviour, ignore files, and the branch/remote mapping used
+# for upstream counts. No filter, fsmonitor, hooksPath or other driver key.
+STATUS_KEYS = re.compile(r"^(core\.(repositoryformatversion|bare|filemode|ignorecase|precomposeunicode|symlinks|autocrlf|eol|"
+                         r"safecrlf|checkstat|trustctime|excludesfile|sparsecheckout|sparsecheckoutcone|quotepath)|"
+                         r"extensions\..*|branch\..*\.(remote|merge)|remote\..*\.fetch|index\.(version|sparse)|"
+                         r"status\.showuntrackedfiles)$")
+
+
+def status_config(entries: Sequence[tuple[str, str, str]]) -> list[tuple[str, str]]:
+  minimal = []
+  for scope, key, value in entries:
+    if scope in LOCAL_SCOPES and STATUS_KEYS.match(canonical_key(key)) and canonical_key(key) != "extensions.worktreeconfig" \
+        and "\n" not in value:
+      minimal.append((key, value))
+  return minimal
+
+
+def untrusted_status_policy(repo: Repository) -> tuple[GitPolicy, Callable[[], None]]:
+  """Policy for untrusted inspection. With bubblewrap: pin first, snapshot
+  through the pin, and run every command in the read-only namespace with a
+  minimal config overlay, so a mid-check edit to the repository's config is
+  invisible to Git (Landlock stays on as a second layer). Without it: the
+  snapshot overrides and Landlock alone (README: residual race)."""
+  try:
+    pin = pin_repository(repo)
+  except OSError as error:
+    # Fail closed: the check reports this repository unavailable.
+    raise InspectionError(f"Could not open the repository: {error.strerror or error}") from error
+  if pin is None:
+    return repository_policy(repo, False), lambda: None
+  try:
+    policy = repository_policy(repo, False, pin)
+    overlay, files = config_overlay(pin, status_config(policy.snapshot))
+  except BaseException:
+    pin.close()
+    raise
+  def close():
+    pin.close()
+    for name in files:
+      try:
+        os.unlink(name)
+      except OSError:
+        pass
+  return replace(policy, pin=overlay), close
+
+
 def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedProcess[str] | None:
   """Fetch an untrusted repository with its own config replaced.
 
@@ -1273,22 +1360,7 @@ def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPr
     raise InspectionError("Automatic fetch needs bubblewrap (bwrap) to run safely. Fetch this repository in lazygit.")
   files: list[str] = []
   try:
-    root = cache_dir() / "overlay"
-    root.mkdir(mode=0o700, exist_ok=True)
-    def private_file(data: bytes) -> str:
-      descriptor, name = tempfile.mkstemp(prefix="config-", dir=root)
-      with os.fdopen(descriptor, "wb") as handle:
-        handle.write(data)
-      files.append(name)
-      return name
-    config = private_file(os.fsencode(config_text(minimal)))
-    empty = private_file(b"")
-    git_path, common_path = pin.binds[1][1], pin.binds[-1][1]
-    extra = list(pin.extra) + [("--ro-bind", config, os.path.join(common_path, "config"))]
-    for directory in {git_path, common_path}:
-      if os.path.lexists(os.path.join(directory, "config.worktree")):
-        extra.append(("--ro-bind", empty, os.path.join(directory, "config.worktree")))
-    overlay = replace(pin, extra=tuple(extra))
+    overlay, files = config_overlay(pin, minimal)
     check_fetch_paths(pin, untrusted=True)
     # The origin as Git will use it (the user's insteadOf applied): a local
     # path or file:// would read another repository on this machine, chosen

@@ -29,6 +29,9 @@ class GitLimitsTest(unittest.TestCase):
     sandbox = patch.object(status, "_sandbox", [])
     sandbox.start()
     self.addCleanup(sandbox.stop)
+    pinning = patch.object(status, "_bwrap", [])          # no namespace either: the fake git is the point
+    pinning.start()
+    self.addCleanup(pinning.stop)
 
   def script(self, code):
     self.git.write_text(f"#!{sys.executable}\nimport os, sys, time\n" + code)

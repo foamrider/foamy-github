@@ -101,10 +101,18 @@ def repository_directories(repo: status.Repository, trusted: "bool | status.Trus
     # Couldn't pin this repository (moved, deleted, broken .git pointer):
     # plan its watches hardened, like an untrusted one, and keep watching the rest.
     pin = None
+  close = lambda: None
   try:
-    return _repository_directories(repo, status.replace(status.TRUSTED_POLICY, pin=pin) if pin
-                                   else status.repository_policy(repo, False))
+    if pin is not None:
+      policy = status.replace(status.TRUSTED_POLICY, pin=pin)
+    else:
+      try:
+        policy, close = status.untrusted_status_policy(repo)
+      except status.InspectionError:
+        return set()                          # unopenable now (moved, deleted): its status row says so
+    return _repository_directories(repo, policy)
   finally:
+    close()
     if pin is not None:
       pin.close()
 

@@ -142,11 +142,11 @@ class TrustModelTest(unittest.TestCase):
     tree = self.git("rev-parse", "HEAD^{tree}").strip()
     (self.path / ".git/objects" / tree[:2] / tree[2:]).unlink()
     real = status.repository_policy
-    def older_git(repo, trusted=False):        # Git < 2.44 ignores GIT_NO_LAZY_FETCH
-      policy = real(repo, trusted)
+    def older_git(repo, *rest):        # Git < 2.44 ignores GIT_NO_LAZY_FETCH
+      policy = real(repo, *rest)
       return dataclasses.replace(policy, read_env=tuple(item for item in policy.read_env if item[0] != "GIT_NO_LAZY_FETCH"))
-    def environment_only(repo, trusted=False):  # GIT_NO_LAZY_FETCH alone, transports as the repository says
-      return dataclasses.replace(real(repo, trusted), read_env=status.config_environment(status.READ_OVERRIDES) + status.READ_ENV)
+    def environment_only(repo, *rest):  # GIT_NO_LAZY_FETCH alone, transports as the repository says
+      return dataclasses.replace(real(repo, *rest), read_env=status.config_environment(status.READ_OVERRIDES) + status.READ_ENV)
     for name, policy in (("full", real), ("older Git", older_git), ("GIT_NO_LAZY_FETCH only", environment_only)):
       with self.subTest(policy=name), patch.object(status, "repository_policy", policy):
         status.repository_status(self.repo)
@@ -282,10 +282,11 @@ class TrustModelTest(unittest.TestCase):
     self.assertTrue(row["complete"], row["error"])      # the failed filter passes content through
     self.assertEqual(row["dirtyCount"], 2)
     self.assertNotRun()
-    # Without the exec restriction (no setpriv/Landlock) this race is real:
-    # the README documents it as the residual risk of that fallback.
+    # Without the namespace overlay and the exec restriction (no bubblewrap,
+    # no setpriv/Landlock) this race is real: the README documents it as the
+    # residual risk of that fallback.
     self.git("config", "--unset", "include.path")
-    with patch.object(status, "_sandbox", []):
+    with patch.object(status, "_sandbox", []), patch.object(status, "_bwrap", []):
       status.repository_status(self.repo)
     self.assertTrue(self.marker.exists(), "control: the race fires without the sandbox")
 
@@ -296,8 +297,18 @@ class TrustModelTest(unittest.TestCase):
     self.inject_after_snapshot(lambda: [self.git("config", "filter.race.clean", str(self.script("race-clean", "cat"))),
                                         self.git("config", "filter.race.required", "true"),
                                         self.git("config", "core.fsmonitor", str(self.script("fsmonitor")))])
+    # With the namespace overlay the injected config is invisible: clean result.
     row = status.repository_status(self.repo)
-    self.assertFalse(row["complete"])                   # required filter can't run: unknown, not clean
+    self.assertTrue(row["complete"], row["error"])
+    self.assertNotRun()
+    # Landlock alone (no bubblewrap): the required filter can't run, so the
+    # check fails closed (unknown, not clean). The edit lands after the
+    # snapshot again.
+    for key in ("filter.race.clean", "filter.race.required", "core.fsmonitor"):
+      self.git("config", "--unset", key)
+    with patch.object(status, "_bwrap", []):
+      row = status.repository_status(self.repo)
+    self.assertFalse(row["complete"])
     self.assertNotRun()
 
   def test_fetch_settings_added_after_the_snapshot_cannot_run_anything(self):
@@ -696,6 +707,54 @@ class TrustModelTest(unittest.TestCase):
     self.assertEqual(after, before)
     self.assertFalse((victim / ".git/refs/tags/v1").exists())
 
+  @unittest.skipUnless(status.bwrap_command(), "needs bubblewrap")
+  def test_config_edited_mid_check_is_invisible_to_status(self):
+    # Codex security: the Landlock allowlist includes Git's ELF loader, so a
+    # filter added mid-check as `ld-linux … /usr/bin/<payload>` might run.
+    # Untrusted status now reads a frozen minimal config: any mid-check edit
+    # (a loader-based filter, or core.worktree pointing at another tree) is
+    # invisible to Git.
+    marker = self.path / ".git/loader.ran"
+    loader = status.elf_interpreter("/usr/bin/git") or "/lib64/ld-linux-x86-64.so.2"
+    elsewhere = self.root / "elsewhere"
+    elsewhere.mkdir()
+    for index in range(5):
+      (elsewhere / f"noise{index}.txt").write_text("x\n")
+    (self.path / ".gitattributes").write_text("*.txt filter=race\n")
+    self.dirty_tracked_file()
+    expected = status.repository_status(self.repo)["dirtyCount"]
+    self.inject_after_snapshot(lambda: [self.git("config", "filter.race.clean", f"{loader} /usr/bin/touch {marker}"),
+                                        self.git("config", "core.worktree", str(elsewhere))])
+    row = status.repository_status(self.repo)
+    self.assertFalse(marker.exists(), "a program added to the config mid-check ran")
+    self.assertTrue(row["complete"], row["error"])
+    self.assertEqual(row["dirtyCount"], expected, "a mid-check config edit changed what status inspected")
+
+  def test_per_worktree_dir_replaced_after_the_check_is_not_used(self):
+    # Codex P1: <common>/worktrees/<name> was mounted before <common>, so the
+    # common bind hid the pinned per-worktree directory.
+    self.git("config", "extensions.worktreeConfig", "true")
+    worktree, repo = self.linked_worktree()
+    trust = status.parse_trusted(json.dumps([{"path": repo.path, "identity": status.repository_identity(repo)}]))
+    per_worktree = self.path / ".git/worktrees/wt"
+    marker = self.path / ".git/hidden-pin.ran"                       # writable in the namespace
+    real_pin = status.pin_repository
+    def pin_then_replace(target):
+      pin = real_pin(target)
+      os.rename(per_worktree, per_worktree.with_name("wt.aside"))
+      shutil.copytree(per_worktree.with_name("wt.aside"), per_worktree, symlinks=True)
+      (per_worktree / "config.worktree").write_text(f"[core]\n\tfsmonitor = touch {marker}\n")
+      return pin
+    with patch.object(status, "pin_repository", side_effect=pin_then_replace):
+      status.repository_status(repo, trust)
+    self.assertFalse(marker.exists(), "the replaced per-worktree directory was used")
+
+  def test_pin_mounts_are_ancestor_first(self):
+    pin = status.Pin(binds=((10, "/r/wt"), (11, "/r/main/.git/worktrees/wt"), (12, "/r/main/.git")), identity="", common=12)
+    paths = [path for _, _, path in pin.mounts()]
+    self.assertLess(paths.index("/r/main/.git"), paths.index("/r/main/.git/worktrees/wt"))
+    self.assertEqual(dict((path, option) for option, _, path in pin.mounts())["/r/wt"], "--ro-bind-fd")
+
   def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
     # Codex security: trust was checked on the path, then Git reopened it.
     hostile_marker = self.root / "swapped.ran"
@@ -1072,7 +1131,8 @@ class NegativeControlTest(unittest.TestCase):
              if name.startswith(("test_fsmonitor", "test_repository_clean", "test_filter_name", "test_global_filter",
                                  "test_lfs_extension", "test_included", "test_fetch_disables",
                                  "test_fetch_runs", "test_fetch_ignores", "test_glob", "test_status_never"))]
-    with patch.object(status, "repository_policy", lambda repo, *rest: status.TRUSTED_POLICY):
+    with patch.object(status, "repository_policy", lambda repo, *rest: status.TRUSTED_POLICY), \
+         patch.object(status, "untrusted_status_policy", lambda repo: (status.TRUSTED_POLICY, lambda: None)):
       for name in names:
         with self.subTest(vector=name):
           result = unittest.TestResult()
