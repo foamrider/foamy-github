@@ -46,7 +46,8 @@ PanelKeyCatcher {
   readonly property bool hasFailures: sync.failures.length > 0
   // Cursor stops: each row, then its "LFS" button when the repository uses
   // Git LFS and is untrusted, then (note open, trust available) its "Trust
-  // this repository" button; then Refresh and Settings.
+  // this repository" button; then Settings (header) and Refresh (footer),
+  // as in foamy-weather.
   readonly property var stops: {
     var rows = [], infos = [], trusts = [], count = 0
     for (var i = 0; i < repos.length; i++) {
@@ -59,8 +60,8 @@ PanelKeyCatcher {
   }
   // The repository (path) whose Git LFS note is open under its row: one at a time.
   property string lfsNotePath: ""
-  readonly property int refreshStop: stops.count
-  readonly property int settingsStop: stops.count + 1
+  readonly property int settingsStop: stops.count
+  readonly property int refreshStop: stops.count + 1
   readonly property var trustedList: Model.trustedRepositories(settings)
   readonly property var lfsRepositories: service && service.lfsRepos ? service.lfsRepos : []
   readonly property string healthText: {
@@ -87,7 +88,7 @@ PanelKeyCatcher {
   implicitHeight: editingSettings ? settingsPage.implicitHeight : list.contentHeight
   blocked: editingSettings
 
-  FoamyCursor { id: cursor; count: root.stops.count + 2 }   // rows (+ LFS, trust), refresh, settings
+  FoamyCursor { id: cursor; count: root.stops.count + 2 }   // rows (+ LFS, trust), settings, refresh
 
   onMoveRequested: function(dx, dy) { cursor.move(dy !== 0 ? dy : dx) }
   onActivateRequested: root.activate(cursor.index)
@@ -113,7 +114,8 @@ PanelKeyCatcher {
     function onIndexChanged() {
       var row = root.rowForStop(cursor.index)
       if (row >= 0) list.positionViewAtIndex(row, ListView.Contain)
-      else if (cursor.index >= root.refreshStop) list.positionViewAtBeginning()
+      else if (cursor.index === root.settingsStop) list.positionViewAtBeginning()
+      else if (cursor.index === root.refreshStop) list.positionViewAtEnd()
     }
   }
 
@@ -136,6 +138,8 @@ PanelKeyCatcher {
     lfsNotePath = String(repos[row].path)
     cursor.hover(stops.infos[row])
   }
+  // Preview/tests: the keyboard cursor on the footer's Refresh button.
+  function showRefreshCursor() { cursor.hover(refreshStop) }
   // Preview: scroll Settings to its end (the Git LFS section, when shown).
   function showSettingsEnd() { settingsPage.keepVisible(lfsSection.visible ? lfsSection : refreshSection) }
 
@@ -244,19 +248,6 @@ PanelKeyCatcher {
         settingsHasCursor: cursor.at(root.settingsStop)
         onSettingsClicked: root.settingsRequested()
         onSettingsHovered: function(hovered) { if (hovered) cursor.hover(root.settingsStop) }
-        trailing: [
-          FoamyAction {
-            iconName: "refresh-cw"
-            tooltipText: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…")
-              : FoamyI18n.t("Fetch remotes and refresh") + "\n" + root.lastSyncText
-            spinning: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
-            actionEnabled: !root.busy
-            hasCursor: cursor.at(root.refreshStop)
-            foreground: FoamyPalette.secondaryText
-            onHoveredChanged: if (hovered) cursor.hover(root.refreshStop)
-            onClicked: root.service.fetch()
-          }
-        ]
         Flow {
           Layout.fillWidth: true
           spacing: FoamyStyle.padding
@@ -303,7 +294,7 @@ PanelKeyCatcher {
     footer: Column {
       width: list.width
       topPadding: FoamyStyle.gap
-      bottomPadding: FoamyStyle.padding
+      bottomPadding: 0                  // the footer has its own, as in foamy-weather
       spacing: FoamyStyle.gapLarge
       Text {
         visible: root.repos.length === 0
@@ -322,28 +313,22 @@ PanelKeyCatcher {
         font.family: FoamyStyle.fontFamily
         font.pixelSize: FoamyStyle.font.bodySmall
       }
-      Rectangle { x: FoamyStyle.padding; width: parent.width - FoamyStyle.padding * 2; height: 1; color: FoamyPalette.divider }
-      RowLayout {
-        x: FoamyStyle.padding
-        width: parent.width - FoamyStyle.padding * 2
-        spacing: FoamyStyle.gap
-        Text {
-          Layout.fillWidth: true
-          text: FoamyI18n.tn("%1 repositories", root.service ? root.service.status.repoCount : 0)
-          textFormat: Text.PlainText
-          elide: Text.ElideRight
-          horizontalAlignment: Text.AlignLeft
-          color: FoamyPalette.secondaryText
-          font.family: FoamyStyle.fontFamily
-          font.pixelSize: FoamyStyle.font.bodySmall
-        }
-        Text {
-          text: root.service ? Model.updatedText(root.service.lastChecked, root.now, FoamyI18n.t, FoamyI18n.tn) : ""
-          textFormat: Text.PlainText
-          color: FoamyPalette.secondaryText
-          font.family: FoamyStyle.fontFamily
-          font.pixelSize: FoamyStyle.font.bodySmall
-        }
+      // "N repositories", when the status was last read (the last remote
+      // sync on hover) and Refresh, which fetches remotes; it spins while a
+      // fetch or local refresh runs.
+      FoamyPanelFooter {
+        objectName: "githubFooter"
+        width: parent.width
+        horizontalPadding: FoamyStyle.padding
+        source: FoamyI18n.tn("%1 repositories", root.service ? root.service.status.repoCount : 0)
+        status: root.service ? Model.updatedText(root.service.lastChecked, root.now, FoamyI18n.t, FoamyI18n.tn) : ""
+        statusTooltip: root.lastSyncText
+        refreshing: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
+        refreshEnabled: !root.busy
+        refreshTooltip: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…") : FoamyI18n.t("Fetch remotes and refresh")
+        refreshHasCursor: cursor.at(root.refreshStop)
+        onRefreshHovered: function(hovered) { if (hovered) cursor.hover(root.refreshStop) }
+        onRefreshClicked: root.activate(root.refreshStop)
       }
     }
   }

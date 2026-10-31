@@ -8,7 +8,7 @@ Item {
   id: preview
   required property QtObject bar
   required property Item anchorItem
-  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-lfs", "settings-no-lfs", "settings-error"]
+  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-lfs", "settings-no-lfs", "settings-error", "fetching"]
   property string previewState: "repositories"
   property int settleMs: previewState === "settings-lfs" || previewState === "settings-no-lfs" ? 1500 : 600
   readonly property Item popup: popup
@@ -44,6 +44,7 @@ Item {
     readonly property bool clean: preview.previewState === "clean"
     readonly property bool empty: preview.previewState === "empty"
     readonly property bool unavailable: preview.previewState === "unavailable"
+    readonly property bool fetching: preview.previewState === "fetching"
     readonly property var affectedRepos: clean || empty ? [] : unavailable
       ? [preview.row("Work/monorepo", "main", 0, 0, 0, { complete: false, error: "Git inspection timed out. Open the repository in lazygit and retry." })]
       : lfsState ? preview.lfsSample : preview.sample
@@ -54,10 +55,10 @@ Item {
     readonly property string lastError: unavailable ? "Live monitoring unavailable; using timed refresh." : ""
     readonly property double lastChecked: preview.now
     readonly property string actionStatus: ""
-    readonly property bool syncing: false
+    readonly property bool syncing: fetching
     readonly property bool refreshing: false
     readonly property bool repositoryActionRunning: false
-    readonly property bool busy: false
+    readonly property bool busy: fetching
     // Every repository found (Settings lists only those using LFS: neither
     // .dotfiles nor Work/old-site, which stopped using LFS but keeps its trust record).
     readonly property var repos: preview.previewState === "settings-no-lfs" ? preview.sample : [
@@ -91,7 +92,8 @@ Item {
   }
 
   // Open the first row's Git LFS note, with the keyboard cursor on its LFS
-  // button (restarted on every state: the body is kept between states).
+  // button; "fetching": the cursor on the footer's spinning Refresh
+  // (restarted on every state: the body is kept between states).
   Timer {
     id: lfsTimer
     interval: 300
@@ -99,6 +101,7 @@ Item {
     onTriggered: {
       popup.bodyItem.clearCursor()
       if (preview.previewState === "lfs-untrusted") popup.bodyItem.showLfsInfo(0)
+      if (preview.previewState === "fetching") popup.bodyItem.showRefreshCursor()
     }
   }
   // Settings → the end of the page (Git LFS, when shown), once the card has its height.

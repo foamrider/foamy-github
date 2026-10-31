@@ -19,16 +19,18 @@ omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
 
 1. Left-click the widget, open **Settings** (cog or `s`) and add your repository folders.
 2. Choose how many levels deep to search each folder, and the refresh intervals.
-3. Refresh (header button, `r`, or middle-click the widget) fetches remotes and updates status.
+3. Refresh (the button in the popup footer, `r`, or middle-click the widget) fetches remotes and updates status.
 4. A repository's arrows push or pull; the terminal button (or Enter) opens it in lazygit.
 
 The popup lists repositories that need attention: ahead, behind, changed, or
 whose last fetch failed. A failed fetch is shown on the repository's row, in
 red after its status line (for example `main · 10 changed · No origin remote
-configured…`); hover it for the full message.
+configured…`); hover it for the full message. The footer shows how many
+repositories were found, when their status was last updated (hover it for
+the last remote sync), and Refresh, which spins while a fetch runs.
 
-Keyboard: arrows or `hjkl` move one cursor through the rows, Refresh and
-Settings (hovering moves the same cursor); Enter activates; `r` refreshes;
+Keyboard: arrows or `hjkl` move one cursor through the rows, Settings and
+Refresh (hovering moves the same cursor); Enter activates; `r` refreshes;
 `s` opens Settings; Esc closes (or leaves Settings); Tab and Shift+Tab move to
 the next bar panel.
 

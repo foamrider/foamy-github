@@ -6,9 +6,10 @@ offscreen Quickshell against a host shell, through foamy-kit's harness.
 
 Checks: it loads without errors; one Service and one leader for three
 instances; the popup body builds on open with the GithubView; the inline
-error row renders; the watcher helper runs (temp HOME, no folders, no
-network beyond what Git would do for zero repositories); IPC status answers
-from the leader. Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT)."""
+error row renders; Refresh sits in the footer, after Settings in the
+cursor order; the watcher helper runs (temp HOME, no folders, no network
+beyond what Git would do for zero repositories); IPC status answers from the
+leader. Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT)."""
 import os
 import sys
 from pathlib import Path
@@ -30,6 +31,14 @@ ShellRoot {
   property var panels: []
   property int checks: 0
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
+  function collect(item, test, out) {
+    out = out || []
+    if (!item) return out
+    if (test(item)) out.push(item)
+    var kids = item.children || []
+    for (var i = 0; i < kids.length; i++) collect(kids[i], test, out)
+    return out
+  }
 
   FloatingWindow {
     implicitWidth: 1920; implicitHeight: 1080
@@ -65,6 +74,16 @@ ShellRoot {
         check(view !== null && view.service === Plugin.Service, "body built on open")
         check(panels[0].popup.bodyItem === null, "other monitors stay lazy")
         check(Plugin.Service.lastChecked > 0 || Plugin.Service.refreshing, "status arrived from the watcher")
+        // Refresh lives in the footer (count, freshness, refresh), not in the
+        // header; the cursor walks rows, then Settings, then Refresh.
+        var footers = collect(view, function(item) { return item.objectName === "githubFooter" })
+        check(footers.length === 1 && footers[0].showRefresh && footers[0].refreshButton.objectName === "foamyFooterRefresh", "footer with refresh")
+        check(footers.length === 1 && footers[0].source === "0 repositories", "footer leads with the repository count")
+        var bands = collect(view, function(item) { return item.trailing !== undefined && item.settingsHasCursor !== undefined })
+        check(bands.length > 0 && bands.every(function(band) {
+          return band.trailing.length === 0 && collect(band, function(item) { return item.iconName === "refresh-cw" }).length === 0
+        }), "no refresh in the header")
+        check(view.settingsStop === view.stops.count && view.refreshStop === view.settingsStop + 1, "cursor: rows, Settings, Refresh")
         // Legacy global trust migrates once after the first complete scan, in
         // both live-monitoring and timed-polling mode.
         var leaderSaves = panels[0].bar.saved
