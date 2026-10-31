@@ -1,284 +1,176 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Controls as Controls
-import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
+import "kit"
 import "Model.js" as Model
+import "Preferences.js" as Schema
 
+// Foamy GitHub bar widget: one per bar (4.5 draws a bar per monitor). State
+// and Git helpers live in the Service singleton, once per shell; the
+// FoamyMember leader feeds it this widget's settings and owns the IPC target.
 Panel {
   id: root
 
-  function open() { preparePopup(); controller.show() }
   moduleName: "foamy.github"
   ipcTarget: "foamy.github"
   manageIpc: false
 
-  readonly property string language: FoamyI18n.language
-  function tr(label, values) { return FoamyI18n.t(label, values) }
-
-  readonly property real controlRadius: Style.cornerRadius * 2
-  property bool resetScrollPending: false
-  property int repoIndex: 0
-  property bool cursorActive: false
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color barTextColor: bar ? bar.barForeground : Color.foreground
-  readonly property color accent: Color.accent
-  readonly property bool lightTheme: Color.popups.background.r + Color.popups.background.g + Color.popups.background.b > 1.5
-  readonly property color success: lightTheme ? "#3b6b30" : "#a6e3a1"
-  readonly property color warning: lightTheme ? "#886000" : "#f9e2af"
-  readonly property color urgent: lightTheme ? "#a8203a" : bar ? bar.urgent : Color.urgent
-  readonly property color dim: Qt.tint(Color.popups.background, Qt.rgba(foreground.r, foreground.g, foreground.b, 0.76))
-  readonly property color outlineColor: Qt.tint(Color.popups.background, Qt.rgba(foreground.r, foreground.g, foreground.b, 0.22))
-  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property var displayedRepos: github.affectedRepos
-  readonly property bool hasFailures: github.sync.failures.length > 0
-  readonly property string healthText: {
-    if (github.syncing) return root.tr("Synchronizing repositories")
-    if (github.lastError !== "") return root.tr("Repository check needs attention")
-    if (github.lastChecked === 0) return root.tr("Checking repositories…")
-    if (github.status.repoCount === 0) return root.tr("No repositories found")
-    if (github.status.affectedCount === 0 && !github.sync.stale && !root.hasFailures) return root.tr("Everything is in sync")
-    if (github.status.affectedCount === 0) return root.tr("Working trees are clean")
-    return root.tr(github.status.affectedCount === 1 ? "%1 repository needs attention" : "%1 repositories need attention", [github.status.affectedCount])
-  }
-  readonly property string lastSyncText: root.tr("Last remote sync %1", [Model.relativeTime(github.sync.lastSuccess, undefined, root.tr)])
-  readonly property string tooltipText: healthText + "\n" + root.tr("Left: details · Middle: refresh")
-  readonly property string updatedText: Model.updatedText(github.lastChecked, footerClock.date.getTime(), root.tr)
-  SystemClock { id: footerClock; precision: SystemClock.Minutes }
-
-  property bool editingSettings: false
+  readonly property bool editingSettings: settingsState.editing
+  // Local errors (folder validation, paste, folder browser); save errors come from prefs.
   property string settingsError: ""
-  property string widgetId: ""
-  property bool foldersDirty: false
-  property var pendingPreferences: ({})
-  property string savingPreference: ""
   property int browsingRow: -1
   property bool returningFromBrowser: false
-  property int progressStep: 0
-  readonly property string statusTitle: github.actionStatus !== "" ? github.actionStatus : root.healthText
-  readonly property bool animateTitle: github.syncing || github.repositoryActionRunning
-    || (github.refreshing && github.lastChecked === 0)
-  readonly property string displayTitle: animateTitle
-    ? statusTitle.replace(/(?:…|\.{1,3})$/, "") + [".", "..", "..."][progressStep]
-    : statusTitle
+  readonly property alias popup: popup
+  readonly property alias prefs: prefs
+  readonly property var view: popup.bodyItem
 
-  function openSettings() {
-    var folders = Model.repositoryFolders(root.settings)
-    var result = Model.parseFolderRows(folders)
-    foldersDirty = false
-    folderRows.clear()
-    if (!result.error) result.folders.forEach(function(folder) { folderRows.append(folder) })
-    ensureFolderRow()
-    settingsError = result.error || ""
-    editingSettings = true
-    resetScrollPending = true; panelFlick.positionViewAtBeginning()
-    Qt.callLater(function() { if (root.opened && keyCatcher) keyCatcher.forceActiveFocus() })
+  readonly property var totals: Service.totals
+  readonly property string tooltipText: (view ? view.healthText : FoamyI18n.tn("%1 repositories", Service.status.repoCount))
+    + "\n" + FoamyI18n.t("Left: details · Middle: fetch")
+
+  FoamyMember { id: member; scope: "github"; demanding: root.opened }
+  Binding {
+    target: Service
+    property: "settings"
+    value: root.settings
+    when: member.isLeader
+    restoreMode: Binding.RestoreNone
   }
 
-  ListModel { id: folderRows }
-
-  function ensureFolderRow() {
-    if (folderRows.count === 0) folderRows.append({path: "", depth: 2})
+  FoamyIpc {
+    target: "foamy.github"
+    enabled: member.isLeader
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    function settings(): void { root.openSettings() }
+    function refresh(): string { Service.fetch(); return "ok" }
+    function status(): string { return JSON.stringify({ repositories: Service.status.repoCount, affected: Service.status.affectedCount, totals: Service.totals, syncing: Service.syncing, monitoring: Service.monitoring }) }
   }
 
+  onOpenedChanged: if (opened && !returningFromBrowser) Service.popupOpened()
+
+  // Settings open from the cog, `s` or IPC (also on a closed popup) and reset
+  // only when the popup closes; the folder browser round trip keeps them.
+  FoamySettingsState {
+    id: settingsState
+    panel: root
+    holdOnClose: root.returningFromBrowser
+    onShown: root.settingsError = ""
+  }
+  function openSettings() { settingsState.show() }
+  function closeSettings() { settingsState.hide() }
+
+  // repositoryFolders: a list of {path, depth}, validated by Model.parseFolderRows.
+  readonly property var fields: Schema.fields.concat([{
+    key: "trustedRepositories", type: "array", maxItems: 256, defaultValue: [],
+    validate: function(value) { return Model.validTrustedList(value) }
+  }, {
+    key: "repositoryFolders", type: "array", maxItems: 32, defaultValue: [],
+    validate: function(value) { var parsed = Model.parseFolderRows(value); return parsed.error ? parsed.error : true }
+  }])
+  FoamyPrefsQueue {
+    id: prefs
+    bar: root.bar
+    moduleName: root.moduleName
+    fields: root.fields
+    settings: root.settings
+  }
+  readonly property string pageError: settingsError !== "" ? settingsError : prefs.error !== "" ? FoamyI18n.t(prefs.error) : ""
+
+  function save(key, value) {
+    settingsError = ""
+    prefs.save(key, value)
+  }
+
+  // Per-repository trust (offered for Git LFS repositories).
+  function setTrusted(repo, trusted) {
+    if (!repo || !repo.path || !repo.identity) return
+    settingsError = ""
+    if (!trusted) {
+      prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, false))
+      return
+    }
+    // Trust is saved only if the repository at that path is still the one
+    // that was inspected: re-verify its identity from a fresh pin first.
+    if (identityCheck.running) return
+    identityCheck.repo = { path: String(repo.path), identity: String(repo.identity) }
+    identityCheck.command = ["python3", Service.helperPath, "identity", identityCheck.repo.path]
+    identityCheck.running = true
+  }
+  Process {
+    id: identityCheck
+    property var repo: null
+    stdout: StdioCollector { id: identityOutput; waitForEnd: true }
+    onExited: function(exitCode) {
+      var current = String(identityOutput.text || "").trim()
+      if (exitCode === 0 && repo && current !== "" && current === repo.identity)
+        prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, true))
+      else
+        root.settingsError = FoamyI18n.t("Repository changed; refresh and try again.")
+      repo = null
+    }
+  }
+
+  // One-time migration of the old global "Trust repository config" switch:
+  // after the first complete scan, the Git LFS repositories found then become
+  // trusted (the only place trust still shows), and the switch is cleared.
+  property bool legacyMigrated: false
+  function migrateLegacyTrust() {
+    if (legacyMigrated || !member.isLeader || !Service.legacyTrustAll) return
+    if (Service.lastChecked <= 0 || Service.status.ok === false || Service.refreshing) return
+    legacyMigrated = true
+    var trusted = Model.trustedRepositories(prefs.effectiveSettings)
+    Service.lfsRepos.forEach(function(repo) { if (repo.identity) trusted = Model.withTrust(trusted, repo, true) })
+    prefs.save("trustedRepositories", trusted)
+    prefs.save("trustRepositoryConfig", false)
+  }
+  Connections {
+    target: Service
+    // The watcher delivers status while `refreshing` is still true, so also
+    // retry when a refresh finishes (live monitoring and timed polling alike).
+    function onLastCheckedChanged() { Qt.callLater(root.migrateLegacyTrust) }
+    function onRefreshingChanged() { if (!Service.refreshing) Qt.callLater(root.migrateLegacyTrust) }
+  }
+
+  function saveFolders(rows) {
+    var parsed = Model.parseFolderRows(rows)
+    if (parsed.error) { settingsError = FoamyI18n.t(parsed.error); return }
+    settingsError = ""
+    prefs.save("repositoryFolders", parsed.folders)
+  }
+
+  // The folder chooser is a separate window: release the popup while it is open.
   function browseFolder(index) {
     if (folderPicker.running) return
     browsingRow = index
     returningFromBrowser = true
-    // Release the popup's keyboard focus while the separate chooser is open.
     root.close()
     folderPicker.running = true
   }
 
-  function finishFolderBrowser(exitCode, output) {
-    var match = String(output).match(/(?:GITHUB_FOLDER=)?(file:\/\/[^\r\n]*)/)
-    if (exitCode !== 0) settingsError = "Could not open the folder browser. Enter a path manually."
-    else if (match && browsingRow >= 0 && browsingRow < folderRows.count) {
-      folderRows.setProperty(browsingRow, "path", decodeURIComponent(match[1].replace(/^file:\/\//, "")))
-      foldersDirty = true
-      saveFolders()
-    }
-    root.open()
-    Qt.callLater(function() {
-      returningFromBrowser = false
-      var row = folderRepeater ? folderRepeater.itemAt(browsingRow) : null
-      if (row) row.focusPath()
-      browsingRow = -1
-    })
-  }
-
   Process {
     id: folderPicker
-    command: ["bash", decodeURIComponent(Qt.resolvedUrl("folder-picker.sh").toString().replace(/^file:\/\//, "")), root.tr("Choose a repository folder"), root.tr("Choose")]
+    command: ["bash", decodeURIComponent(Qt.resolvedUrl("folder-picker.sh").toString().replace(/^file:\/\//, "")),
+      FoamyI18n.t("Choose a repository folder"), FoamyI18n.t("Choose")]
     stdout: StdioCollector { id: folderPickerOutput; waitForEnd: true }
-    onExited: function(exitCode) { root.finishFolderBrowser(exitCode, folderPickerOutput.text) }
-  }
-
-  function showFolderRow(row) {
-    // Newly added rows and keyboard focus can move below the scroll viewport.
-    Qt.callLater(function() {
-      if (!root.opened || !panelFlick || !row) return
-      var top = row.mapToItem(panelFlick.contentItem, 0, 0).y
-      var bottom = top + row.height
-      if (top < panelFlick.contentY) panelFlick.contentY = top
-      else if (bottom > panelFlick.contentY + panelFlick.height)
-        panelFlick.contentY = bottom - panelFlick.height
-    })
-  }
-
-  function addFolder() {
-    if (folderRows.count >= 32) return
-    folderRows.append({path: "", depth: 2})
-    settingsError = ""
-    Qt.callLater(function() {
-      var row = folderRepeater ? folderRepeater.itemAt(folderRows.count - 1) : null
-      if (row) row.focusPath()
-    })
-  }
-
-  function closeSettings() {
-    if (foldersDirty) saveFolders()
-    editingSettings = false
-    resetScrollPending = true; panelFlick.positionViewAtBeginning()
-    Qt.callLater(function() { if (root.opened && keyCatcher) keyCatcher.forceActiveFocus() })
-  }
-
-  function savePreference(key, value) {
-    settingsError = ""
-    // Keep the newest edit for each setting while an earlier IPC save finishes.
-    pendingPreferences[key] = JSON.stringify(value)
-    flushPreferences()
-  }
-
-  function flushPreferences() {
-    if (preferencesSave.running) return
-    var keys = Object.keys(pendingPreferences)
-    if (keys.length === 0) return
-    if (!widgetId) { settingsError = "Could not read the installed plugin ID."; return }
-    savingPreference = keys[0]
-    var value = pendingPreferences[savingPreference]
-    delete pendingPreferences[savingPreference]
-    // Omarchy owns both live settings and shell.json; the space prevents CLI array expansion.
-    preferencesSave.command = ["omarchy-shell", "shell", "setBarWidget", widgetId, savingPreference, " " + value, "{}"]
-    preferencesSave.running = true
-  }
-
-  function saveFolders() {
-    var rows = []
-    // Blank editor rows are placeholders, not configured directories.
-    for (var i = 0; i < folderRows.count; i++) {
-      var row = folderRows.get(i)
-      if (row.path.trim() !== "") rows.push({path: row.path, depth: row.depth})
-    }
-    var result = Model.parseFolderRows(rows)
-    if (result.error) { settingsError = result.error; return }
-    foldersDirty = false
-    root.savePreference("repositoryFolders", result.folders)
-  }
-
-  Timer {
-    interval: 400
-    repeat: true
-    running: root.opened && root.animateTitle
-    onRunningChanged: if (!running) root.progressStep = 0
-    onTriggered: root.progressStep = (root.progressStep + 1) % 3
-  }
-
-  FileView {
-    path: decodeURIComponent(Qt.resolvedUrl("manifest.json").toString().replace(/^file:\/\//, ""))
-    onLoaded: {
-      try { root.widgetId = String(JSON.parse(text()).id || ""); root.flushPreferences() }
-      catch (error) { root.settingsError = "Could not read the installed plugin ID." }
-    }
-    onLoadFailed: root.settingsError = "Could not read the installed plugin ID."
-  }
-
-  Process {
-    id: preferencesSave
-    stdout: StdioCollector { id: preferencesOutput; waitForEnd: true }
-    stderr: StdioCollector { id: preferencesError; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0 || preferencesOutput.text.trim() !== "ok") {
-        root.settingsError = String(preferencesError.text || preferencesOutput.text || "Could not save settings. Try again.").trim()
-        if (root.savingPreference === "repositoryFolders") root.foldersDirty = true
-      }
-      Qt.callLater(root.flushPreferences)
+      var match = String(folderPickerOutput.text).match(/(?:GITHUB_FOLDER=)?(file:\/\/[^\r\n]*)/)
+      root.open()
+      if (exitCode !== 0) root.settingsError = FoamyI18n.t("Couldn't open the folder browser. Enter a path instead.")
+      else if (match && root.view) root.view.setFolderPath(root.browsingRow, decodeURIComponent(match[1].replace(/^file:\/\//, "")))
+      Qt.callLater(function() { root.returningFromBrowser = false; root.browsingRow = -1 })
     }
-  }
-
-  function setRepoCursor(index) {
-    if (displayedRepos.length === 0) return
-    cursorActive = true
-    repoIndex = Math.max(0, Math.min(displayedRepos.length - 1, index))
-    scrollCursorIntoView()
-  }
-
-  function moveCursor(delta) {
-    if (displayedRepos.length === 0 || delta === 0) return
-    setRepoCursor(repoIndex + delta)
-  }
-
-  function selectedRepo() {
-    return displayedRepos.length > 0 ? displayedRepos[Math.max(0, Math.min(repoIndex, displayedRepos.length - 1))] : null
-  }
-
-  function viewRepository(repo) {
-    if (!repo) return
-    root.close()
-    github.openRepository(repo)
-  }
-
-  readonly property var folderRepeater: panelFlick.headerItem ? panelFlick.headerItem.folderRepeater : null
-
-  function scrollCursorIntoView() {
-    Qt.callLater(function() {
-      if (root.opened && panelFlick && !root.editingSettings)
-        {
-          var item = panelFlick.itemAtIndex(root.repoIndex)
-          if (item) {
-            var top = item.mapToItem(panelFlick, 0, 0).y
-            if (top >= 0 && top + item.height <= panelFlick.height) return
-          }
-          panelFlick.positionViewAtIndex(root.repoIndex, ListView.Contain)
-        }
-    })
   }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
-
-  onOpenedChanged: {
-    if (!opened && editingSettings && foldersDirty) saveFolders()
-    if (opened && !returningFromBrowser) {
-      editingSettings = false
-      cursorActive = false
-      repoIndex = 0
-      resetScrollPending = true; panelFlick.positionViewAtBeginning()
-      github.refresh()
-    }
-  }
-  onDisplayedReposChanged: if (repoIndex >= displayedRepos.length) repoIndex = Math.max(0, displayedRepos.length - 1)
-
-  Service {
-    id: github
-    settings: root.settings
-    language: root.language
-  }
-
-  IpcHandler {
-    target: root.ipcTarget
-    function open() { root.open() }
-    function close() { root.close() }
-    function show() { root.open() }
-    function hide() { root.close() }
-    function toggle() { root.toggle() }
-    function refresh() { github.fetch(); return "ok" }
-    function status() { return root.healthText }
-  }
 
   WidgetButton {
     id: button
@@ -292,7 +184,7 @@ Panel {
       statusRow.implicitWidth + Style.bar.iconSlot - Style.bar.iconCanvas)
     tooltipText: root.tooltipText
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.MiddleButton) { if (!github.busy) github.fetch() }
+      if (buttonCode === Qt.MiddleButton) { if (!Service.busy) Service.fetch() }
       else root.toggle()
     }
 
@@ -304,735 +196,59 @@ Panel {
       OpticalGlyph {
         width: Style.bar.iconCanvas
         height: Style.bar.iconCanvas
-        text: github.syncing ? "\uf021" : "\uf09b"
-        color: github.syncing ? root.accent : button.foreground
+        text: Service.syncing ? "\u{f021}" : "\u{f09b}"
+        color: Service.syncing ? Commons.Color.accent : button.foreground
         fontFamily: button.fontFamily
         fontSize: button.fontSize
       }
-
-      Text {
-        textFormat: Text.PlainText
-        visible: !button.vertical && !github.syncing && github.totals.aheadRepos > 0
-        text: github.totals.aheadRepos + "↑"
-        color: root.success
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        visible: !button.vertical && !github.syncing && github.totals.behindRepos > 0
-        text: github.totals.behindRepos + "↓"
-        color: root.accent
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        visible: !button.vertical && !github.syncing && github.totals.dirtyRepos > 0
-        text: github.totals.dirtyRepos + "*"
-        color: root.warning
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        visible: !button.vertical && !github.syncing && github.totals.failedRepos > 0
-        text: github.totals.failedRepos + "!"
-        color: root.urgent
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        visible: !button.vertical && !github.syncing
-          && (github.totals.unavailableRepos > 0 || (github.sync.stale && github.totals.failedRepos === 0))
-        text: github.totals.unavailableRepos > 0 ? github.totals.unavailableRepos + "?" : "?"
-        color: root.urgent
-        font.family: button.fontFamily
-        font.pixelSize: button.fontSize
-        renderType: Text.NativeRendering
+      BarCount { shown: root.totals.aheadRepos > 0; text: root.totals.aheadRepos + "↑"; color: FoamyPalette.success }
+      BarCount { shown: root.totals.behindRepos > 0; text: root.totals.behindRepos + "↓"; color: FoamyPalette.info }
+      BarCount { shown: root.totals.dirtyRepos > 0; text: root.totals.dirtyRepos + "*"; color: FoamyPalette.warning }
+      BarCount { shown: root.totals.failedRepos > 0; text: root.totals.failedRepos + "!"; color: FoamyPalette.error }
+      BarCount {
+        shown: root.totals.unavailableRepos > 0 || (Service.sync.stale && root.totals.failedRepos === 0 && Service.status.repoCount > 0)
+        text: root.totals.unavailableRepos > 0 ? root.totals.unavailableRepos + "?" : "?"
+        color: FoamyPalette.error
       }
     }
   }
 
-  component GithubLabel: Text {
+  component BarCount: Text {
+    property bool shown: false
+    visible: shown && !button.vertical && !Service.syncing
     textFormat: Text.PlainText
-    color: root.foreground
-    font.family: "sans-serif"
-    font.pixelSize: Style.space(13)
+    font.family: button.fontFamily
+    font.pixelSize: button.fontSize
+    renderType: Text.NativeRendering
   }
 
-  // Keep the controller alive; release only the view after close animations finish.
-  property bool popupContentActive: false
-  property bool settingsContentActive: false
-  function preparePopup() {
-    popupUnload.stop()
-    popupContentActive = true
-  }
-  Connections {
-    target: root
-    function onEditingSettingsChanged() {
-      if (root.editingSettings) root.settingsContentActive = true
-    }
-    function onOpenedChanged() {
-      if (root.opened) root.preparePopup()
-      else popupUnload.restart()
-    }
-  }
-  Timer {
-    id: popupUnload
-    interval: 1000
-    onTriggered: {
-      if (!root.opened && !panel.visible)
-        { root.popupContentActive = false; root.settingsContentActive = false }
-    }
-  }
-  GithubPopup {
-    id: panel
+  FoamyPopup {
+    id: popup
     anchorItem: button
-    owner: root
     bar: root.bar
+    owner: root
     open: root.opened
-    focusTarget: keyCatcher
-    padding: 0
-    borderSpec: Border.flat(root.outlineColor, 1)
-    contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: panel.fittedContentHeight(panelFlick.contentHeight, Style.space(620))
-    PanelKeyCatcher {
-      id: keyCatcher
-      anchors.fill: parent
-      blocked: root.editingSettings
-      Keys.onEscapePressed: root.editingSettings ? root.closeSettings() : root.close()
-      Keys.onTabPressed: function(event) {
-        if (root.editingSettings && keyCatcher.activeFocus) panelFlick.headerItem.settingsBack.forceActiveFocus()
-        else event.accepted = false
-      }
-      onMoveRequested: function(dx, dy) {
-        if (!root.cursorActive) { root.cursorActive = true; return }
-        root.moveCursor(dy !== 0 ? dy : dx)
-      }
-      onActivateRequested: if (root.cursorActive) root.viewRepository(root.selectedRepo())
-      onCloseRequested: root.editingSettings ? root.closeSettings() : root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
-      onTextKey: function(text) {
-        if (text === "s" || text === "S") { root.openSettings(); return }
-        if ((text === "r" || text === "R") && !github.busy) github.fetch()
-      }
-
-      ListView {
-        id: panelFlick
-        anchors.fill: parent
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        model: root.popupContentActive && !root.editingSettings ? root.displayedRepos : []
-        cacheBuffer: 0
-        // Keep offscreen rows uninstantiated while scrolling the header and footer together.
-        delegate: Item {
-          required property var modelData
-          required property int index
-          width: panelFlick.width
-          height: repositoryRow.implicitHeight
-          RepositoryRow {
-            id: repositoryRow
-            x: Style.space(20)
-            width: parent.width - Style.space(40)
-            repo: parent.modelData
-            rowIndex: parent.index
-          }
-        }
-        FrameAnimation {
-          running: root.opened && root.resetScrollPending
-          onTriggered: {
-            // Header geometry settles during polish, after the model is attached.
-            panelFlick.positionViewAtBeginning()
-            root.resetScrollPending = false
-          }
-        }
-        ScrollBar.vertical: ScrollBar {
-          visible: panelFlick.interactive
-          width: Style.space(4)
-          padding: 0
-          contentItem: Rectangle { implicitWidth: Style.space(4); radius: width / 2; color: root.dim }
-          background: Item {}
-        }
-        header: Column {
-          id: contentColumn
-          readonly property var folderRepeater: githubSettings.item ? githubSettings.item.folderRepeater : null
-          readonly property var settingsBack: githubSettings.item ? githubSettings.item.settingsBack : null
-          width: panelFlick.width
-          Item {
-            width: parent.width
-            height: heroContent.implicitHeight + Style.space(42)
-
-            // Use the same static, theme-derived header wash as clock and weather.
-            Canvas {
-              id: headerBackground
-              readonly property real cornerRadius: Math.max(0, Math.min(width / 2, height, panel.cornerRadius - Border.top(panel.borderSpec)))
-              onCornerRadiusChanged: requestPaint()
-              anchors.fill: parent
-              onWidthChanged: requestPaint()
-              onHeightChanged: requestPaint()
-              onPaint: {
-                var ctx = getContext("2d")
-                ctx.reset()
-                var radius = cornerRadius
-                ctx.beginPath()
-                ctx.moveTo(radius, 0); ctx.lineTo(width - radius, 0)
-                ctx.arcTo(width, 0, width, radius, radius)
-                ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.lineTo(0, radius)
-                ctx.arcTo(0, 0, radius, 0, radius); ctx.closePath(); ctx.clip()
-                var gradient = ctx.createLinearGradient(0, 0, width * 0.5, height)
-                gradient.addColorStop(0, Qt.tint(Color.popups.background, Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.08)))
-                gradient.addColorStop(1, Color.popups.background)
-                ctx.fillStyle = gradient; ctx.fillRect(0, 0, width, height)
-                var glow = ctx.createRadialGradient(width * 0.9, 0, 0, width * 0.9, 0, width * 0.85)
-                glow.addColorStop(0, Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.17))
-                glow.addColorStop(1, "transparent")
-                ctx.fillStyle = glow; ctx.fillRect(0, 0, width, height)
-              }
-              Connections {
-                target: Color
-                function onAccentChanged() { headerBackground.requestPaint() }
-                function onShellValuesChanged() { headerBackground.requestPaint() }
-                function onBackgroundChanged() { headerBackground.requestPaint() }
-              }
-            }
-
-            Column {
-              id: heroContent
-              anchors.centerIn: parent
-              width: parent.width - Style.space(40)
-              spacing: Style.space(18)
-
-              RowLayout {
-                width: parent.width
-                spacing: Style.space(8)
-                Text {
-                  text: "\uf09b"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(17)
-                }
-                GithubLabel { text: "GitHub"; Layout.fillWidth: true }
-                GithubAction {
-                  visible: !root.editingSettings
-                  iconName: "settings"
-                  tooltipText: root.tr("Settings (S)")
-                  foreground: root.dim
-                  implicitWidth: Style.space(32)
-                  implicitHeight: Style.space(32)
-                  radius: Style.cornerRadius * 2
-                  iconSize: Style.space(16)
-                  keyTarget: keyCatcher
-                  onClicked: root.openSettings()
-                }
-              }
-              GithubLabel {
-                id: titleLabel
-                width: parent.width
-                text: root.displayTitle
-                font.pixelSize: Style.space(21)
-                wrapMode: Text.WordWrap
-              }
-              Flow {
-                width: parent.width
-                spacing: Style.space(18)
-                SummaryCount { value: github.totals.aheadRepos; label: root.tr("ahead"); symbol: "↑"; tint: root.success }
-                SummaryCount { value: github.totals.behindRepos; label: root.tr("behind"); symbol: "↓"; tint: root.accent }
-                SummaryCount { value: github.totals.dirtyRepos; label: root.tr("changed"); symbol: "•"; tint: root.warning }
-                SummaryCount { visible: value > 0; value: github.totals.failedRepos; label: root.tr("failed"); symbol: "!"; tint: root.urgent }
-              }
-            }
-          }
-            Loader {
-              id: githubSettings
-
-              width: parent.width - Style.space(40)
-              anchors.horizontalCenter: parent.horizontalCenter
-              active: root.settingsContentActive
-              visible: root.editingSettings
-
-              sourceComponent: Component {
-                Column {
-                  property alias folderRepeater: folderRepeater
-                  property alias settingsBack: settingsBack
-
-                  visible: root.editingSettings
-                  width: parent.width
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  topPadding: Style.space(16)
-                  bottomPadding: Style.space(20)
-                  spacing: Style.space(12)
-
-                  Row {
-                    spacing: Style.space(10)
-
-                    GithubAction {
-                      id: settingsBack
-
-                      iconName: "arrow-left"
-                      tooltipText: root.tr("Back")
-                      foreground: root.dim
-                      onClicked: root.closeSettings()
-                    }
-
-                    GithubLabel {
-                      text: root.tr("Settings")
-                      color: root.dim
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                  }
-
-
-                  RowLayout {
-                    width: parent.width
-
-                    GithubLabel {
-                      text: root.tr("Repository folders")
-                      Layout.fillWidth: true
-                    }
-
-                    GithubAction {
-                      id: addFolderButton
-
-                      iconName: "plus"
-                      tooltipText: folderRows.count >= 32 ? root.tr("You can add up to 32 directories.") : root.tr("Add folder")
-                      foreground: root.dim
-                      actionEnabled: folderRows.count < 32 && !folderPicker.running
-                      onClicked: root.addFolder()
-                      Keys.onEscapePressed: root.closeSettings()
-                    }
-
-                  }
-
-                  Column {
-                    width: parent.width
-                    spacing: Style.space(8)
-
-                    Repeater {
-                      id: folderRepeater
-
-                      model: folderRows
-
-                      RowLayout {
-                        id: folderRow
-
-                        required property int index
-                        required property string path
-                        required property int depth
-
-                        function focusPath() {
-                          folderPath.forceActiveFocus();
-                        }
-
-                        width: parent.width
-                        spacing: Style.space(8)
-                        enabled: !folderPicker.running
-
-                        GithubAction {
-                          iconName: "folder"
-                          tooltipText: root.tr("Browse for folder")
-                          foreground: root.dim
-                          onClicked: root.browseFolder(folderRow.index)
-                          Keys.onEscapePressed: root.closeSettings()
-                        }
-
-                        SafeTextField {
-                          id: folderPath
-
-                          Layout.fillWidth: true
-                          Layout.minimumWidth: 0
-                          implicitHeight: Style.spacing.controlHeight
-                          text: folderRow.path
-                          color: root.foreground
-                          font.family: "sans-serif"
-                          font.pixelSize: Style.space(12)
-                          leftPadding: Style.space(8)
-                          rightPadding: Style.space(8)
-                          translate: root.tr
-                          Accessible.name: root.tr("Repository folder %1", [folderRow.index + 1])
-                          placeholderText: "~/Projects"
-                          placeholderTextColor: root.dim
-                          onPasteErrorChanged: if (pasteError !== "") root.settingsError = pasteError
-                          onTextEdited: {
-                            folderRows.setProperty(folderRow.index, "path", text);
-                            root.foldersDirty = true;
-                            root.settingsError = "";
-                          }
-                          onEditingFinished: {
-                            if (root.foldersDirty) {
-                              root.saveFolders();
-                            }
-                          }
-                          onInputActiveFocusChanged: {
-                            if (inputActiveFocus) {
-                              root.showFolderRow(folderRow);
-                            }
-                          }
-                          Keys.onEscapePressed: root.closeSettings()
-
-                          background: Rectangle {
-                            radius: root.controlRadius
-                            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.055)
-                            border.width: 1
-                            border.color: folderPath.inputActiveFocus ? root.accent : root.outlineColor
-                          }
-
-                        }
-
-                        GithubDropdown {
-                          cornerRadius: root.controlRadius
-                          Layout.preferredWidth: Style.space(96)
-                          showLabel: false
-                          label: root.tr("Scan levels for %1", [folderRow.path])
-                          fontFamily: "sans-serif"
-                          value: String(folderRow.depth)
-                          options: [0, 1, 2, 3, 4, 5].map(function(depth) {
-                            return {
-                              "value": String(depth),
-                              "label": root.tr(depth === 1 ? "%1 level" : "%1 levels", [depth])
-                            };
-                          })
-                          onChanged: function(value) {
-                            folderRows.setProperty(folderRow.index, "depth", Number(value));
-                            root.foldersDirty = true;
-                            root.saveFolders();
-                          }
-                          Keys.onEscapePressed: root.closeSettings()
-                        }
-
-                        GithubAction {
-                          iconName: "trash"
-                          tooltipText: root.tr("Remove folder")
-                          foreground: root.dim
-                          onClicked: {
-                            folderRows.remove(folderRow.index);
-                            root.ensureFolderRow();
-                            root.foldersDirty = true;
-                            root.saveFolders();
-                            addFolderButton.forceActiveFocus();
-                          }
-                          Keys.onEscapePressed: root.closeSettings()
-                        }
-
-                      }
-
-                    }
-
-                  }
-
-                  GithubLabel {
-                    visible: root.settingsError !== ""
-                    width: parent.width
-                    text: root.tr(root.settingsError)
-                    color: root.dim
-                    wrapMode: Text.WordWrap
-                    Accessible.role: Accessible.AlertMessage
-                  }
-
-                  Toggle {
-                    width: parent.width
-                    implicitHeight: Style.space(36)
-                    color: "transparent"
-                    borderSpec: activeFocus ? Border.flat(root.accent, 1) : Border.none()
-                    radius: root.controlRadius
-                    fontFamily: "sans-serif"
-                    titleSize: Style.space(12)
-                    label: root.tr("Detect changes automatically (Recommended)")
-                    checked: github.inotifyEnabled
-                    onClicked: root.savePreference("inotifyEnabled", !checked)
-                    Keys.onEscapePressed: root.closeSettings()
-                  }
-
-                  GithubDropdown {
-                    id: localInterval
-
-                    cornerRadius: root.controlRadius
-                    width: parent.width
-                    label: root.tr(github.inotifyEnabled ? "Fallback interval" : "Interval")
-                    fontFamily: "sans-serif"
-                    value: String(github.refreshIntervalSec)
-                    options: [{
-                      "value": "0",
-                      "label": root.tr("Disabled")
-                    }, {
-                      "value": "10",
-                      "label": root.tr("Every 10 seconds")
-                    }, {
-                      "value": "30",
-                      "label": root.tr("Every 30 seconds")
-                    }, {
-                      "value": "60",
-                      "label": root.tr("Every minute")
-                    }, {
-                      "value": "300",
-                      "label": root.tr("Every 5 minutes")
-                    }]
-                    onChanged: function(value) {
-                      root.savePreference("refreshIntervalSec", Number(value));
-                    }
-                    Keys.onEscapePressed: root.closeSettings()
-                  }
-
-                  GithubDropdown {
-                    id: remoteInterval
-
-                    cornerRadius: root.controlRadius
-                    width: parent.width
-                    label: root.tr("Remote fetch")
-                    fontFamily: "sans-serif"
-                    value: String(github.fetchIntervalSec)
-                    options: [{
-                      "value": "300",
-                      "label": root.tr("Every 5 minutes")
-                    }, {
-                      "value": "900",
-                      "label": root.tr("Every 15 minutes")
-                    }, {
-                      "value": "1800",
-                      "label": root.tr("Every 30 minutes")
-                    }, {
-                      "value": "3600",
-                      "label": root.tr("Every hour")
-                    }]
-                    onChanged: function(value) {
-                      root.savePreference("fetchIntervalSec", Number(value));
-                    }
-                    Keys.onEscapePressed: root.closeSettings()
-                  }
-
-                }
-
-              }
-
-            }
-          Item {
-            width: parent.width
-            height: root.editingSettings ? 0 : statusWarning.visible ? statusWarning.implicitHeight + Style.space(20) : Style.space(8)
-            GithubLabel {
-              id: statusWarning
-              visible: github.lastError !== "" || github.sync.stale
-              width: parent.width - Style.space(40)
-              x: Style.space(20)
-              y: Style.space(8)
-              text: github.lastError !== "" ? root.tr(github.lastError)
-                : root.lastSyncText + " · " + root.tr("remote state may be stale")
-              color: github.lastError !== "" ? root.urgent : github.sync.stale ? root.warning : root.dim
-              font.pixelSize: Style.space(12)
-              wrapMode: Text.WordWrap
-            }
-          }
-        }
-        footer: Column {
-          visible: !root.editingSettings
-          width: panelFlick.width - Style.space(40)
-          x: Style.space(20)
-          height: visible ? implicitHeight : 0
-          topPadding: Style.space(12)
-          bottomPadding: Style.space(16)
-          spacing: Style.space(12)
-
-
-            Column {
-              visible: root.displayedRepos.length === 0
-              width: parent.width
-              topPadding: Style.space(18)
-              bottomPadding: Style.space(18)
-              spacing: Style.space(8)
-              Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                visible: github.lastError === "" && github.lastChecked > 0 && github.status.repoCount > 0
-                text: "\uf00c"
-                color: root.success
-                font.family: root.fontFamily
-                font.pixelSize: Style.space(24)
-              }
-              GithubLabel {
-                width: parent.width
-                text: github.lastError !== "" ? root.tr("Repository status is unavailable. Try Refresh again.")
-                  : github.lastChecked === 0 ? root.tr("Checking local repositories…")
-                  : github.status.repoCount === 0 ? root.tr("No local repositories are being tracked.")
-                  : root.tr("All local repositories are clean and aligned with their cached upstream state.")
-                color: root.dim
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-              }
-            }
-
-            Column {
-              visible: root.hasFailures
-              width: parent.width
-              spacing: Style.space(8)
-              GithubLabel { text: root.tr("Last sync issues"); color: root.urgent }
-              Repeater {
-                model: github.sync.failures.slice(0, 4)
-                GithubLabel {
-                  required property var modelData
-                  width: parent.width
-                  text: String(modelData.label || modelData.name || root.tr("Repository")) + "\n"
-                    + root.tr(String(modelData.message || "Synchronization failed"))
-                  color: root.urgent
-                  font.pixelSize: Style.space(12)
-                  wrapMode: Text.WordWrap
-                }
-              }
-            }
-
-            Rectangle { width: parent.width; height: 1; color: root.outlineColor }
-            RowLayout {
-              width: parent.width
-              spacing: Style.space(8)
-              GithubLabel {
-                text: root.tr(github.status.repoCount === 1 ? "%1 repository" : "%1 repositories", [github.status.repoCount])
-                color: root.dim
-                font.pixelSize: Style.space(12)
-                Layout.fillWidth: true
-                elide: Text.ElideRight
-              }
-              GithubLabel {
-                text: root.updatedText
-                color: root.dim
-                font.pixelSize: Style.space(12)
-              }
-              PanelActionButton {
-                radius: Style.cornerRadius * 2
-                id: refreshButton
-                tooltipText: github.syncing ? root.tr("Fetching repositories…")
-                  : github.refreshing ? root.tr("Refreshing local status")
-                  : root.tr("Fetch remotes and refresh status (R)") + "\n" + root.lastSyncText
-                enabled: !github.busy
-                foreground: root.dim
-                fontFamily: root.fontFamily
-                fontSize: Style.space(14)
-                size: Style.space(26)
-                onClicked: github.fetch()
-                // Keep the hover surface and hit area fixed while only the glyph spins.
-                Text {
-                  id: refreshGlyph
-                  anchors.centerIn: parent
-                  text: "󰑐"
-                  color: refreshButton.enabled ? root.dim : Qt.darker(root.dim, 2.0)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(14)
-                  RotationAnimation on rotation {
-                    running: root.opened && (github.syncing || github.refreshing)
-                    from: 0; to: 360; duration: 800; loops: Animation.Infinite
-                    onStopped: refreshGlyph.rotation = 0
-                  }
-                }
-              }
-            }
-        }
-      }
-    }
-  }
-
-
-  component SummaryCount: Row {
-    property int value: 0
-    property string label: ""
-    property string symbol: ""
-    property color tint: root.foreground
-    spacing: Style.space(5)
-    GithubLabel { id: countValue; text: parent.symbol + " " + parent.value; color: parent.tint; font.pixelSize: Style.space(16) }
-    GithubLabel { text: parent.label; color: root.dim; font.pixelSize: Style.space(12); anchors.baseline: countValue.baseline }
-  }
-
-  component RepositoryRow: Item {
-    id: repoRow
-    property var repo: null
-    property int rowIndex: 0
-    readonly property color stateColor: repo && repo.complete === false ? root.urgent : repo && repo.dirtyCount > 0 ? root.warning
-      : (repo && repo.behind > 0 ? root.accent : root.success)
-
-    implicitHeight: repoContent.implicitHeight + Style.space(24)
-    HoverHandler { onHoveredChanged: if (hovered) root.setRepoCursor(repoRow.rowIndex) }
-
-    Rectangle {
-      visible: repoRow.rowIndex < root.displayedRepos.length - 1
-      anchors.bottom: parent.bottom
-      width: parent.width
-      height: 1
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-    }
-    RowLayout {
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(2)
-      anchors.rightMargin: Style.space(2)
-      spacing: Style.space(12)
-      Rectangle { width: Style.space(2); height: Style.space(32); radius: width / 2; color: repoRow.stateColor }
-      ColumnLayout {
-        id: repoContent
-        Layout.fillWidth: true
-        spacing: Style.space(3)
-        GithubLabel {
-          Layout.fillWidth: true
-          text: String(repoRow.repo ? repoRow.repo.label : root.tr("Repository"))
-          font.pixelSize: Style.space(15)
-          elide: Text.ElideRight
-        }
-        GithubLabel {
-          Layout.fillWidth: true
-          text: Model.repositoryMeta(repoRow.repo, root.tr)
-          color: root.dim
-          font.pixelSize: Style.space(12)
-          wrapMode: repoRow.repo && repoRow.repo.complete === false ? Text.WordWrap : Text.NoWrap
-          elide: repoRow.repo && repoRow.repo.complete === false ? Text.ElideNone : Text.ElideRight
-        }
-      }
-      RowLayout {
-        spacing: Style.space(2)
-        PanelActionButton {
-          radius: Style.cornerRadius * 2
-          iconText: "\uf062"
-          tooltipText: root.tr("Push %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
-          enabled: !github.busy && repoRow.repo && repoRow.repo.complete === true && repoRow.repo.ahead > 0
-          opacity: enabled ? 1 : 0.4
-          foreground: root.dim
-          hoverColor: root.success
-          fontFamily: root.fontFamily
-          fontSize: Style.space(12)
-          size: Style.space(26)
-          onClicked: github.pushRepository(repoRow.repo)
-        }
-        PanelActionButton {
-          radius: Style.cornerRadius * 2
-          iconText: "\uf063"
-          tooltipText: root.tr("Pull %1", [String(repoRow.repo ? repoRow.repo.label : root.tr("repository"))])
-          enabled: !github.busy && repoRow.repo && repoRow.repo.complete === true && repoRow.repo.behind > 0
-            && repoRow.repo.dirtyCount === 0 && repoRow.repo.ahead === 0
-          opacity: enabled ? 1 : 0.4
-          foreground: root.dim
-          hoverColor: root.accent
-          fontFamily: root.fontFamily
-          fontSize: Style.space(12)
-          size: Style.space(26)
-          onClicked: github.pullRepository(repoRow.repo)
-        }
-        PanelActionButton {
-          radius: Style.cornerRadius * 2
-          iconText: "\uf06e"
-          tooltipText: root.tr("View in lazygit")
-          enabled: repoRow.repo !== null
-          foreground: root.dim
-          fontFamily: root.fontFamily
-          fontSize: Style.space(12)
-          size: Style.space(26)
-          onClicked: root.viewRepository(repoRow.repo)
-        }
+    body: Component {
+      GithubView {
+        service: Service
+        settings: prefs.effectiveSettings
+        opened: root.opened
+        editingSettings: root.editingSettings
+        saving: prefs.busy
+        settingsError: root.pageError
+        retryable: root.settingsError === "" && prefs.canRetry
+        browsing: folderPicker.running
+        onCloseRequestedByView: root.close()
+        onSettingsErrorReported: function(message) { root.settingsError = message }
+        onSettingsRequested: root.openSettings()
+        onSettingsClosed: root.closeSettings()
+        onSaveRequested: function(key, value) { root.save(key, value) }
+        onTrustRequested: function(repo, trusted) { root.setTrusted(repo, trusted) }
+        onFoldersEdited: function(rows) { root.saveFolders(rows) }
+        onBrowseRequested: function(index) { root.browseFolder(index) }
+        onRetryRequested: prefs.retry()
+        onSwitchPanelRequested: function(direction) { root.switchPanel(direction) }
+        onRepositoryRequested: function(repo) { root.close(); Service.openRepository(repo) }
       }
     }
   }

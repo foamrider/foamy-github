@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "foamy.github",
   "name": "Foamy GitHub",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "foamrider",
   "description": "Local Git repository status with per-repository actions.",
   "kinds": [
@@ -21,19 +21,20 @@
       "refreshIntervalSec": 30,
       "fetchIntervalSec": 900,
       "repositoryFolders": [],
-      "inotifyEnabled": true
+      "inotifyEnabled": true,
+      "trustedRepositories": []
     },
     "schema": [
       {
         "key": "inotifyEnabled",
         "type": "boolean",
-        "label": "Detect changes automatically (Recommended)",
+        "label": "Detect changes automatically",
         "defaultValue": true
       },
       {
         "key": "refreshIntervalSec",
         "type": "integer",
-        "label": "Local refresh interval (seconds; 0 disables polling)",
+        "label": "Refresh every (seconds; 0 turns polling off)",
         "min": 0,
         "max": 3600,
         "step": 5,
@@ -42,7 +43,7 @@
       {
         "key": "fetchIntervalSec",
         "type": "integer",
-        "label": "Remote fetch interval (seconds)",
+        "label": "Fetch remotes every (seconds)",
         "min": 300,
         "max": 86400,
         "step": 300,

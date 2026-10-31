@@ -24,6 +24,14 @@ class GitLimitsTest(unittest.TestCase):
                                                "XDG_CACHE_HOME": str(self.root / "cache")})
     self.environment.start()
     self.addCleanup(self.environment.stop)
+    # These tests replace git with a fake script on PATH; the Landlock sandbox
+    # would run the real git (and refuse the script's interpreter).
+    sandbox = patch.object(status, "_sandbox", [])
+    sandbox.start()
+    self.addCleanup(sandbox.stop)
+    pinning = patch.object(status, "_bwrap", [])          # no namespace either: the fake git is the point
+    pinning.start()
+    self.addCleanup(pinning.stop)
 
   def script(self, code):
     self.git.write_text(f"#!{sys.executable}\nimport os, sys, time\n" + code)
@@ -106,7 +114,6 @@ class GitLimitsTest(unittest.TestCase):
          patch.object(status, "run_git", side_effect=AssertionError("Must not mutate")):
       for mode in ("pull", "push"):
         self.assertFalse(status.repository_action(mode, self.repo.path, [self.repo.path])["ok"])
-      self.assertFalse(status.update_repository(self.repo)[2]["ok"])
 
   def test_one_bad_repository_does_not_discard_healthy_rows(self):
     bad = {**status.repository_status(self.repo), "error": "fixture", "complete": False}

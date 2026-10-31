@@ -1,9 +1,3 @@
-singleton FoamyI18n 1.0 FoamyI18n.qml
-FolderPicker 1.0 FolderPicker.qml
-GithubAction 1.0 GithubAction.qml
-GithubDropdown 1.0 GithubDropdown.qml
-GithubIcon 1.0 GithubIcon.qml
-GithubPopup 1.0 GithubPopup.qml
+GithubView 1.0 GithubView.qml
 Panel 1.0 Panel.qml
-SafeTextField 1.0 SafeTextField.qml
-Service 1.0 Service.qml
+singleton Service 1.0 Service.qml

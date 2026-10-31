@@ -41,7 +41,12 @@ function parseStatus(raw) {
     for (var repo of parsed.repos) {
       if (!repo || typeof repo.complete !== "boolean" || typeof repo.affected !== "boolean")
         return failedStatus("Invalid repository status")
-      for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error"]) {
+      if (repo.syncError === undefined) repo.syncError = ""
+      if (repo.lfs === undefined) repo.lfs = false
+      if (repo.trusted === undefined) repo.trusted = false
+      if (repo.identity === undefined) repo.identity = ""
+      if (typeof repo.lfs !== "boolean" || typeof repo.trusted !== "boolean") return failedStatus("Invalid repository status")
+      for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error", "syncError", "identity"]) {
         if (typeof repo[field] !== "string" || repo[field].length > 4096)
           return failedStatus("Invalid repository status")
       }
@@ -101,58 +106,128 @@ function relativeTime(timestampSec, nowMs, tr) {
   return tr("%1d ago", [days])
 }
 
-function updatedText(timestampSec, nowMs, tr) {
+function plural(key, count) {
+  return translate(key, [count])
+}
+
+function updatedText(timestampSec, nowMs, tr, tn) {
   tr = tr || translate
+  tn = tn || plural
   if (!isFinite(timestampSec) || timestampSec <= 0) return ""
   var minutes = Math.max(0, Math.floor((nowMs - timestampSec * 1000) / 60000))
   if (minutes === 0) return tr("Updated just now")
-  if (minutes === 1) return tr("Updated 1 minute ago")
-  return tr("Updated %1 minutes ago", [minutes])
+  return tn("Updated %1 minutes ago", minutes)
 }
 
-function repositoryMeta(repo, tr) {
+// Repositories the popup lists: anything affected locally, plus clean ones
+// whose last fetch failed, so their inline error stays visible.
+function displayedRepos(repos) {
+  return (repos || []).filter(function(repo) {
+    return !!repo && (repo.affected === true || (typeof repo.syncError === "string" && repo.syncError !== ""))
+  })
+}
+
+// Trusted repositories from settings: [{ path, identity }] (absolute path plus
+// the Git directory identity reported by the helper). Bare paths from an
+// earlier build carry no identity and are dropped (untrusted again).
+function trustedRepositories(settings) {
+  var value = settings ? settings.trustedRepositories : undefined
+  var list = value === undefined || value === null ? [] : JSON.parse(JSON.stringify(value))
+  if (!Array.isArray(list)) return []
+  var out = []
+  for (var i = 0; i < list.length && out.length < 256; i++) {
+    var item = list[i]
+    if (item && typeof item === "object" && typeof item.path === "string" && item.path.charAt(0) === "/"
+        && typeof item.identity === "string" && item.identity !== ""
+        && !out.some(function(entry) { return entry.path === item.path }))
+      out.push({ path: item.path, identity: item.identity })
+  }
+  return out
+}
+
+function isTrusted(list, repo) {
+  return !!repo && (list || []).some(function(entry) { return entry.path === repo.path && entry.identity === repo.identity })
+}
+
+// The list a trust edit must start from: the newest queued save of
+// trustedRepositories if one waits behind an in-flight save, else the
+// effective settings (saved + in flight). Composing over anything older
+// would undo an earlier queued edit (untrust B, then C, restoring B).
+function trustBase(effectiveSettings, waiting) {
+  var queued = (waiting || []).filter(function(item) { return item && item.key === "trustedRepositories" })
+  return queued.length > 0 ? trustedRepositories({ trustedRepositories: queued[queued.length - 1].value })
+    : trustedRepositories(effectiveSettings)
+}
+
+// What a fetch helper run means: "busy", "done" (with failures) or "error".
+// A non-zero exit without a structured result is an error (stderr), never
+// "Fetch complete".
+function fetchOutcome(exitCode, stdout, stderr) {
+  var result = null
+  try { result = JSON.parse(String(stdout || "")) } catch (e) {}
+  var structured = !!result && typeof result === "object" && !Array.isArray(result)
+    && (result.busy === true || (typeof result.ok === "boolean" && Array.isArray(result.failures)))
+  if (structured && result.busy === true) return { status: "busy", message: String(result.message || ""), failed: 0 }
+  if (structured) return { status: "done", message: "", failed: result.failures.length }
+  var detail = String(stderr || "").trim().slice(0, 240)
+  return { status: "error", message: detail || "Repository synchronization failed", failed: 0, exitCode: exitCode }
+}
+
+// The trusted list with `repo` (its path and identity) added or removed.
+function withTrust(list, repo, trusted) {
+  var out = (list || []).filter(function(entry) { return entry.path !== repo.path })
+  if (trusted && repo.identity) out.push({ path: String(repo.path), identity: String(repo.identity) })
+  return out
+}
+
+// Repositories that use Git LFS, by label (Settings lists only these).
+function lfsRepos(repos) {
+  return (repos || []).filter(function(repo) { return !!repo && repo.lfs === true })
+    .sort(function(a, b) { return String(a.label).toLowerCase() < String(b.label).toLowerCase() ? -1 : 1 })
+}
+
+// Validation for the trustedRepositories setting.
+function validTrustedList(value) {
+  if (!Array.isArray(value) || value.length > 256) return "Use at most 256 trusted repositories."
+  for (var i = 0; i < value.length; i++) {
+    var item = value[i]
+    if (!item || typeof item.path !== "string" || item.path.charAt(0) !== "/" || item.path.length > 4096
+        || typeof item.identity !== "string" || item.identity === "" || item.identity.length > 128)
+      return "Trusted repositories must be absolute paths."
+  }
+  return true
+}
+
+// The inline fetch error after a row's status line ("main · 3 changed · …").
+function syncErrorText(repo, tr) {
   tr = tr || translate
+  return repo && repo.syncError ? tr(String(repo.syncError)) : ""
+}
+
+function repositoryMeta(repo, tr, tn) {
+  tr = tr || translate
+  tn = tn || plural
   if (!repo) return ""
   if (repo.complete === false) return tr("Status unavailable") + " · " + String(repo.error || "")
   var parts = []
   var branch = String(repo.branch || tr("detached"))
   parts.push(branch)
-  if (repo.ahead > 0) parts.push("↑" + tr(repo.ahead === 1 ? "%1 commit" : "%1 commits", [repo.ahead]))
-  if (repo.behind > 0) parts.push("↓" + tr(repo.behind === 1 ? "%1 commit" : "%1 commits", [repo.behind]))
+  if (repo.ahead > 0) parts.push("↑" + tn("%1 commits", repo.ahead))
+  if (repo.behind > 0) parts.push("↓" + tn("%1 commits", repo.behind))
   if (repo.dirtyCount > 0) parts.push(tr("%1 changed", [repo.dirtyCount]))
   return parts.join(" · ")
 }
 
-function repositoryState(repo) {
-  if (!repo) return "Clean"
-  if (repo.complete === false) return "unavailable"
-  var states = []
-  if (repo.ahead > 0) states.push("ahead")
-  if (repo.behind > 0) states.push("behind")
-  if (repo.dirtyCount > 0) states.push("dirty")
-  return states.length > 0 ? states.join(" + ") : "clean"
-}
+// Filesystem watcher retry: 30 s, doubling to 30 min while it keeps failing
+// soon after starting; a run that lasted 10 min starts over at 30 s.
+var WATCH_RETRY_MIN_MS = 30 * 1000
+var WATCH_RETRY_MAX_MS = 30 * 60 * 1000
+var WATCH_STABLE_MS = 10 * 60 * 1000
 
-function barText(status, vertical) {
-  if (status.sync.syncing) return "󰑐"
-  if (vertical) return "󰊤"
-  var parts = ["󰊤"]
-  if (status.totals.aheadRepos > 0) parts.push(status.totals.aheadRepos + "↑")
-  if (status.totals.behindRepos > 0) parts.push(status.totals.behindRepos + "↓")
-  if (status.totals.dirtyRepos > 0) parts.push(status.totals.dirtyRepos + "*")
-  if (status.totals.failedRepos > 0) parts.push(status.totals.failedRepos + "!")
-  if (status.totals.unavailableRepos > 0) parts.push(status.totals.unavailableRepos + "?")
-  if (status.sync.stale && status.totals.failedRepos === 0) parts.push("?")
-  return parts.join(" ")
-}
-
-function actionSummary(status) {
-  var sync = status && status.sync ? status.sync : defaultStatus().sync
-  var parts = []
-  if (sync.updated.length > 0) parts.push("Updated " + sync.updated.length)
-  if (sync.skipped.length > 0) parts.push("Skipped " + sync.skipped.length)
-  if (sync.failures.length > 0) parts.push("Failed " + sync.failures.length)
-  return parts.join(" · ")
+function watchRetry(currentMs, ranMs) {
+  var delay = Number(ranMs) >= WATCH_STABLE_MS ? WATCH_RETRY_MIN_MS
+    : Math.max(WATCH_RETRY_MIN_MS, Math.min(WATCH_RETRY_MAX_MS, Number(currentMs) || WATCH_RETRY_MIN_MS))
+  return { delay: delay, next: Math.min(WATCH_RETRY_MAX_MS, delay * 2) }
 }
 
 function repositoryFolders(settings) {
@@ -189,8 +264,15 @@ if (typeof module !== "undefined") {
     relativeTime: relativeTime,
     updatedText: updatedText,
     repositoryMeta: repositoryMeta,
-    repositoryState: repositoryState,
-    barText: barText,
-    actionSummary: actionSummary
+    watchRetry: watchRetry,
+    displayedRepos: displayedRepos,
+    trustedRepositories: trustedRepositories,
+    withTrust: withTrust,
+    isTrusted: isTrusted,
+    trustBase: trustBase,
+    fetchOutcome: fetchOutcome,
+    lfsRepos: lfsRepos,
+    validTrustedList: validTrustedList,
+    syncErrorText: syncErrorText
   }
 }
