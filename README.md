@@ -128,7 +128,12 @@ its identity (device, inode, birth time) is taken from those open
 directories. Git then runs in a private mount namespace (`bubblewrap`) where
 the repository's paths are bound to exactly those directories. A rename or
 symlink swap during a check therefore can't make a trusted check run another
-repository's config, and can't redirect a fetch's objects or ref updates. This
+repository's config, and can't redirect a fetch's objects or ref updates. In that namespace the whole filesystem and the worktree are read-only;
+only the pinned Git directories are writable. So a symlink anywhere inside
+them that points into another repository (for example below
+`refs/remotes/origin`) can't be written through, and the fetch fails
+instead. Helpers that run there (ssh, your credential helpers) can read what
+they need but can't write outside the Git directory. This
 applies to trusted checks and fetches, and to every automatic fetch. The
 pin comes first: the trust check and the config snapshot are read through
 it. Every Git command gets `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE`

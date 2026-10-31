@@ -313,7 +313,10 @@ class TrustModelTest(unittest.TestCase):
     self.assertNotRun()
 
   def test_trusted_config_keeps_the_repository_behaviour(self):
-    self.git("config", "core.fsmonitor", self.evil)
+    # Trusted runs execute the repository's config, inside the pinned
+    # namespace where only its Git directory is writable.
+    self.marker = self.path / ".git/pwned"
+    self.git("config", "core.fsmonitor", f"touch {self.marker}")
     status.repository_status(self.repo, trusted=True)
     self.assertTrue(self.marker.exists())
 
@@ -351,6 +354,7 @@ class TrustModelTest(unittest.TestCase):
     # Codex security: a local `store --file=<repo>/loot` (or any helper) must
     # never see the user's credentials; global helpers keep working.
     url = self.http_401_server()
+    self.marker = self.path / ".git/calls"          # the only writable place for helpers in the namespace
     global_helper = self.script("global-helper", "echo username=u; echo password=p")
     self.global_config(f"[credential]\n\thelper = {global_helper}\n")
     self.git("remote", "add", "origin", url)
@@ -667,6 +671,31 @@ class TrustModelTest(unittest.TestCase):
         if aside.exists():
           os.rename(aside, link)
 
+  def test_nested_symlinks_below_fetched_refs_write_nothing_elsewhere(self):
+    # Codex security: refs/remotes/origin/evil -> <victim>/.git/refs/heads
+    # (and the same under refs/tags) passed the top-level checks, and the
+    # writable root let the fetch rewrite the victim's refs. Only the pinned
+    # Git directories are writable now, so such a write fails.
+    self.file_remote()
+    upstream = self.root / "upstream"
+    self.git("push", "-q", "origin", "HEAD:refs/heads/evil/main", cwd=upstream)
+    self.git("tag", "evil/v1", cwd=upstream)
+    self.git("push", "-q", "origin", "evil/v1", cwd=upstream)
+    # The victim shares history with this repository, so its refs resolve here.
+    victim = self.root / "victim"
+    subprocess.run(["git", "clone", "-q", str(self.root / "remote.git"), str(victim)], check=True, capture_output=True)
+    self.git("update-ref", "refs/heads/main", self.git("rev-parse", "HEAD").strip(), cwd=victim)
+    self.git("tag", "keep", cwd=victim)
+    before = {ref: self.git("rev-parse", ref, cwd=victim).strip() for ref in ("refs/heads/main", "refs/tags/keep")}
+    (self.path / ".git/refs/remotes/origin").mkdir(parents=True, exist_ok=True)
+    (self.path / ".git/refs/remotes/origin/evil").symlink_to(victim / ".git/refs/heads")
+    (self.path / ".git/refs/tags/evil").symlink_to(victim / ".git/refs/tags")
+    result = self.fetched()
+    self.assertFalse(result["ok"], "a partial write through the symlinks was reported as success")
+    after = {ref: self.git("rev-parse", ref, cwd=victim).strip() for ref in before}
+    self.assertEqual(after, before)
+    self.assertFalse((victim / ".git/refs/tags/v1").exists())
+
   def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
     # Codex security: trust was checked on the path, then Git reopened it.
     hostile_marker = self.root / "swapped.ran"
@@ -897,7 +926,8 @@ class TrustModelTest(unittest.TestCase):
     # accept-new could append to ~/.bashrc. Untrusted fetches ignore it.
     bashrc = self.root / ".bashrc"
     bashrc.write_text("# precious\n")
-    args = self.root / "ssh-args"
+    self.marker = self.path / ".git/pwned"           # writable inside the pinned namespace
+    args = self.path / ".git/ssh-args"            # writable inside the pinned namespace
     fake = self.script("ssh", f'echo "$@" >> {args}', exit_code=255)        # records how ssh is called
     patcher = patch.dict(os.environ, {"PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}"})
     patcher.start()
@@ -920,7 +950,7 @@ class TrustModelTest(unittest.TestCase):
     with patch.dict(os.environ, {"GIT_ASKPASS": "/usr/bin/my-askpass"}):
       self.assertNotIn("GIT_ASKPASS", dict(status.repository_policy(self.repo).fetch_env))
     # Without any configured sshCommand, ssh runs in batch mode.
-    args = self.root / "ssh-args"
+    args = self.path / ".git/ssh-args"            # writable inside the pinned namespace
     fake = self.script("ssh", f'echo "$@" > {args}', exit_code=255)
     patcher = patch.dict(os.environ, {"PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}"})
     patcher.start()
@@ -1169,7 +1199,7 @@ class PerRepositoryTrustTest(unittest.TestCase):
     self.assertFalse(marker.exists())
 
   def test_trust_applies_only_to_that_exact_repository(self):
-    markers = {name: self.root / f"{name}.ran" for name in ("a", "b")}
+    markers = {name: self.root / name / ".git/ran" for name in ("a", "b")}   # writable in each pinned namespace
     repos = {}
     for name in ("a", "b"):
       repo, run = self.make_repo(name, {".gitattributes": "*.txt filter=lfs\n", "file.txt": "x\n"})

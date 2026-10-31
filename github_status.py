@@ -771,8 +771,14 @@ def bwrap_command() -> list[str]:
       bwrap = shutil.which("bwrap")
       if bwrap:
         try:
-          if subprocess.run([bwrap, "--dev-bind", "/", "/", "--", "true"], capture_output=True, timeout=5).returncode == 0:
-            found = [bwrap, "--dev-bind", "/", "/"]
+          # The whole filesystem read-only (/dev stays as it is, for
+          # /dev/null and ttys). Only the pinned Git directories are bound
+          # writable (Pin.prefix), so a symlink anywhere inside them that
+          # points elsewhere (another repository's refs) can't be written
+          # through: the write fails instead.
+          command = [bwrap, "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev"]
+          if subprocess.run([*command, "--", "true"], capture_output=True, timeout=5).returncode == 0:
+            found = command
         except (OSError, subprocess.TimeoutExpired):
           pass
       _bwrap = found
@@ -790,8 +796,11 @@ class Pin:
 
   def prefix(self) -> list[str]:
     command = list(bwrap_command())
-    for fd, path in self.binds:
-      command += ["--bind-fd", str(fd), path]
+    for index, (fd, path) in enumerate(self.binds):
+      # binds[0] is the worktree: read-only (status and fetch never write it;
+      # GIT_OPTIONAL_LOCKS=0 keeps the index untouched). The Git and common
+      # directories are the only writable places in the namespace.
+      command += ["--ro-bind-fd" if index == 0 else "--bind-fd", str(fd), path]
     for option, source, destination in self.extra:
       command += [option, source, destination]
     return command + ["--"]
