@@ -393,14 +393,6 @@ class TrustModelTest(unittest.TestCase):
     self.fetched()
     self.assertNotRun()
 
-  def test_http_settings_differing_only_in_url_case_are_all_reset(self):
-    for key in ("http.https://example.com/A/.proxy", "http.https://example.com/a/.proxy"):
-      self.git("config", key, "http://evil:3128")
-    env = dict(status.repository_policy(self.repo).fetch_env)
-    config = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
-    self.assertEqual(config.get("http.https://example.com/A/.proxy"), "")
-    self.assertEqual(config.get("http.https://example.com/a/.proxy"), "")
-
   def test_fetch_ignores_alternate_refs_command(self):
     remote = self.file_remote()
     (self.path / ".git/objects/info").mkdir(exist_ok=True)
@@ -409,20 +401,116 @@ class TrustModelTest(unittest.TestCase):
     self.assertTrue(self.fetched()["ok"])
     self.assertNotRun()
 
-  def test_fetch_resets_repository_network_settings(self):
-    self.global_config("[http]\n\tsslVerify = false\n")
-    for key, value in (("http.sslVerify", "false"), ("http.https://github.com/.proxy", "http://evil:3128"),
-                       ("http.cookieFile", "loot"), ("http.saveCookies", "true"), ("remote.origin.proxy", "http://evil"),
-                       ("http.extraHeader", "X-Leak: 1")):
-      self.git("config", key, value)
-    env = dict(status.repository_policy(self.repo).fetch_env)
-    config = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
-    self.assertEqual(config["http.sslverify"], "false")          # the user's own (global) value wins
-    self.assertEqual(config["http.https://github.com/.proxy"], "")
-    self.assertEqual(config["http.cookiefile"], "")
-    self.assertEqual(config["http.savecookies"], "false")
-    self.assertEqual(config["remote.origin.proxy"], "")
-    self.assertEqual(config["http.extraheader"], "")
+  def recording_server(self, tls_context=None, cookie=False):
+    """A local server that records request headers and answers 404."""
+    import http.server, threading
+    seen: list[str] = []
+    class Handler(http.server.BaseHTTPRequestHandler):
+      def do_GET(self):
+        seen.extend(f"{k}: {v}" for k, v in self.headers.items())
+        self.send_response(404)
+        if cookie:
+          self.send_header("Set-Cookie", "session=secret; Path=/")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+      def log_message(self, *args):
+        pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    if tls_context:
+      server.socket = tls_context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    self.addCleanup(server.server_close)
+    self.addCleanup(server.shutdown)
+    return server.server_address[1], seen
+
+  def test_repository_network_settings_never_reach_the_fetch(self):
+    # The fetch runs on a frozen config: repository http.* / remote proxy
+    # settings, even ones added after the snapshot, are never read.
+    port, seen = self.recording_server(cookie=True)
+    self.git("remote", "add", "origin", f"http://127.0.0.1:{port}/repo.git")
+    self.git("config", "http.extraHeader", "X-Before: 1")
+    def late_edit():
+      for key, value in (("http.extraHeader", "X-After: 1"), ("http.cookieFile", str(self.path / "loot")),
+                         ("http.saveCookies", "true"), ("http.curloptResolve", f"127.0.0.1:{port}:192.0.2.1"),
+                         ("remote.origin.proxy", "http://192.0.2.1:3128")):
+        self.git("config", "--add", key, value)
+    self.inject_after_snapshot(late_edit)
+    self.assertFalse(self.fetched()["ok"])
+    self.assertTrue(seen, "the fetch didn't reach the real server (resolve/proxy settings applied)")
+    self.assertFalse([h for h in seen if h.startswith(("X-Before", "X-After"))], seen)
+    self.assertFalse((self.path / "loot").exists())
+
+  def test_private_ca_from_user_config_applies_despite_repository_tls_settings(self):
+    # Codex P2: the user's global http.sslCAInfo must still apply when the
+    # repository sets its own (URL-specific) TLS settings.
+    import ssl
+    certs = self.root / "certs"
+    certs.mkdir()
+    run = lambda *args: subprocess.run(["openssl", *args], check=True, capture_output=True, cwd=certs)
+    run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=Foamy test CA",
+        "-keyout", "ca.key", "-out", "ca.pem", "-addext", "basicConstraints=critical,CA:TRUE")
+    run("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", "server.key", "-out", "server.csr")
+    (certs / "ext").write_text("subjectAltName=IP:127.0.0.1\n")
+    run("x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "2",
+        "-out", "server.pem", "-extfile", "ext")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certs / "server.pem", certs / "server.key")
+    port, seen = self.recording_server(tls_context=context)
+    self.global_config(f"[http]\n\tsslCAInfo = {certs / 'ca.pem'}\n")
+    url = f"https://127.0.0.1:{port}/repo.git"
+    self.git("remote", "add", "origin", url)
+    self.git("config", f"http.https://127.0.0.1:{port}/.sslCAInfo", "/dev/null")
+    self.git("config", "http.sslVerify", "false")
+    self.assertFalse(self.fetched()["ok"])          # 404, but only after a verified TLS handshake
+    self.assertTrue(seen, "TLS failed: the global private CA didn't apply")
+
+  def test_fetch_updates_real_refs_tags_and_prunes(self):
+    remote = self.file_remote()
+    upstream = self.root / "upstream"
+    self.git("tag", "v1", cwd=upstream)
+    self.git("push", "-q", "origin", "v1", "HEAD:refs/heads/gone", cwd=upstream)
+    self.assertTrue(self.fetched()["ok"])
+    real = lambda ref: subprocess.run(["git", "-C", str(self.path), "rev-parse", "--verify", "-q", ref],
+                                      capture_output=True, text=True).stdout.strip()
+    head = self.git("rev-parse", "HEAD", cwd=upstream).strip()
+    self.assertEqual(real("refs/remotes/origin/main"), head)
+    self.assertEqual(real("refs/remotes/origin/gone"), head)
+    self.assertEqual(real("refs/tags/v1"), head)
+    self.git("push", "-q", "origin", ":refs/heads/gone", cwd=upstream)
+    self.assertTrue(self.fetched()["ok"])
+    self.assertEqual(real("refs/remotes/origin/gone"), "")          # pruned
+    self.assertEqual(real("refs/remotes/origin/main"), head)
+    self.assertFalse(list((Path(os.environ["XDG_CACHE_HOME"]) / "foamy-github/shadow").iterdir()))
+
+  def test_frozen_fetch_handles_reftable_sha256_and_worktrees(self):
+    for variant in ("reftable", "sha256", "worktree", "shallow", "partial"):
+      with self.subTest(variant=variant):
+        base = self.root / variant
+        upstream = base / "upstream"
+        args = {"reftable": ["--ref-format=reftable"], "sha256": ["--object-format=sha256"]}.get(variant, [])
+        subprocess.run(["git", "init", "-q", "-b", "main", *args, str(upstream)], check=True)
+        self.git("commit", "-q", "--allow-empty", "-m", "one", cwd=upstream)
+        (upstream / "big.txt").write_text("blob\n")
+        self.git("add", "big.txt", cwd=upstream)
+        self.git("commit", "-q", "-m", "blob", cwd=upstream)
+        self.git("config", "uploadpack.allowFilter", "true", cwd=upstream)
+        clone = base / "clone"
+        extra = {"reftable": ["--ref-format=reftable"], "shallow": ["--depth=1"], "partial": ["--filter=blob:none"]}.get(variant, [])
+        subprocess.run(["git", "clone", "-q", *extra, "file://" + str(upstream), str(clone)], check=True, capture_output=True)
+        path = clone
+        if variant == "worktree":
+          path = base / "wt"
+          self.git("worktree", "add", "-q", str(path), "-b", "side", cwd=clone)
+        self.git("commit", "-q", "--allow-empty", "-m", "two", cwd=upstream)
+        repo = status.Repository(str(path), variant, "root", variant)
+        result = status.fetch_repository(repo)
+        self.assertTrue(result["ok"], result)
+        fetched = subprocess.run(["git", "-C", str(path), "rev-parse", "refs/remotes/origin/main"],
+                                 capture_output=True, text=True).stdout.strip()
+        self.assertEqual(fetched, self.git("rev-parse", "HEAD", cwd=upstream).strip())
+        symref = subprocess.run(["git", "-C", str(path), "symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
+                                capture_output=True, text=True).stdout.strip()
+        self.assertEqual(symref, "refs/remotes/origin/main")   # clone's symbolic origin/HEAD untouched
 
   def test_repository_extra_headers_are_not_sent_and_global_ones_are(self):
     # Codex: http.extraHeader is a list; a last-wins override left the

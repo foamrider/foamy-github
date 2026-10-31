@@ -117,19 +117,8 @@ READ_TRANSPORT = (("protocol.allow", "never"),) + tuple((f"protocol.{name}.allow
 READ_ENV = (("GIT_NO_LAZY_FETCH", "1"),)
 # remote.<name>.uploadpack is first-wins (a later config value can't replace
 # a repository's), so the command line sets it.
-FETCH_ARGUMENTS = ("--no-auto-maintenance", "--no-recurse-submodules", "--upload-pack=git-upload-pack")
-# http.<var> / http.<url>.<var> and remote.<name>.proxy settings a repository
-# could use to read or redirect authenticated traffic; Git's defaults.
-# Multi-valued: every value is used, an empty value resets the list.
-HTTP_MULTI_VALUED = {"extraheader", "curloptresolve"}
-HTTP_SENSITIVE = {
-  "proxy": "", "proxyauthmethod": "anyauth", "proxysslcert": "", "proxysslkey": "", "proxysslcainfo": "",
-  "sslverify": "true", "sslcainfo": "", "sslcapath": "", "sslcert": "", "sslkey": "", "sslbackend": "",
-  "pinnedpubkey": "", "cookiefile": "", "savecookies": "false", "extraheader": "", "curloptresolve": "",
-  "emptyauth": "false", "proactiveauth": "", "followredirects": "initial",
-}
-
-
+FETCH_ARGUMENTS = ("--no-auto-maintenance", "--no-recurse-submodules", "--upload-pack=git-upload-pack",
+                   "--no-write-fetch-head")
 def ssh_command_allowed(value: str) -> bool:
   """A plain ssh with key/port/user style options: no shell, no ProxyCommand, no -F."""
   if not SHELL_SAFE.match(value):
@@ -172,6 +161,7 @@ def config_environment(pairs: Sequence[tuple[str, str]]) -> tuple[tuple[str, str
 @dataclass(frozen=True)
 class GitPolicy:
   sandboxed: bool = False
+  snapshot: tuple[tuple[str, str, str], ...] = ()
   read: tuple[str, ...] = ()
   read_env: tuple[tuple[str, str], ...] = ()
   status: tuple[str, ...] = ()
@@ -257,45 +247,16 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
       closed.add(canonical_key(key))
       read.append((key, "never"))
 
-  fetch: list[tuple[str, str]] = common + list(FETCH_OVERRIDES)
-  # Credential helpers: reset, then only the user's own (global/system/command).
-  fetch.append(("credential.helper", ""))
-  for scope, key, value in entries:
-    section, _name, variable = split_key(key)
-    if scope in TRUSTED_SCOPES and section == "credential" and variable == "helper":
-      fetch.append((key, value))
-  local = [(key, value) for scope, key, value in entries if scope in LOCAL_SCOPES]
-  done: set[str] = set()
-  for key, value in local:
-    section, name, variable = split_key(key)
-    canonical = canonical_key(key)
-    if canonical in done:
-      continue
-    if section == "http" and variable in HTTP_MULTI_VALUED:
-      # A list: values accumulate and an empty value resets it. Reset, then
-      # replay the user's own values in order (a scalar last-wins override
-      # would leave the repository's entries in place).
-      done.add(canonical)
-      fetch.append((key, ""))
-      fetch += [(trusted_key, trusted_value) for scope, trusted_key, trusted_value in entries
-                if scope in TRUSTED_SCOPES and canonical_key(trusted_key) == canonical and trusted_value != ""]
-    elif (section == "http" and variable in HTTP_SENSITIVE) or (section == "remote" and name and variable == "proxy"):
-      done.add(canonical)
-      fetch.append((key, trusted_values.get(canonical, HTTP_SENSITIVE.get(variable, ""))))
-    elif section == "protocol" and name and variable == "allow" and name not in BASE_PROTOCOLS:
-      # protocol.<name>.allow beats protocol.allow: close remote helpers the
-      # repository opens (ext::, fd::, remote.*.vcs) unless the user did.
-      done.add(canonical)
-      fetch.append((key, trusted_values.get(canonical, "never")))
+  # Fetch runs in a private shadow repository whose config holds only the
+  # user's own settings and the snapshot's remote (see shadow_fetch), so no
+  # repository config is read while it runs; these overrides go on top.
+  fetch: list[tuple[str, str]] = list(FETCH_OVERRIDES)
 
   env = {"SSH_ASKPASS_REQUIRE": "never", "GIT_PROTOCOL_FROM_USER": "0", "GIT_PAGER": "cat"}
   if "GIT_ASKPASS" not in os.environ:
     # Empty wins over core.askPass and SSH_ASKPASS: unattended runs never prompt.
     env["GIT_ASKPASS"] = ""
-  # Exec-capable fetch settings are closed in ways no later config edit can
-  # undo (the repository can change between the snapshot and the fetch):
-  # GIT_ALLOW_PROTOCOL overrides every protocol.* setting, and core.gitProxy
-  # is first-match, so only the environment beats a repository entry.
+  # Transports: only the usual ones plus remote helpers the user allowed.
   allowed = list(BASE_PROTOCOLS)
   for scope, key, value in entries:
     section, name, variable = split_key(key)
@@ -303,8 +264,6 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
         and value.lower() in ("always", "user") and name not in allowed and re.fullmatch(r"[A-Za-z0-9+.-]+", name)):
       allowed.append(name)
   env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
-  if "GIT_PROXY_COMMAND" not in os.environ:
-    env["GIT_PROXY_COMMAND"] = ""
   if "GIT_SSH_COMMAND" not in os.environ:
     # GIT_SSH_COMMAND beats every core.sshCommand, so a local one never runs
     # unless it is a plain `ssh -i key`-style command.
@@ -318,7 +277,7 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
       env["GIT_SSH_COMMAND"] = shlex.quote(os.environ["GIT_SSH"])
     else:
       env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
-  return GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
+  return GitPolicy(sandboxed=True, snapshot=tuple(entries), read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
                    fetch=READ_CONFIG, fetch_env=config_environment(fetch) + tuple(sorted(env.items())),
                    fetch_args=FETCH_ARGUMENTS)
 
@@ -608,7 +567,7 @@ def sandbox_command() -> list[str]:
 def read_git(repo: Repository, arguments: list[str], timeout: float,
              consume: Callable[[bytes], None], output_limit: int | None,
              config: Sequence[str] = READ_CONFIG, env: Sequence[tuple[str, str]] = (),
-             sandbox: bool = False) -> subprocess.CompletedProcess[str]:
+             sandbox: bool = False, stdin: Any = None) -> subprocess.CompletedProcess[str]:
   deadline = time.monotonic() + timeout
   git = (sandbox_command() if sandbox else []) or ["git"]
   global _spawning, _main_spawning
@@ -622,7 +581,7 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
     try:
       process = subprocess.Popen(
         [*git, *config, "-C", repo.path, *arguments],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL if stdin is None else stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,
         # Read-only status must not rewrite the index and wake our own watcher.
         env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", **dict(env)},
@@ -689,14 +648,14 @@ def read_git(repo: Repository, arguments: list[str], timeout: float,
 
 
 def run_git(repo: Repository, arguments: list[str], timeout: int = 8, config: Sequence[str] = READ_CONFIG,
-            env: Sequence[tuple[str, str]] = (), sandbox: bool = False) -> subprocess.CompletedProcess[str]:
+            env: Sequence[tuple[str, str]] = (), sandbox: bool = False, stdin: Any = None) -> subprocess.CompletedProcess[str]:
   output = bytearray()
   def consume(chunk: bytes):
     output.extend(chunk[:max(0, MAX_CAPTURE_BYTES - len(output))])
   # Mutating operations must not be interrupted just for verbose progress.
   # Retain bounded diagnostics while continuing to drain their output.
   mutating = arguments[0] in ("fetch", "push", "pull", "merge")
-  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env, sandbox)
+  result = read_git(repo, arguments, timeout, consume, None if mutating else MAX_CAPTURE_BYTES, config, env, sandbox, stdin)
   # Byte-exact, as above: branch, upstream and Git-dir paths go back into
   # Git arguments and file paths, so they must round-trip.
   result.stdout = os.fsdecode(bytes(output))
@@ -1003,6 +962,176 @@ def concise_error(completed: subprocess.CompletedProcess[str] | None, fallback: 
   return message if len(message) <= 240 else message[:237] + "…"
 
 
+# --- Frozen-config fetch for untrusted repositories --------------------------------
+# A fetch can't run under the no-exec sandbox (it needs ssh and credential
+# helpers), and the repository's config can change between the snapshot and
+# the fetch (an added http.curloptResolve or sslVerify=false would receive
+# the user's credentials). So untrusted repositories fetch inside a private
+# shadow repository: its config is written by us from the user's own
+# global/system settings (as resolved for this repository, includeIf and
+# all) plus the snapshot's origin url, refspecs and object format; objects go
+# straight into the real object store (GIT_OBJECT_DIRECTORY); remote-tracking
+# refs and new tags are then applied to the real repository with
+# `update-ref --stdin` under the no-exec sandbox. The repository's own config
+# is never read during the fetch.
+REF_PREFIXES = ("refs/remotes/origin/", "refs/tags/")
+SEED_PREFIXES = ("refs/remotes/origin/", "refs/tags/", "refs/heads/")
+MAX_REFS = 100000
+SHADOW_ISOLATION = (("GIT_CONFIG_GLOBAL", os.devnull), ("GIT_CONFIG_NOSYSTEM", "1"))
+
+
+def config_quote(value: str) -> str:
+  return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t") + '"'
+
+
+def config_text(entries: Sequence[tuple[str, str]]) -> str:
+  """A config file holding `entries` (key, value) in order, multi-values kept."""
+  lines: list[str] = []
+  for key, value in entries:
+    section, subsection, variable = split_key(key)
+    if not re.fullmatch(r"[a-z0-9.-]+", section) or not re.fullmatch(r"[a-z][a-z0-9-]*", variable):
+      continue
+    if "\n" in subsection or "\0" in subsection:
+      continue
+    header = f"[{section}]" if not has_subsection(key) else f"[{section} {config_quote(subsection)}]"
+    lines += [header, f"\t{variable} = {config_quote(value)}"]
+  return "\n".join(lines) + "\n"
+
+
+def user_config(repo: Repository) -> list[tuple[str, str]]:
+  """The user's global and system settings as Git resolves them for this
+  repository (includes followed, includeIf evaluated), never its own config."""
+  pairs: list[tuple[str, str]] = []
+  for scope in ("--system", "--global"):
+    output = bytearray()
+    result = read_git(repo, ["config", scope, "--includes", "--list", "-z"], 8, output.extend, MAX_CAPTURE_BYTES * 4,
+                      READ_CONFIG, sandbox=True)
+    if result.returncode:
+      continue                              # no such file: nothing to add
+    for record in bytes(output).split(b"\0"):
+      if not record:
+        continue
+      key, _, value = record.partition(b"\n")
+      key_text = os.fsdecode(key)
+      if key_text.lower().startswith(("include.", "includeif.")):
+        continue                            # already expanded above
+      pairs.append((key_text, os.fsdecode(value)))
+  return pairs
+
+
+def refspec_allowed(spec: str) -> bool:
+  """Only refspecs that write remote-tracking refs (or are negative)."""
+  if spec.startswith("^"):
+    return bool(re.fullmatch(r"\^refs/[^:\s]+", spec))
+  source, colon, destination = spec.lstrip("+").partition(":")
+  return bool(colon and source.startswith("refs/") and destination.startswith("refs/remotes/origin/")
+              and not re.search(r"\s|\.\.", spec))
+
+
+def list_refs(repo: Repository, prefixes: Sequence[str], sandbox: bool, env: Sequence[tuple[str, str]] = ()) -> dict[str, str]:
+  output = bytearray()
+  # Symbolic refs (refs/remotes/origin/HEAD) are left alone: never copied, never pruned.
+  result = read_git(repo, ["for-each-ref", "--format=%(objectname) %(refname) %(symref)", *prefixes], 30, output.extend,
+                    MAX_STATUS_BYTES, READ_CONFIG, env, sandbox)
+  if result.returncode:
+    raise InspectionError(concise_error(result, "Could not read the repository's refs. Open it in lazygit."))
+  refs: dict[str, str] = {}
+  for line in bytes(output).splitlines():   # ref names contain no spaces or newlines
+    oid, _, rest = os.fsdecode(line).partition(" ")
+    name, _, symref = rest.partition(" ")
+    if oid and name and not symref:
+      refs[name] = oid
+      if len(refs) > MAX_REFS:
+        raise InspectionError("Too many refs to fetch automatically. Fetch this repository in lazygit.")
+  return refs
+
+
+def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedProcess[str] | None:
+  entries = list(policy.snapshot)
+  local: dict[str, list[str]] = {}
+  for scope, key, value in entries:
+    if scope in LOCAL_SCOPES:
+      local.setdefault(canonical_key(key), []).append(value)
+  urls = local.get("remote.origin.url", [])
+  if not urls:
+    return None
+  directories = git_directories(repo)
+  if not directories:
+    raise InspectionError("Could not find the repository's Git directory. Open it in lazygit.")
+  common = directories[-1]
+  objects = common / "objects"
+  format_ = (local.get("extensions.objectformat") or ["sha1"])[-1].lower()
+  if format_ not in ("sha1", "sha256"):
+    raise InspectionError("Unsupported object format. Fetch this repository in lazygit.")
+  refspecs = [spec for spec in local.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
+    or ["+refs/heads/*:refs/remotes/origin/*"]
+  remote = [("remote.origin.url", urls[0])] + [("remote.origin.fetch", spec) for spec in refspecs]
+  tagopt = (local.get("remote.origin.tagopt") or [""])[-1]
+  if tagopt in ("--no-tags", "--tags"):
+    remote.append(("remote.origin.tagopt", tagopt))
+  core = [("core.repositoryformatversion", "1"), ("core.bare", "true"), ("extensions.objectformat", format_)]
+  partial = (local.get("extensions.partialclone") or [""])[-1]
+  if partial == "origin":
+    core.append(("extensions.partialclone", "origin"))
+    remote.append(("remote.origin.promisor", "true"))
+    for spec in local.get("remote.origin.partialclonefilter", [])[-1:]:
+      if re.fullmatch(r"[A-Za-z0-9:+=._-]+", spec):
+        remote.append(("remote.origin.partialclonefilter", spec))
+
+  before = list_refs(repo, SEED_PREFIXES, sandbox=True, env=policy.read_env)
+  root = cache_dir() / "shadow"
+  root.mkdir(mode=0o700, exist_ok=True)
+  shadow = Path(tempfile.mkdtemp(prefix="fetch-", dir=root))
+  try:
+    (shadow / "refs").mkdir()
+    (shadow / "objects").mkdir()
+    (shadow / "HEAD").write_text("ref: refs/heads/main\n")
+    (shadow / "config").write_text(config_text(core + user_config(repo) + remote))
+    (shadow / "packed-refs").write_text("# pack-refs with: sorted \n" + "".join(
+      f"{oid} {name}\n" for name, oid in sorted(before.items())))
+    shallow = common / "shallow"
+    if shallow.is_file():
+      shutil.copyfile(shallow, shadow / "shallow")
+    view = Repository(str(shadow), repo.name, repo.owner, repo.label)
+    env = list(policy.fetch_env) + list(SHADOW_ISOLATION) + [("GIT_OBJECT_DIRECTORY", str(objects))]
+    completed = run_git(view, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
+                        FETCH_TIMEOUT_SECONDS, policy.fetch, tuple(env))
+    if completed.returncode != 0:
+      return completed
+    after = list_refs(view, REF_PREFIXES, sandbox=False, env=tuple(SHADOW_ISOLATION) + (("GIT_OBJECT_DIRECTORY", str(objects)),))
+    commands: list[str] = []
+    for name in sorted(set(before) | set(after)):
+      if not name.startswith(REF_PREFIXES):
+        continue
+      old, new = before.get(name), after.get(name)
+      if old == new:
+        continue
+      if name.startswith("refs/tags/"):
+        if old is None:                        # follow new tags; never clobber existing ones
+          commands.append(f"create {name} {new}")
+      elif new is None:
+        commands.append(f"delete {name} {old}")
+      elif old is None:
+        commands.append(f"create {name} {new}")
+      else:
+        commands.append(f"update {name} {new} {old}")
+    if (shadow / "shallow").is_file() and shallow.is_file() and (shadow / "shallow").read_bytes() != shallow.read_bytes():
+      shutil.copyfile(shadow / "shallow", common / "shallow.foamy")
+      os.replace(common / "shallow.foamy", shallow)
+    if commands:
+      updates = shadow / "updates"
+      updates.write_text("\n".join(commands) + "\n")
+      with updates.open("rb") as stdin:
+        applied = run_git(repo, ["update-ref", "--stdin"], FETCH_TIMEOUT_SECONDS, policy.read, policy.read_env,
+                          sandbox=True, stdin=stdin)
+      if applied.returncode != 0:
+        return subprocess.CompletedProcess(applied.args, applied.returncode, "",
+          "error: the repository's refs changed while fetching; try again")
+    return completed
+  finally:
+    shutil.rmtree(shadow, ignore_errors=True)
+
+
 def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
   try:
     policy = repository_policy(repo, is_trusted(repo, trusted))
@@ -1027,8 +1156,14 @@ def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[
   for delay in (*FETCH_RETRY_DELAYS, None):
     attempts += 1
     try:
-      completed = run_git(repo, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
-                          FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env)
+      if policy.sandboxed:
+        completed = shadow_fetch(repo, policy)
+      else:
+        completed = run_git(repo, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
+                            FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env)
+    except InspectionError as error:
+      return {"path": repo.path, "name": repo.name, "label": repo.label, "ok": False,
+              "operation": "fetch", "attempts": attempts, "message": str(error)[:240]}
     except (OSError, subprocess.TimeoutExpired):
       completed = None
     if completed is not None and completed.returncode == 0:

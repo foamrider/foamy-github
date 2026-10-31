@@ -66,10 +66,11 @@ include) and its attributes can make Git run programs. A repository unpacked
 from an untrusted archive into one of your folders could otherwise run code
 just by being there.
 
-So unless you trust that repository, every automatic Git command runs with
+So unless you trust that repository, automatic status checks run with
 overrides that Git applies after all config files and includes. They are
 passed as `GIT_CONFIG_COUNT`/`KEY`/`VALUE` pairs, so key names can't be
-misparsed.
+misparsed. Automatic fetches don't read the repository's config at all; see
+below.
 
 | Vector | Status checks | Automatic fetch |
 |---|---|---|
@@ -77,14 +78,14 @@ misparsed.
 | Hooks (`core.hooksPath`, `.git/hooks`) | off (`/dev/null`) | off |
 | Clean/smudge/process filters, including global ones such as Git LFS that the repository's attributes select (LFS reads repository settings like `lfs.extension.*`) | off for every defined filter | off |
 | Submodule worktrees | not inspected | not fetched |
-| `credential.helper` (repository-local) | — | ignored: the list is reset, then only your global/system helpers are added back |
+| `credential.helper` (repository-local) | — | never read (frozen config: only your global/system helpers) |
 | `core.sshCommand` (repository-local) | — | ignored, except a plain `ssh -i key`-style command (no shell syntax, safe `-o` options) |
 | `core.askPass`, prompts | — | off: `GIT_ASKPASS=""` unless you set it, `SSH_ASKPASS_REQUIRE=never`, SSH `BatchMode` |
-| `core.gitProxy` | — | off for repositories that set one |
+| `core.gitProxy` (repository-local) | — | never read |
 | Transports (`ext::`, `fd::`, remote helpers, `remote.*.vcs`, `protocol.*`, every subsection spelling) | none | only http(s), ssh, git and file, plus helpers you allowed globally |
 | On-demand fetches of missing objects from a promisor remote (partial clone) | off (`GIT_NO_LAZY_FETCH=1`, and no transport on older Git) | — |
 | `remote.*.uploadpack` | — | `--upload-pack=git-upload-pack` |
-| `http.*` / `remote.*.proxy` (proxy, TLS, CA, cookies, extra headers, resolve) | — | reset to your global value or Git's default |
+| `http.*` / `remote.*.proxy` (proxy, TLS, CA, cookies, extra headers, resolve) | — | never read: your own global/system values (for example a private CA) apply as usual |
 | `core.alternateRefsCommand` | — | neutral |
 | Automatic maintenance / gc (`gc.recentObjectsHook`, `maintenance.*`, `gc.auto`) | — | not run (`--no-auto-maintenance`) |
 | Commit-graph write | — | off |
@@ -103,12 +104,19 @@ may be executed, so no filter, hook, shell or helper can start at all.
 A plain filter that can't run passes the content through, so counts stay
 right. A `required` one fails the check, which then shows **Status
 unavailable**. This costs about 1.5 ms per repository check (10.4 vs 8.9 ms,
-7 Git calls). **Automatic fetches** can't run under that restriction, because
-they need ssh and your credential helpers. Their command-running settings are
-closed in ways a later config change can't undo: hooks, credential helpers and
-`core.sshCommand` through command-scope or environment overrides,
-transports through `GIT_ALLOW_PROTOCOL`, `core.gitProxy` through
-`GIT_PROXY_COMMAND`, and upload-pack and maintenance on the command line.
+7 Git calls).
+
+**Automatic fetches** can't run under that restriction, because they need ssh
+and your credential helpers. Instead they run in a private, throwaway shadow
+repository whose config we write. It holds only your global and system
+settings, as Git resolves them for that repository (`includeIf` included),
+plus the snapshot's origin URL, fetch refspecs and object format. New objects
+go straight into the repository's object store. The updated
+`refs/remotes/origin/*` and new tags are then applied with `git update-ref`
+under the no-exec restriction. The repository's own config is never read
+during a fetch, so changing it mid-fetch has no effect. Symbolic refs such as
+`origin/HEAD` and existing tags are left alone. Reftable, SHA-256, worktrees,
+shallow and partial clones are handled.
 
 Where `setpriv` or Landlock is missing (Omarchy's kernel and util-linux have
 both), status checks fall back to the snapshot overrides alone. A repository
