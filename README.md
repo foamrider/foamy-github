@@ -107,20 +107,19 @@ unavailable**. This costs about 1.5 ms per repository check (10.4 vs 8.9 ms,
 7 Git calls).
 
 **Automatic fetches** can't run under that restriction, because they need ssh
-and your credential helpers. Instead they run in a private, throwaway shadow
-repository. Git reads your global and system config natively, so
-`includeIf`, bare booleans and empty resets behave exactly as usual. The
-shadow's own config replaces only the repository's: the snapshot's origin URL,
-fetch refspecs, tag option, object format and partial-clone settings. Your
-`includeIf "gitdir:…"` files that match the real repository are included by
-path, and `onbranch` sees the real branch. Relative or `~` origins are
-resolved like Git does, after your `insteadOf` rules.
+and your credential helpers. Instead, Git fetches the repository in place,
+with a read-only minimal config mounted over the repository's own (in a
+private mount namespace, see below). That config holds only the snapshot's
+origin URL, fetch refspecs, tag option, repository format and partial-clone
+settings.
 
-New objects go straight into the repository's object store. The updated
-`refs/remotes/origin/*` and new tags are then applied with `git update-ref`
-under the no-exec restriction. The repository's own config is never read
-during a fetch. Symbolic refs such as `origin/HEAD` and existing tags are left
-alone. Reftable, SHA-256, worktrees, shallow and partial clones are handled.
+Git reads your system and global config natively, against the repository's
+real path. So `includeIf` (gitdir, onbranch, hasconfig), bare booleans, empty
+resets, `insteadOf`, relative and `~` origins all behave exactly as in a
+terminal. The repository's own config is never read during a fetch. Hooks
+are off, and objects, refs and the shallow file are written by Git itself.
+Existing tags and `origin/HEAD` are left alone. Reftable, SHA-256, worktrees,
+shallow and partial clones work as usual.
 
 **Pinned repositories.** A repository's directories are opened once, and
 its identity (device, inode, birth time) is taken from those open
@@ -128,7 +127,12 @@ directories. Git then runs in a private mount namespace (`bubblewrap`) where
 the repository's paths are bound to exactly those directories. A rename or
 symlink swap during a check therefore can't make a trusted check run another
 repository's config, and can't redirect a fetch's objects or ref updates. This
-applies to trusted checks and fetches, and to every automatic fetch. Without
+applies to trusted checks and fetches, and to every automatic fetch. The
+identity covers the worktree as well as the Git and common directories, so
+a different worktree whose `.git` file points back at the original Git
+directory isn't trusted either. Trust covers one repository: submodule
+worktrees aren't inspected or fetched in automatic runs, even for trusted
+repositories. Without
 bubblewrap, trusted repositories are checked like untrusted ones, and
 automatic fetches of untrusted repositories are skipped with a message.
 

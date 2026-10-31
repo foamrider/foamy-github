@@ -136,7 +136,10 @@ class GitPolicy:
   fetch_args: tuple[str, ...] = ()
 
 
-TRUSTED_POLICY = GitPolicy()
+# Trusted repositories run their own config, but not their submodules': trust
+# is per repository, and a submodule worktree is a separate repository (whose
+# config would otherwise run during status or an on-demand submodule fetch).
+TRUSTED_POLICY = GitPolicy(status=("--ignore-submodules=dirty",), fetch_args=("--no-recurse-submodules",))
 DEFAULT_POLICY = GitPolicy(sandboxed=True, read=READ_CONFIG, read_env=config_environment(READ_OVERRIDES + READ_TRANSPORT) + READ_ENV,
                            status=("--ignore-submodules=dirty",),
                            fetch=READ_CONFIG, fetch_args=FETCH_ARGUMENTS)
@@ -209,9 +212,9 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
       closed.add(canonical_key(key))
       read.append((key, "never"))
 
-  # Fetch runs in a private shadow repository whose config holds only the
-  # user's own settings and the snapshot's remote (see shadow_fetch), so no
-  # repository config is read while it runs; these overrides go on top.
+  # Fetch runs with the repository's own config replaced by a minimal one
+  # (see overlay_fetch), so no repository config is read while it runs;
+  # these overrides go on top.
   fetch: list[tuple[str, str]] = list(FETCH_OVERRIDES)
 
   env = {"SSH_ASKPASS_REQUIRE": "never", "GIT_PROTOCOL_FROM_USER": "0", "GIT_PAGER": "cat"}
@@ -226,8 +229,8 @@ def repository_policy(repo: "Repository", trusted: bool = False) -> GitPolicy:
         and value.lower() in ("always", "user") and name not in allowed and re.fullmatch(r"[A-Za-z0-9+.-]+", name)):
       allowed.append(name)
   env["GIT_ALLOW_PROTOCOL"] = ":".join(allowed)
-  # SSH: the shadow fetch never reads the repository's own config, so its
-  # core.sshCommand can't apply; shadow_fetch() uses the user's (or BatchMode ssh).
+  # SSH: the overlay fetch never reads the repository's own config, so its
+  # core.sshCommand can't apply; overlay_fetch() uses the user's (or BatchMode ssh).
   return GitPolicy(sandboxed=True, snapshot=tuple(entries), read=READ_CONFIG, read_env=config_environment(read) + READ_ENV, status=("--ignore-submodules=dirty",),
                    fetch=READ_CONFIG, fetch_env=config_environment(fetch) + tuple(sorted(env.items())),
                    fetch_args=FETCH_ARGUMENTS)
@@ -701,24 +704,32 @@ def birth_time_ns(path: Path | None, fd: int = -100) -> int:
     return 0
 
 
+def directory_identity(path: Path | None = None, fd: int | None = None) -> str:
+  """dev:inode:birth time of a directory (by path, not following a final
+  symlink, or by open fd); "" without a birth time (fail closed)."""
+  try:
+    info = os.fstat(fd) if fd is not None else os.stat(path, follow_symlinks=False)
+  except OSError:
+    return ""
+  born = birth_time_ns(None, fd) if fd is not None else birth_time_ns(path)
+  return f"{info.st_dev}:{info.st_ino}:{born}" if born > 0 else ""
+
+
+def combined_identity(parts: Sequence[str]) -> str:
+  return "|".join(parts) if parts and all(parts) else ""
+
+
 def repository_identity(repo: "Repository") -> str:
-  """Which repository this is, beyond its path: the Git directory's device,
-  inode and birth time. Deleting and re-cloning, or swapping in another
-  repository at the same path, gives a new identity (a reused inode number
-  can't also reproduce the birth time)."""
+  """Which repository this is, beyond its path: the device, inode and birth
+  time of its worktree, Git directory and (if separate) common directory.
+  Deleting and re-cloning, swapping in another repository, or swapping in
+  another worktree whose .git file points back at the original Git
+  directory all give a new identity (a reused inode number can't also
+  reproduce the birth time). No birth time: no identity, so no trust."""
   directories = git_directories(repo)
   if not directories:
     return ""
-  try:
-    info = os.stat(directories[0], follow_symlinks=False)
-  except OSError:
-    return ""
-  born = birth_time_ns(directories[0])
-  if born <= 0:
-    # No birth time on this filesystem: device and inode alone can be reused
-    # by a replacement, so this repository can't be trusted (fail closed).
-    return ""
-  return f"{info.st_dev}:{info.st_ino}:{born}"
+  return combined_identity([directory_identity(Path(repo.path))] + [directory_identity(d) for d in directories])
 
 
 # --- Pinned repositories ------------------------------------------------------------
@@ -752,11 +763,14 @@ class Pin:
   binds: tuple[tuple[int, str], ...]        # (open directory fd, the path it is bound to)
   identity: str
   common: int                               # fd of the common Git directory
+  extra: tuple[tuple[str, str, str], ...] = ()   # further bwrap mounts (option, source, destination)
 
   def prefix(self) -> list[str]:
     command = list(bwrap_command())
     for fd, path in self.binds:
       command += ["--bind-fd", str(fd), path]
+    for option, source, destination in self.extra:
+      command += [option, source, destination]
     return command + ["--"]
 
   def fds(self) -> tuple[int, ...]:
@@ -772,12 +786,6 @@ class Pin:
 
 def open_directory(path: Path | str, dir_fd: int | None = None) -> int:
   return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
-
-
-def fd_identity(fd: int) -> str:
-  info = os.fstat(fd)
-  born = birth_time_ns(None, fd)
-  return f"{info.st_dev}:{info.st_ino}:{born}" if born > 0 else ""
 
 
 def pin_repository(repo: "Repository") -> Pin | None:
@@ -805,7 +813,8 @@ def pin_repository(repo: "Repository") -> Pin | None:
       common_path = (git_path / os.fsdecode(commondir)).resolve()
       common = open_directory(common_path)
       opened.append((common, str(common_path)))
-    return Pin(binds=tuple(opened), identity=fd_identity(git_dir), common=common)
+    return Pin(binds=tuple(opened), identity=combined_identity([directory_identity(fd=fd) for fd, _ in opened]),
+               common=common)
   except BaseException:
     for fd, _ in opened:
       os.close(fd)
@@ -845,8 +854,8 @@ def parse_trusted(raw: str) -> Trust:
             and isinstance(item.get("identity"), str) and 0 < len(item["identity"]) <= 128
             and len(os.fsencode(item["path"])) <= MAX_METADATA_BYTES):
       raise ValueError("Trusted repositories must be a list of repositories")
-    if not re.fullmatch(r"\d+:\d+:[1-9]\d*", item["identity"]):
-      continue                              # no birth time (or malformed): trusts nothing
+    if not re.fullmatch(r"\d+:\d+:[1-9]\d*(\|\d+:\d+:[1-9]\d*){1,2}", item["identity"]):
+      continue                              # no birth time, an older single-directory identity, or malformed
     entries.add((os.path.realpath(item["path"]), item["identity"]))
   return Trust(entries=frozenset(entries))
 
@@ -1046,21 +1055,12 @@ def concise_error(completed: subprocess.CompletedProcess[str] | None, fallback: 
   return message if len(message) <= 240 else message[:237] + "…"
 
 
-# --- Frozen-config fetch for untrusted repositories --------------------------------
+# --- Overlay fetch for untrusted repositories ------------------------------------
 # A fetch can't run under the no-exec sandbox (it needs ssh and credential
 # helpers), and the repository's config can change between the snapshot and
-# the fetch (an added http.curloptResolve or sslVerify=false would receive
-# the user's credentials). So untrusted repositories fetch inside a private
-# shadow repository: its config is written by us from the user's own
-# global/system settings (as resolved for this repository, includeIf and
-# all) plus the snapshot's origin url, refspecs and object format; objects go
-# straight into the real object store (GIT_OBJECT_DIRECTORY); remote-tracking
-# refs and new tags are then applied to the real repository with
-# `update-ref --stdin` under the no-exec sandbox. The repository's own config
-# is never read during the fetch.
-REF_PREFIXES = ("refs/remotes/origin/", "refs/tags/")
-SEED_PREFIXES = ("refs/remotes/origin/", "refs/tags/", "refs/heads/")
-MAX_REFS = 100000
+# the fetch. So untrusted repositories fetch in their pinned mount namespace
+# with a minimal config bound over their own (overlay_fetch): Git never reads
+# the repository's config, and reads the user's exactly as usual.
 def config_quote(value: str) -> str:
   return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t") + '"'
 
@@ -1088,124 +1088,18 @@ def refspec_allowed(spec: str) -> bool:
               and not re.search(r"\s|\.\.", spec))
 
 
-def list_refs(repo: Repository, prefixes: Sequence[str], sandbox: bool, env: Sequence[tuple[str, str]] = (),
-              pin: "Pin | None" = None) -> dict[str, str]:
-  output = bytearray()
-  # Symbolic refs (refs/remotes/origin/HEAD) are left alone: never copied, never pruned.
-  result = read_git(repo, ["for-each-ref", "--format=%(objectname) %(refname) %(symref)", *prefixes], 30, output.extend,
-                    MAX_STATUS_BYTES, READ_CONFIG, env, sandbox, pin=pin)
-  if result.returncode:
-    raise InspectionError(concise_error(result, "Could not read the repository's refs. Open it in lazygit."))
-  refs: dict[str, str] = {}
-  for line in bytes(output).splitlines():   # ref names contain no spaces or newlines
-    oid, _, rest = os.fsdecode(line).partition(" ")
-    name, _, symref = rest.partition(" ")
-    if oid and name and not symref:
-      refs[name] = oid
-      if len(refs) > MAX_REFS:
-        raise InspectionError("Too many refs to fetch automatically. Fetch this repository in lazygit.")
-  return refs
+def overlay_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedProcess[str] | None:
+  """Fetch an untrusted repository with its own config replaced.
 
-
-def is_relative_local(url: str) -> bool:
-  if "://" in url or os.path.isabs(url):
-    return False
-  return not (re.match(r"^[^/]*:", url) and not url.startswith(("./", "../")))   # scp-style host:path
-
-
-def resolve_origin(url: str, rewritten: str, repo: Repository) -> str:
-  """The origin for the shadow. `rewritten` is `url` after the user's
-  insteadOf rules (asked from Git itself). Git expands `~/` and `~user/` and
-  resolves a relative local path from the repository's top level; the shadow
-  lives elsewhere, so such a result is stored absolute. Anything else keeps
-  the original URL, and Git rewrites it once with the same user config."""
-  if rewritten.startswith("~"):
-    return os.path.expanduser(rewritten)
-  if is_relative_local(rewritten):
-    return os.path.join(repo.path, rewritten)
-  return url
-
-
-def replace_in_directory(directory: "Path | int", name: str, data: bytes, mode: int = 0o644) -> None:
-  """Atomically replace `directory/name` with `data` without following any
-  symlink the repository's owner (or anyone who can write there) planted: the
-  directory is opened with O_NOFOLLOW, the temporary file is created
-  exclusively under a random name with O_NOFOLLOW, then renamed over `name`
-  (rename never follows a symlink at the destination)."""
-  directory_fd = (os.dup(directory) if isinstance(directory, int)
-                  else os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC))
-  try:
-    temporary = f".{name}.foamy-{secrets.token_hex(8)}"
-    file_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
-                      dir_fd=directory_fd)
-    try:
-      with os.fdopen(file_fd, "wb", closefd=False) as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(file_fd)
-      os.fchmod(file_fd, mode)
-    finally:
-      os.close(file_fd)
-    try:
-      os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-    except OSError:
-      os.unlink(temporary, dir_fd=directory_fd)
-      raise
-  finally:
-    os.close(directory_fd)
-
-
-def read_regular(path: Path, limit: int) -> bytes | None:
-  """A regular file's bytes (no symlinks, FIFOs or devices), None if absent,
-  InspectionError if it is something else or larger than `limit`."""
-  try:
-    info = os.lstat(path)
-  except FileNotFoundError:
-    return None
-  if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
-    raise InspectionError(f"Unexpected {path.name} file. Fetch this repository in lazygit.")
-  data = read_bounded(path, limit + 1)
-  if len(data) > limit:
-    raise InspectionError(f"Unexpected {path.name} file. Fetch this repository in lazygit.")
-  return data
-
-
-def gitdir_includes(repo: Repository, pin: Pin) -> list[str]:
-  """The user's `includeIf "gitdir:…"` files that apply to the real repository.
-  The shadow lives elsewhere, so Git couldn't match them there; they are
-  included by path (Git reads them natively, bools and resets intact). Other
-  conditions (hasconfig, onbranch) Git evaluates in the shadow itself."""
-  files: list[str] = []
-  for scope in ("--system", "--global"):
-    output = bytearray()
-    result = read_git(repo, ["config", scope, "--includes", "--show-origin", "--list", "-z"], 8, output.extend,
-                      MAX_CAPTURE_BYTES * 4, READ_CONFIG, sandbox=True, pin=pin)
-    if result.returncode:
-      continue                              # no such file
-    parts = bytes(output).split(b"\0")
-    entries = [(os.fsdecode(parts[i]), os.fsdecode(parts[i + 1])) for i in range(0, len(parts) - 1, 2)]
-    origins = {origin[len("file:"):] for origin, _ in entries if origin.startswith("file:")}
-    for origin, record in entries:
-      key, _, value = record.partition("\n")
-      section, condition, variable = split_key(key)
-      if section == "includeif" and variable == "path" and condition.lower().startswith(("gitdir:", "gitdir/i:")) \
-          and origin.startswith("file:") and value:
-        target = os.path.expanduser(value)
-        if not os.path.isabs(target):
-          target = os.path.join(os.path.dirname(origin[len("file:"):]), target)
-        if target in origins and target not in files:
-          files.append(target)
-  return files
-
-
-def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedProcess[str] | None:
-  """Fetch an untrusted repository in a throwaway shadow repository.
-
-  Git reads the user's global and system config natively (includeIf, bare
-  booleans and empty resets behave exactly as usual); the shadow's own config
-  replaces only the repository's and holds nothing but the origin from the
-  snapshot. The real repository is pinned (see Pin): objects and ref updates
-  can only reach the directories that were inspected."""
+  Git runs in the pinned repository's mount namespace (see Pin) with a
+  read-only minimal config bound over <commondir>/config and, for linked
+  worktrees, config.worktree: only the snapshot's origin url, refspecs, tag
+  option, repository format/extensions and partial-clone keys. Git reads the
+  user's system and global config natively and with its real Git directory
+  path, so includeIf gitdir/onbranch/hasconfig, bare booleans, empty resets
+  and every precedence rule are Git's own. Objects, refs and the shallow
+  file are written by Git itself into the pinned repository. Hooks are off
+  (core.hooksPath=/dev/null at command scope)."""
   entries = list(policy.snapshot)
   local: dict[str, list[str]] = {}
   for scope, key, value in entries:
@@ -1214,108 +1108,72 @@ def shadow_fetch(repo: Repository, policy: GitPolicy) -> subprocess.CompletedPro
   urls = local.get("remote.origin.url", [])
   if not urls:
     return None
-  format_ = (local.get("extensions.objectformat") or ["sha1"])[-1].lower()
-  if format_ not in ("sha1", "sha256"):
-    raise InspectionError("Unsupported object format. Fetch this repository in lazygit.")
+  value_safe = re.compile(r"[A-Za-z0-9:+=._/-]+")
+  minimal: list[tuple[str, str]] = []
+  extensions = [(key, values[-1]) for key, values in local.items()
+                if key.startswith("extensions.") and key != "extensions.worktreeconfig" and value_safe.fullmatch(values[-1])]
+  version = (local.get("core.repositoryformatversion") or ["0"])[-1]
+  minimal.append(("core.repositoryformatversion", "1" if extensions or version == "1" else "0"))
+  bare = (local.get("core.bare") or ["false"])[-1].lower()
+  minimal.append(("core.bare", "true" if bare in ("true", "yes", "on", "1") else "false"))
+  shared = (local.get("core.sharedrepository") or [""])[-1]
+  if shared and value_safe.fullmatch(shared):
+    minimal.append(("core.sharedRepository", shared))
+  minimal += extensions
   refspecs = [spec for spec in local.get("remote.origin.fetch", []) if refspec_allowed(spec)] \
     or ["+refs/heads/*:refs/remotes/origin/*"]
-  core = [("core.repositoryformatversion", "1"), ("core.bare", "true"), ("extensions.objectformat", format_)]
-  remote_tail = [("remote.origin.fetch", spec) for spec in refspecs]
+  minimal.append(("remote.origin.url", urls[0]))
+  minimal += [("remote.origin.fetch", spec) for spec in refspecs]
   tagopt = (local.get("remote.origin.tagopt") or [""])[-1]
   if tagopt in ("--no-tags", "--tags"):
-    remote_tail.append(("remote.origin.tagopt", tagopt))
+    minimal.append(("remote.origin.tagopt", tagopt))
   # A partial clone: Git 2.43 records only remote.origin.promisor and
   # partialclonefilter; older clones also extensions.partialClone.
-  filters = local.get("remote.origin.partialclonefilter", [])
+  filters = [spec for spec in local.get("remote.origin.partialclonefilter", []) if value_safe.fullmatch(spec)]
   promisor = (local.get("remote.origin.promisor") or ["false"])[-1].lower() in ("true", "yes", "on", "1")
   if promisor or filters or (local.get("extensions.partialclone") or [""])[-1] == "origin":
-    core.append(("extensions.partialclone", "origin"))
-    remote_tail.append(("remote.origin.promisor", "true"))
-    for spec in filters[-1:]:
-      if re.fullmatch(r"[A-Za-z0-9:+=._-]+", spec):
-        remote_tail.append(("remote.origin.partialclonefilter", spec))
+    minimal.append(("remote.origin.promisor", "true"))
+    minimal += [("remote.origin.partialclonefilter", spec) for spec in filters[-1:]]
 
   pin = pin_repository(repo)
   if pin is None:
     raise InspectionError("Automatic fetch needs bubblewrap (bwrap) to run safely. Fetch this repository in lazygit.")
-  shadow: Path | None = None
+  files: list[str] = []
   try:
-    objects = os.path.join(pin.binds[-1][1], "objects")
-    head = run_git(repo, ["symbolic-ref", "-q", "HEAD"], config=policy.read, env=policy.read_env, sandbox=True, pin=pin)
-    branch = head.stdout.strip() if head.returncode == 0 and head.stdout.strip().startswith("refs/heads/") else "refs/heads/main"
-    before = list_refs(repo, SEED_PREFIXES, sandbox=True, env=policy.read_env, pin=pin)
-    includes = [("include.path", path) for path in gitdir_includes(repo, pin)]
-    root = cache_dir() / "shadow"
+    root = cache_dir() / "overlay"
     root.mkdir(mode=0o700, exist_ok=True)
-    shadow = Path(tempfile.mkdtemp(prefix="fetch-", dir=root))
-    (shadow / "refs").mkdir()
-    (shadow / "objects").mkdir()
-    # Byte-exact writes (os.fsencode), matching how config and refs are read.
-    (shadow / "HEAD").write_bytes(os.fsencode(f"ref: {branch}\n"))          # for includeIf onbranch
-    def write_config(url: str):
-      (shadow / "config").write_bytes(os.fsencode(config_text(core + includes + [("remote.origin.url", url)] + remote_tail)))
-    write_config(urls[0])
-    (shadow / "packed-refs").write_bytes(os.fsencode("# pack-refs with: sorted \n" + "".join(
-      f"{oid} {name}\n" for name, oid in sorted(before.items()))))
-    original_shallow = read_regular(Path(f"/proc/self/fd/{pin.common}") / "shallow", MAX_STATUS_BYTES)
-    if original_shallow is not None:
-      (shadow / "shallow").write_bytes(original_shallow)
-    view = Repository(str(shadow), repo.name, repo.owner, repo.label)
-    # The user's insteadOf rules, from Git itself (no repository config here).
-    asked = run_git(view, ["ls-remote", "--get-url", "origin"], config=READ_CONFIG)
-    rewritten = asked.stdout.strip() if asked.returncode == 0 and asked.stdout.strip() else urls[0]
-    resolved = resolve_origin(urls[0], rewritten, repo)
-    if resolved != urls[0]:
-      write_config(resolved)
+    def private_file(data: bytes) -> str:
+      descriptor, name = tempfile.mkstemp(prefix="config-", dir=root)
+      with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data)
+      files.append(name)
+      return name
+    config = private_file(os.fsencode(config_text(minimal)))
+    empty = private_file(b"")
+    git_path, common_path = pin.binds[1][1], pin.binds[-1][1]
+    extra = [("--ro-bind", config, os.path.join(common_path, "config"))]
+    for directory in {git_path, common_path}:
+      if os.path.lexists(os.path.join(directory, "config.worktree")):
+        extra.append(("--ro-bind", empty, os.path.join(directory, "config.worktree")))
+    overlay = replace(pin, extra=tuple(extra))
     env = dict(policy.fetch_env)
     if "GIT_SSH_COMMAND" not in os.environ and "GIT_SSH" not in os.environ:
-      configured = run_git(view, ["config", "--get", "core.sshCommand"], config=READ_CONFIG)
+      configured = run_git(repo, ["config", "--get", "core.sshCommand"], config=READ_CONFIG, sandbox=True, pin=overlay)
       if configured.returncode != 0 or not configured.stdout.strip():
         env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"       # else the user's own core.sshCommand
-    env["GIT_OBJECT_DIRECTORY"] = objects
-    completed = run_git(view, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
-                        FETCH_TIMEOUT_SECONDS, policy.fetch, tuple(env.items()), pin=pin)
-    if completed.returncode != 0:
-      return completed
-    after = list_refs(view, REF_PREFIXES, sandbox=False, env=(("GIT_OBJECT_DIRECTORY", objects),), pin=pin)
-    commands: list[str] = []
-    for name in sorted(set(before) | set(after)):
-      if not name.startswith(REF_PREFIXES):
-        continue
-      old, new = before.get(name), after.get(name)
-      if old == new:
-        continue
-      if name.startswith("refs/tags/"):
-        if old is None:                        # follow new tags; never clobber existing ones
-          commands.append(f"create {name} {new}")
-      elif new is None:
-        commands.append(f"delete {name} {old}")
-      elif old is None:
-        commands.append(f"create {name} {new}")
-      else:
-        commands.append(f"update {name} {new} {old}")
-    if original_shallow is not None and (shadow / "shallow").is_file():
-      updated = (shadow / "shallow").read_bytes()
-      if updated != original_shallow:
-        # The only file written inside the repository's Git directory, through its pinned fd.
-        replace_in_directory(pin.common, "shallow", updated)
-    if commands:
-      updates = shadow / "updates"
-      updates.write_bytes(os.fsencode("\n".join(commands) + "\n"))
-      with updates.open("rb") as stdin:
-        applied = run_git(repo, ["update-ref", "--stdin"], FETCH_TIMEOUT_SECONDS, policy.read, policy.read_env,
-                          sandbox=True, stdin=stdin, pin=pin)
-      if applied.returncode != 0:
-        return subprocess.CompletedProcess(applied.args, applied.returncode, "",
-          "error: the repository's refs changed while fetching; try again")
-    if repository_identity(repo) != pin.identity:
+    completed = run_git(repo, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
+                        FETCH_TIMEOUT_SECONDS, policy.fetch, tuple(env.items()), pin=overlay)
+    if completed.returncode == 0 and repository_identity(repo) != pin.identity:
       return subprocess.CompletedProcess(completed.args, 1, "",
         "error: the repository was moved or replaced during the fetch; try again")
     return completed
   finally:
     pin.close()
-    if shadow is not None:
-      shutil.rmtree(shadow, ignore_errors=True)
+    for name in files:
+      try:
+        os.unlink(name)
+      except OSError:
+        pass
 
 
 def fetch_repository(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
@@ -1363,7 +1221,7 @@ def _fetch_pinned(repo: Repository, pin: "Pin | None") -> dict[str, Any]:
     attempts += 1
     try:
       if policy.sandboxed:
-        completed = shadow_fetch(repo, policy)
+        completed = overlay_fetch(repo, policy)
       else:
         completed = run_git(repo, ["fetch", "--quiet", "--prune", *policy.fetch_args, "origin"],
                             FETCH_TIMEOUT_SECONDS, policy.fetch, policy.fetch_env, pin=policy.pin)

@@ -37,7 +37,7 @@ class GitErrorsTest(unittest.TestCase):
          patch.object(module, "repository_policy", return_value=module.TRUSTED_POLICY):
       self.assertTrue(module.fetch_repository(repo)["ok"])
     self.assertEqual(git.call_count, 2)
-    self.assertEqual(git.call_args.args[1], ["fetch", "--quiet", "--prune", "origin"])  # trusted: repository config as is
+    self.assertEqual(git.call_args.args[1], ["fetch", "--quiet", "--prune", "--no-recurse-submodules", "origin"])  # trusted: own config, no submodules
 
   def test_fallback_and_long_diagnostics(self):
     self.assertEqual(module.concise_error(None, "Fetch failed"), "Fetch failed")

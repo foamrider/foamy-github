@@ -492,6 +492,44 @@ class TrustModelTest(unittest.TestCase):
     self.assertNotIn("X-Removed", headers)
     self.assertNotIn("X-Local", headers)
 
+  def test_gitdir_includes_keep_their_place_in_user_config(self):
+    # Codex P1: a gitdir-matched include replayed at local scope outranked
+    # later global settings (resurrecting sslVerify=false and cleared headers).
+    port, seen, _ca = self.tls_server(trusted_ca=False)
+    (self.root / "gitdir.inc").write_text("[http]\n\tsslVerify = false\n\textraHeader = X-Cleared: secret\n")
+    self.global_config(f'[includeIf "gitdir:{self.path}/"]\n\tpath = {self.root}/gitdir.inc\n'
+                       '[http]\n\tsslVerify = true\n\textraHeader =\n')
+    self.git("remote", "add", "origin", f"https://127.0.0.1:{port}/repo.git")
+    self.assertFalse(self.fetched()["ok"])
+    self.assertEqual(seen, [], "the included sslVerify=false won over the later global sslVerify=true")
+
+  def test_trusted_submodules_are_not_inspected(self):
+    # Codex security: trust covers one repository, not its submodules.
+    sub = self.root / "subsource"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(sub)], check=True)
+    self.git("commit", "-q", "--allow-empty", "-m", "a", cwd=sub)
+    self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "sub")
+    self.git("commit", "-qm", "sub")
+    trust = status.parse_trusted(json.dumps([{"path": self.repo.path, "identity": status.repository_identity(self.repo)}]))
+    self.git("config", "core.fsmonitor", self.evil, cwd=self.path / "sub")
+    (self.path / "sub/new.txt").write_text("dirty\n")
+    row = status.repository_status(self.repo, trust)
+    self.assertTrue(row["trusted"] and row["complete"], row)
+    self.assertNotRun()
+
+  def test_swapped_worktree_pointing_at_the_trusted_git_dir_is_untrusted(self):
+    # Codex security: a replacement worktree whose .git file points back at
+    # the original (unchanged) Git directory passed a Git-dir-only identity.
+    trust = status.parse_trusted(json.dumps([{"path": self.repo.path, "identity": status.repository_identity(self.repo)}]))
+    moved = self.root / "moved-worktree"
+    os.rename(self.path, moved)
+    self.path.mkdir()
+    (self.path / ".git").write_text(f"gitdir: {moved / '.git'}\n")
+    self.git("config", "core.fsmonitor", self.evil, cwd=moved)     # trusted config, wrong worktree
+    row = status.repository_status(self.repo, trust)
+    self.assertFalse(row["trusted"], row)
+    self.assertNotRun()
+
   def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
     # Codex security: trust was checked on the path, then Git reopened it.
     hostile_marker = self.root / "swapped.ran"
@@ -521,16 +559,13 @@ class TrustModelTest(unittest.TestCase):
     victim_before = self.git("rev-parse", "HEAD").strip()
     self.git("update-ref", "refs/remotes/origin/main", victim_before, cwd=victim)
     self.git("update-ref", "refs/remotes/origin/main", victim_before)
-    real_list_refs = status.list_refs
-    swapped = []
-    def swap_after_first(*args, **kwargs):
-      result = real_list_refs(*args, **kwargs)
-      if not swapped:
-        swapped.append(True)
-        os.rename(self.path, self.root / "moved-away")
-        os.symlink(victim, self.path)
-      return result
-    with patch.object(status, "list_refs", side_effect=swap_after_first):
+    real_pin = status.pin_repository
+    def pin_then_swap(repo):
+      pin = real_pin(repo)
+      os.rename(self.path, self.root / "moved-away")             # right after the pin
+      os.symlink(victim, self.path)
+      return pin
+    with patch.object(status, "pin_repository", side_effect=pin_then_swap):
       status.fetch_repository(self.repo)
     self.assertEqual(self.git("rev-parse", "refs/remotes/origin/main", cwd=victim).strip(), victim_before,
                      "the fetch updated another repository")
@@ -575,7 +610,7 @@ class TrustModelTest(unittest.TestCase):
     self.assertTrue(self.fetched()["ok"])
     self.assertEqual(real("refs/remotes/origin/gone"), "")          # pruned
     self.assertEqual(real("refs/remotes/origin/main"), head)
-    self.assertFalse(list((Path(os.environ["XDG_CACHE_HOME"]) / "foamy-github/shadow").iterdir()))
+    self.assertFalse(list((Path(os.environ["XDG_CACHE_HOME"]) / "foamy-github/overlay").iterdir()))   # no leftovers
 
   def test_relative_and_non_utf8_local_origins_fetch(self):
     # Codex: `../remote.git` resolved from the shadow instead of the
@@ -645,27 +680,25 @@ class TrustModelTest(unittest.TestCase):
                              env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
     self.assertNotEqual(missing.returncode, 0, "the new blob was downloaded: the clone's filter was dropped")
 
-  def test_shallow_update_never_follows_a_planted_symlink(self):
-    # Codex security: a predictable temporary name in the Git dir, written
-    # with a symlink-following copy, overwrote an outside file.
+  def test_shallow_fetch_never_follows_planted_symlinks(self):
+    # Codex security: a shallow update must not write through a planted
+    # symlink. Git itself now writes the shallow file (O_EXCL lock file).
     outside = self.root / "outside.txt"
     outside.write_text("precious\n")
-    git_dir = self.path / ".git"
-    (git_dir / "shallow.foamy").symlink_to(outside)                      # the old predictable name
-    with patch.object(status.secrets, "token_hex", return_value="fixed"):
-      (git_dir / ".shallow.foamy-fixed").symlink_to(outside)           # and the random name, guessed
-      with self.assertRaises(FileExistsError):
-        status.replace_in_directory(git_dir, "shallow", b"attacker\n")
+    upstream = self.root / "sh-upstream"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
+    for message in ("one", "two"):
+      self.git("commit", "-q", "--allow-empty", "-m", message, cwd=upstream)
+    clone = self.root / "sh-clone"
+    subprocess.run(["git", "clone", "-q", "--depth=1", "file://" + str(upstream), str(clone)], check=True, capture_output=True)
+    self.git("commit", "-q", "--allow-empty", "-m", "three", cwd=upstream)
+    for name in ("shallow.foamy", "shallow.lock"):
+      (clone / ".git" / name).symlink_to(outside)
+    status.fetch_repository(status.Repository(str(clone), "sh", "root", "sh"))
     self.assertEqual(outside.read_text(), "precious\n")
-    (git_dir / ".shallow.foamy-fixed").unlink()
-    status.replace_in_directory(git_dir, "shallow", b"0" * 40 + b"\n")
-    self.assertEqual((git_dir / "shallow").read_bytes(), b"0" * 40 + b"\n")
+    (clone / ".git/shallow.lock").unlink()
+    self.assertTrue(status.fetch_repository(status.Repository(str(clone), "sh", "root", "sh"))["ok"])
     self.assertEqual(outside.read_text(), "precious\n")
-    # A symlinked shallow file itself is refused, not read or followed.
-    (git_dir / "shallow").unlink()
-    (git_dir / "shallow").symlink_to(outside)
-    with self.assertRaises(status.InspectionError):
-      status.read_regular(git_dir / "shallow", 1024)
 
   def test_frozen_fetch_handles_reftable_sha256_and_worktrees(self):
     for variant in ("reftable", "sha256", "worktree", "shallow", "partial"):
@@ -873,7 +906,7 @@ class NegativeControlTest(unittest.TestCase):
   def test_every_vector_fires_when_trusted(self):
     names = [name for name in unittest.TestLoader().getTestCaseNames(TrustModelTest)
              if name.startswith(("test_fsmonitor", "test_repository_clean", "test_filter_name", "test_global_filter",
-                                 "test_lfs_extension", "test_included", "test_submodule", "test_fetch_disables",
+                                 "test_lfs_extension", "test_included", "test_fetch_disables",
                                  "test_fetch_runs", "test_fetch_ignores", "test_glob", "test_status_never"))]
     with patch.object(status, "repository_policy", lambda repo, trusted=False: status.TRUSTED_POLICY):
       for name in names:
