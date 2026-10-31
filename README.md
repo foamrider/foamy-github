@@ -195,9 +195,15 @@ needs 2.29.
 
 Trust is per repository. It only matters for repositories that use Git LFS,
 because there the hardened checks can't run LFS's own filter. A repository
-counts as using LFS when a tracked `.gitattributes` (or `info/attributes`)
-sets `filter=lfs`, or its Git directory has an `lfs/` folder. Detection reads
-these files with bounded, no-follow reads and runs nothing from the repository.
+counts as using LFS when its top-level `.gitattributes` (or the Git
+directory's `info/attributes`) sets `filter=lfs`, or it has a top-level
+`.lfsconfig`. Detection is a few bounded, no-follow file reads: no Git
+command, nothing from the repository runs. Live monitoring reads them again
+when it rescans a repository (found, refreshed, or one of those files
+changed), not on every update. An `lfs/` folder in the Git directory doesn't
+count: git-lfs creates one in any repository it touches and keeps it after a
+repository stops using LFS. A `.gitattributes` only in a subdirectory isn't
+seen.
 
 - **Untrusted LFS repository:** an (i) after its status line explains that LFS
   files you edited may show as changed until Git refreshes. Hover it, or move

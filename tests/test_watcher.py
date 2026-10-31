@@ -66,6 +66,25 @@ class WatcherTest(unittest.TestCase):
     (first / "tracked.txt").write_text("initial\n")
     self.assertEqual(self.process_changes()["totals"]["dirtyRepos"], 0)
 
+  def test_lfs_use_is_read_on_rescan_not_on_every_edit(self):
+    repo = self.repository("one")
+    payload = self.start()
+    self.assertIs(payload["repos"][0]["usesLfs"], False)
+    # Ordinary edits reuse the cached answer: no detection per status update.
+    (repo / "tracked.txt").write_text("changed\n")
+    with patch.object(watcher.status, "uses_lfs", wraps=watcher.status.uses_lfs) as detect:
+      payload = self.process_changes()
+    self.assertEqual(detect.call_count, 0)
+    self.assertIs(payload["repos"][0]["usesLfs"], False)
+    # Adding a top-level .gitattributes with filter=lfs rescans that repository.
+    (repo / ".gitattributes").write_text("*.psd filter=lfs diff=lfs merge=lfs -text\n")
+    with patch.object(watcher.status, "uses_lfs", wraps=watcher.status.uses_lfs) as detect:
+      payload = self.process_changes()
+    self.assertEqual(detect.call_count, 1)
+    self.assertIs(payload["repos"][0]["usesLfs"], True)
+    (repo / ".gitattributes").unlink()
+    self.assertIs(self.process_changes()["repos"][0]["usesLfs"], False)
+
   def test_new_nested_directories_rename_delete_and_permissions(self):
     repo = self.repository("one")
     self.start()

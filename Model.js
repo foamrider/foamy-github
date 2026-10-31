@@ -42,10 +42,10 @@ function parseStatus(raw) {
       if (!repo || typeof repo.complete !== "boolean" || typeof repo.affected !== "boolean")
         return failedStatus("Invalid repository status")
       if (repo.syncError === undefined) repo.syncError = ""
-      if (repo.lfs === undefined) repo.lfs = false
+      if (repo.usesLfs === undefined) repo.usesLfs = false
       if (repo.trusted === undefined) repo.trusted = false
       if (repo.identity === undefined) repo.identity = ""
-      if (typeof repo.lfs !== "boolean" || typeof repo.trusted !== "boolean") return failedStatus("Invalid repository status")
+      if (typeof repo.usesLfs !== "boolean" || typeof repo.trusted !== "boolean") return failedStatus("Invalid repository status")
       for (var field of ["path", "name", "owner", "label", "branch", "upstream", "error", "syncError", "identity"]) {
         if (typeof repo[field] !== "string" || repo[field].length > 4096)
           return failedStatus("Invalid repository status")
@@ -182,7 +182,7 @@ function withTrust(list, repo, trusted) {
 
 // Repositories that use Git LFS, by label (Settings lists only these).
 function lfsRepos(repos) {
-  return (repos || []).filter(function(repo) { return !!repo && repo.lfs === true })
+  return (repos || []).filter(function(repo) { return !!repo && repo.usesLfs === true })
     .sort(function(a, b) { return String(a.label).toLowerCase() < String(b.label).toLowerCase() ? -1 : 1 })
 }
 

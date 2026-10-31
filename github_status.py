@@ -1032,7 +1032,6 @@ def trusted_pin(repo: "Repository", trusted: "bool | Trust") -> Pin | None:
   return pin
 
 
-MAX_ATTRIBUTE_FILES = 64
 MAX_ATTRIBUTE_BYTES = 64 * 1024
 LFS_ATTRIBUTE = re.compile(rb"(^|\s)filter=lfs(\s|$)", re.MULTILINE)
 
@@ -1070,38 +1069,60 @@ def git_directories(repo: "Repository") -> list[Path]:
   return directories
 
 
-def uses_lfs(repo: "Repository", policy: "GitPolicy") -> bool:
-  """Whether the repository uses Git LFS, without running anything it controls:
-  an lfs/ directory in its Git dir, or `filter=lfs` in a tracked .gitattributes
-  (listed by ls-files under the hardened read policy, read with bounded,
-  no-follow reads) or in info/attributes."""
-  directories = git_directories(repo)
-  if any((directory / "lfs").is_dir() for directory in directories):
-    return True
-  candidates = [directory / "info/attributes" for directory in directories]
-  names: list[bytes] = []
-  def consume(record: bytes):
-    if len(names) < MAX_ATTRIBUTE_FILES:
-      names.append(record)
-  git_records(repo, ["ls-files", "-z", "--", ":(glob).gitattributes", ":(glob)**/.gitattributes"], consume,
-              config=policy.read, env=policy.read_env, sandbox=policy.sandboxed, pin=policy.pin)
-  candidates += [Path(repo.path) / os.fsdecode(name) for name in names]
-  return any(LFS_ATTRIBUTE.search(read_bounded(candidate)) for candidate in candidates)
+# Files whose change can change uses_lfs(): the watcher re-evaluates on them.
+LFS_FILES = (".gitattributes", ".lfsconfig", "attributes")
+
+
+def uses_lfs(repo: "Repository") -> bool:
+  """Whether the repository uses Git LFS, from at most four small file reads:
+  no Git process, nothing the repository controls runs. Signs: `filter=lfs`
+  in the worktree's top-level .gitattributes or in info/attributes, or a
+  non-empty top-level .lfsconfig. Every read is bounded, never follows a
+  symlink (the worktree is opened O_NOFOLLOW and its files read relative to
+  it) and treats FIFOs and devices as empty.
+
+  An lfs/ folder in the Git directory is no sign: git-lfs creates lfs/tmp
+  and lfs/cache in any repository it touches (its global hooks and filters),
+  and lfs/objects stays after a repository stops using LFS. A .gitattributes
+  only in a subdirectory isn't seen (finding one needs the index or a walk)."""
+  try:
+    worktree = open_directory(repo.path)
+  except OSError:
+    return False
+  try:
+    def top(name: str) -> bytes:
+      try:
+        return read_at(worktree, name, MAX_ATTRIBUTE_BYTES) or b""
+      except OSError:                         # InspectionError: a symlink, FIFO or device
+        return b""
+    if LFS_ATTRIBUTE.search(top(".gitattributes")) or top(".lfsconfig").strip():
+      return True
+  finally:
+    os.close(worktree)
+  try:
+    directories = git_directories(repo)
+  except (OSError, RuntimeError):             # a broken or looping .git pointer
+    return False
+  return any(LFS_ATTRIBUTE.search(read_bounded(directory / "info/attributes")) for directory in directories)
 
 
 def unavailable_row(repo: Repository, message: str) -> dict[str, Any]:
   return {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0, "dirty": None, "dirtyCount": 0,
-          "affected": True, "complete": False, "error": message[:240], "lfs": False, "trusted": False, "identity": ""}
+          "affected": True, "complete": False, "error": message[:240], "usesLfs": False, "trusted": False, "identity": ""}
 
 
-def repository_status(repo: Repository, trusted: "bool | Trust" = False) -> dict[str, Any]:
+def repository_status(repo: Repository, trusted: "bool | Trust" = False, lfs: bool | None = None) -> dict[str, Any]:
   """One repository's row; any failure (a repository deleted, renamed or with
   a broken .git pointer since discovery, while pinning for a trust check)
-  becomes this row's error and never fails the whole scan."""
+  becomes this row's error and never fails the whole scan. `lfs`: the
+  watcher's cached uses_lfs() (re-evaluated when it rescans the repository);
+  None reads it now."""
   try:
-    return _pinned_status(repo, trusted)
+    row = _pinned_status(repo, trusted)
   except Exception as error:   # noqa: BLE001 - contain one repository's failure
-    return unavailable_row(repo, str(error) or type(error).__name__)
+    row = unavailable_row(repo, str(error) or type(error).__name__)
+  row["usesLfs"] = uses_lfs(repo) if lfs is None else lfs
+  return row
 
 
 def _pinned_status(repo: Repository, trusted: "bool | Trust") -> dict[str, Any]:
@@ -1122,7 +1143,7 @@ def _repository_status(repo: Repository, pin: Pin | None) -> dict[str, Any]:
   trusted = pin is not None
   row = {**asdict(repo), "branch": "", "upstream": "", "ahead": 0, "behind": 0,
          "dirty": None, "dirtyCount": 0, "affected": True, "complete": False, "error": "",
-         "lfs": False, "trusted": trusted, "identity": ""}
+         "usesLfs": False, "trusted": trusted, "identity": ""}
   close: Callable[[], None] = lambda: None
   try:
     if trusted:
@@ -1133,8 +1154,6 @@ def _repository_status(repo: Repository, pin: Pin | None) -> dict[str, Any]:
     # check inspected (its pin), never a separate read of the path. Without
     # a pin (no bubblewrap) nothing can be trusted, so none is offered.
     row["identity"] = policy.pin.identity if policy.pin is not None else ""
-    # Detection always uses the hardened policy, even for trusted repositories.
-    row["lfs"] = uses_lfs(repo, policy if not trusted else repository_policy(repo, False))
     branch = checked_text(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"], (1,), policy)
     if branch:
       upstream = checked_text(repo, ["for-each-ref", "--format=%(upstream:short)", "--", "refs/heads/" + branch], policy=policy)

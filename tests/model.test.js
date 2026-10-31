@@ -77,17 +77,17 @@ test('per-repository trust: entries carry path and identity', () => {
   assert.equal(Model.validTrustedList([a]), true)
   assert.match(Model.validTrustedList(['/a']), /absolute/)
   assert.match(Model.validTrustedList(Array(257).fill(a)), /256/)
-  const rows = [{label:'b', lfs:true}, {label:'A', lfs:true}, {label:'c', lfs:false}]
+  const rows = [{label:'b', usesLfs:true}, {label:'A', usesLfs:true}, {label:'c', usesLfs:false}]
   assert.deepEqual(Model.lfsRepos(rows).map(r => r.label), ['A', 'b'])
 })
 
-test('status rows carry optional lfs/trusted booleans', () => {
+test('status rows carry optional usesLfs/trusted booleans', () => {
   const row = {path:'/repo', name:'repo', owner:'p', label:'repo', branch:'main', upstream:'',
     ahead:0, behind:0, dirtyCount:0, complete:true, affected:false, error:''}
   const parsed = Model.parseStatus(JSON.stringify({ok:true, repos:[row]}))
-  assert.equal(parsed.repos[0].lfs, false)
+  assert.equal(parsed.repos[0].usesLfs, false)
   assert.equal(parsed.repos[0].trusted, false)
-  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{...row, lfs:'yes'}]})).ok, false)
+  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{...row, usesLfs:'yes'}]})).ok, false)
 })
 
 test('trust edits compose over the newest queued save (untrust B then C)', () => {

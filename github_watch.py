@@ -209,6 +209,7 @@ class RepositoryWatcher:
     self.repositories: dict[str, status.Repository] = {}
     self.plans: dict[str, set[Path]] = {}
     self.rows: dict[str, dict[str, Any]] = {}
+    self.lfs: dict[str, bool] = {}            # uses_lfs(), re-read when a repository is rescanned
     self.discovery: set[Path] = set()
     self.owners: dict[Path, set[str]] = {}
 
@@ -224,8 +225,15 @@ class RepositoryWatcher:
       self.repositories = current
       self.rows = {path: row for path, row in self.rows.items() if path in current}
       self.plans = {path: plan for path, plan in self.plans.items() if path in current}
+      self.lfs = {path: lfs for path, lfs in self.lfs.items() if path in current}
     for path in rebuild & self.repositories.keys():
       self.plans[path] = repository_directories(self.repositories[path], self.trusted)
+      # Git LFS use is read on a rescan only (new repository, topology or
+      # attribute-file change, manual refresh), not on every status update.
+      lfs = status.uses_lfs(self.repositories[path])
+      if self.lfs.get(path) != lfs:
+        self.lfs[path] = lfs
+        dirty.add(path)
       if sum(len(plan) for plan in self.plans.values()) > status.MAX_WATCH_LINKS:
         raise status.InspectionError("Total directory monitoring limit reached. Use timed refresh or select fewer repositories.")
     self.owners = {}
@@ -236,7 +244,7 @@ class RepositoryWatcher:
     self.notify.reconcile(set(self.owners) | self.discovery)
     selected = [self.repositories[path] for path in sorted(dirty & self.repositories.keys())]
     with concurrent.futures.ThreadPoolExecutor(max_workers=status.FETCH_CONCURRENCY) as executor:
-      for row in executor.map(lambda repo: status.repository_status(repo, self.trusted), selected):
+      for row in executor.map(lambda repo: status.repository_status(repo, self.trusted, self.lfs.get(repo.path)), selected):
         self.rows[row["path"]] = row
     return status.payload_from_rows(list(self.rows.values()), self.folders)
 
@@ -257,7 +265,7 @@ class RepositoryWatcher:
         continue
       owners = self.owners.get(path, set())
       dirty |= owners
-      if (mask & ISDIR and mask & TOPOLOGY) or mask & (DELETE_SELF | MOVE_SELF | IGNORED) or name in (".gitignore", ".git", "exclude", "config", "commondir"):
+      if (mask & ISDIR and mask & TOPOLOGY) or mask & (DELETE_SELF | MOVE_SELF | IGNORED) or name in (".gitignore", ".git", "exclude", "config", "commondir") + status.LFS_FILES:
         rebuild |= owners
       if path in self.discovery and (mask & (TOPOLOGY | IGNORED)):
         changed_path = path / name if name else path

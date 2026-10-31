@@ -872,15 +872,16 @@ class TrustModelTest(unittest.TestCase):
     hostile = self.root / "hostile"
     subprocess.run(["git", "init", "-q", str(hostile)], check=True)
     self.git("config", "core.fsmonitor", f"touch {hostile_marker}", cwd=hostile)
-    real_uses_lfs = status.uses_lfs
-    def swap_then(repo, policy):
+    real_checked_text = status.checked_text
+    def swap_then(*args, **kwargs):          # after the pin, before its first Git command
       if not hostile_marker.parent.joinpath("swapped").exists():
         os.rename(self.path, self.root / "original")
         os.rename(hostile, self.path)
         (self.root / "swapped").write_text("")
-      return real_uses_lfs(repo, policy)
-    with patch.object(status, "uses_lfs", side_effect=swap_then):
+      return real_checked_text(*args, **kwargs)
+    with patch.object(status, "checked_text", side_effect=swap_then):
       status.repository_status(self.repo, trust)
+    self.assertTrue((self.root / "swapped").exists(), "the swap happened mid-check")
     self.assertFalse(hostile_marker.exists(), "the swapped-in repository ran its config with trust")
 
   def test_untrusted_fetch_writes_only_into_the_inspected_repository(self):
@@ -1381,18 +1382,52 @@ class PerRepositoryTrustTest(unittest.TestCase):
     run("commit", "-qm", "init")
     return status.Repository(str(path.resolve()), name, "root", name), run
 
-  def test_detection_from_attributes_and_lfs_directory(self):
+  def test_detection_from_attributes_and_lfsconfig(self):
     root_attr, _ = self.make_repo("root-attr", {".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n"})
-    nested, _ = self.make_repo("nested", {"assets/.gitattributes": "*.psd filter=lfs -text\n", "a.txt": "a\n"})
-    store, _ = self.make_repo("store")
-    (Path(store.path) / ".git/lfs").mkdir()
+    config, _ = self.make_repo("config", {".lfsconfig": "[lfs]\n\turl = https://lfs.example.invalid\n"})
+    info, _ = self.make_repo("info")
+    (Path(info.path) / ".git/info/attributes").write_text("*.iso filter=lfs -text\n")
     plain, _ = self.make_repo("plain", {".gitattributes": "*.txt text eol=lf\n# filter=lfsish\n"})
-    for repo, expected in ((root_attr, True), (nested, True), (store, True), (plain, False)):
+    for repo, expected in ((root_attr, True), (config, True), (info, True), (plain, False)):
       with self.subTest(repo=repo.name):
         row = status.repository_status(repo)
         self.assertTrue(row["complete"], row["error"])
-        self.assertIs(row["lfs"], expected)
+        self.assertIs(row["usesLfs"], expected)
         self.assertFalse(row["trusted"])
+
+  def test_git_lfs_leftovers_are_not_lfs_use(self):
+    # The user's report: git-lfs's global hooks/filters leave lfs/tmp and
+    # lfs/cache/locks in any repository, and lfs/objects outlives LFS use
+    # (.dotfiles once tracked wallpapers with LFS, then dropped it).
+    repo, _ = self.make_repo("former", {".gitattributes": "*.txt text\n"})
+    lfs = Path(repo.path) / ".git/lfs"
+    for directory in ("tmp", "cache/locks/refs", "incomplete", "objects/82/d1"):
+      (lfs / directory).mkdir(parents=True)
+    (lfs / "objects/82/d1/82d1aa").write_bytes(b"wallpaper")
+    self.assertFalse(status.repository_status(repo)["usesLfs"])
+
+  def test_detection_reads_files_only(self):
+    # No Git process per status: detection is a few bounded file reads.
+    repo, _ = self.make_repo("lfs", {".gitattributes": "*.bin filter=lfs\n"})
+    with patch.object(subprocess, "Popen", side_effect=AssertionError("ran a process")), \
+         patch.object(subprocess, "run", side_effect=AssertionError("ran a process")):
+      self.assertTrue(status.uses_lfs(repo))
+
+  def test_detection_never_follows_symlinks(self):
+    outside = self.root / "outside"
+    outside.write_text("* filter=lfs\n")
+    repo, _ = self.make_repo("linked")
+    (Path(repo.path) / ".gitattributes").symlink_to(outside)
+    (Path(repo.path) / ".lfsconfig").symlink_to(outside)
+    self.assertFalse(status.uses_lfs(repo))
+    # Nor through a worktree path that is itself a symlink to an LFS repository.
+    real, _ = self.make_repo("real", {".gitattributes": "* filter=lfs\n"})
+    alias = self.root / "alias"
+    alias.symlink_to(real.path)
+    self.assertFalse(status.uses_lfs(status.Repository(str(alias), "alias", "root", "alias")))
+    # Large files are read only up to the cap.
+    big, _ = self.make_repo("big", {".gitattributes": "#" * status.MAX_ATTRIBUTE_BYTES + "\n* filter=lfs\n"})
+    self.assertFalse(status.uses_lfs(big))
 
   def test_detection_runs_no_repository_code_and_survives_hostile_files(self):
     marker = self.root / "pwned"
@@ -1408,15 +1443,16 @@ class PerRepositoryTrustTest(unittest.TestCase):
     (Path(repo.path) / "file.txt").write_text("changed\n")
     row = status.repository_status(repo)
     self.assertTrue(row["complete"], row["error"])
-    self.assertTrue(row["lfs"])
+    self.assertTrue(row["usesLfs"])
     self.assertFalse(marker.exists())
     # Detection reads attribute files with bounded, no-follow, non-blocking
     # reads: a FIFO or a symlink to an endless file can't stall it.
-    attributes = Path(repo.path) / ".gitattributes"
-    attributes.unlink()
-    os.mkfifo(attributes)                   # no Git command reads the worktree after this
+    for name in (".gitattributes", ".lfsconfig"):
+      (Path(repo.path) / name).unlink()
+      os.mkfifo(Path(repo.path) / name)     # no Git command reads the worktree after this
+    (Path(repo.path) / ".git/info/attributes").symlink_to("/dev/zero")
     started = time.monotonic()
-    self.assertFalse(status.uses_lfs(repo, status.repository_policy(repo)))
+    self.assertFalse(status.uses_lfs(repo))
     self.assertLess(time.monotonic() - started, 5)
     self.assertFalse(marker.exists())
 
@@ -1432,7 +1468,7 @@ class PerRepositoryTrustTest(unittest.TestCase):
     trust = status.parse_trusted(json.dumps([{"path": str(link), "identity": status.repository_identity(repos["a"])}]))   # symlinks resolve
     rows = {row["name"]: row for row in status.status_payload(
       [{"path": str(self.root), "depth": 1}], trust)["repos"]}
-    self.assertTrue(rows["a"]["trusted"] and rows["a"]["lfs"])
+    self.assertTrue(rows["a"]["trusted"] and rows["a"]["usesLfs"])
     self.assertFalse(rows["b"]["trusted"])
     self.assertTrue(markers["a"].exists(), "a trusted repository runs its own config")
     self.assertFalse(markers["b"].exists(), "an untrusted repository stays hardened")

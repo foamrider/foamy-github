@@ -50,7 +50,7 @@ PanelKeyCatcher {
     var rows = [], infos = [], count = 0
     for (var i = 0; i < repos.length; i++) {
       rows.push(count++)
-      infos.push(repos[i] && repos[i].lfs === true && repos[i].trusted !== true ? count++ : -1)
+      infos.push(repos[i] && repos[i].usesLfs === true && repos[i].trusted !== true ? count++ : -1)
     }
     return { rows: rows, infos: infos, count: count }
   }
@@ -635,7 +635,7 @@ PanelKeyCatcher {
     height: content.implicitHeight + FoamyStyle.rowPadding * 2
     readonly property int rowStop: root.stops.rows[rowIndex] !== undefined ? root.stops.rows[rowIndex] : -1
     readonly property int infoStop: root.stops.infos[rowIndex] !== undefined ? root.stops.infos[rowIndex] : -1
-    readonly property bool lfs: !!repo && repo.lfs === true
+    readonly property bool lfs: !!repo && repo.usesLfs === true
     readonly property bool trusted: !!repo && repo.trusted === true
     hasCursor: cursor.at(rowStop)
     onHovered: cursor.hover(rowStop)

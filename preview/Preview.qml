@@ -15,7 +15,7 @@ Item {
   function row(label, branch, ahead, behind, dirty, extra) {
     return Object.assign({ path: "/home/me/GitHub/" + label, name: label.split("/").pop(), owner: "GitHub", label: label,
       branch: branch, upstream: "origin/" + branch, ahead: ahead, behind: behind, dirty: dirty > 0, dirtyCount: dirty,
-      affected: ahead + behind + dirty > 0, complete: true, error: "", syncError: "", lfs: false, trusted: false }, extra || {})
+      affected: ahead + behind + dirty > 0, complete: true, error: "", syncError: "", usesLfs: false, trusted: false }, extra || {})
   }
 
   readonly property var sample: [
@@ -28,7 +28,7 @@ Item {
 
   readonly property bool lfsTrusted: previewState === "lfs-trusted"
   readonly property var lfsSample: [
-    row("Personal/game-assets", "main", 0, 0, 12, { lfs: true, trusted: lfsTrusted, identity: "65:2048:1" }),
+    row("Personal/game-assets", "main", 0, 0, 12, { usesLfs: true, trusted: lfsTrusted, identity: "65:2048:1" }),
     row(".dotfiles", "main", 0, 0, 1),
     row("Personal/foamy-kit", "main", 0, 0, 10, { syncError: "No origin remote configured. Add one in lazygit, then refresh." }),
     row("Work/api-gateway", "main", 0, 2, 0)
@@ -55,8 +55,8 @@ Item {
     readonly property bool repositoryActionRunning: false
     readonly property bool busy: false
     readonly property var lfsRepos: [
-      preview.row("Personal/game-assets", "main", 0, 0, 12, { lfs: true, trusted: false, identity: "65:2048:1" }),
-      preview.row("Work/design-system", "main", 0, 0, 0, { lfs: true, trusted: true, identity: "65:1024:1" })
+      preview.row("Personal/game-assets", "main", 0, 0, 12, { usesLfs: true, trusted: false, identity: "65:2048:1" }),
+      preview.row("Work/design-system", "main", 0, 0, 0, { usesLfs: true, trusted: true, identity: "65:1024:1" })
     ]
     function fetch() {}
     function pushRepository(repo) {}
