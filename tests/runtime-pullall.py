@@ -6,7 +6,8 @@ offscreen Quickshell (foamy-kit's harness) over local Git repositories.
 
 Three clones of one local remote are behind it; one also has local changes.
 Pull all pulls the two clean ones, one after the other, leaves the changed
-one alone, and reports the count. Requires ~/GitHub/Personal/foamy-kit (or
+one alone, and reports the count; its header button shows only while
+something can be pulled. Requires ~/GitHub/Personal/foamy-kit (or
 FOAMY_KIT)."""
 import atexit
 import os
@@ -48,10 +49,12 @@ ShellRoot {
     panel = component.createObject(host, { bar: bar, width: 40, height: 34,
       settings: { repositoryFolders: [{ path: "@ROOT@", depth: 2 }], inotifyEnabled: false,
                   refreshIntervalSec: 0, fetchIntervalSec: 86400 } })
+    panel.open()
     poll.start()
   }
 
   // Wait for the first status, start Pull all, then wait for it to finish.
+  // The header's Pull all shows only while something can be pulled.
   Timer {
     id: poll
     interval: 200
@@ -63,6 +66,9 @@ ShellRoot {
         if (service.repos.length < 3 || service.busy) return
         check(service.refreshIntervalSec === 0 && service.fetchIntervalSec === 86400, "0 keeps timed refresh off")
         check(service.pullableRepos.length === 2, "two clean clones can pull: " + service.pullableRepos.length)
+        var view = panel.popup.bodyItem
+        check(view !== null && view.showPullAll && view.pullAllStop === view.stops.count
+          && view.settingsStop === view.pullAllStop + 1, "Pull all shown, with its cursor stop before Settings")
         service.pullAll()
         check(service.pullingAll && service.repositoryActionRunning, "Pull all started")
         service.pullAll()
@@ -73,6 +79,9 @@ ShellRoot {
         check(service.actionStatus === "Pulled 2 repositories", "count reported: " + JSON.stringify(service.actionStatus))
         check(service.operationError === "", "no failures: " + service.operationError)
         check(service.pullableRepos.length === 0, "nothing left to pull")
+        var after = panel.popup.bodyItem
+        check(after !== null && !after.showPullAll && after.pullAllStop === -1
+          && after.settingsStop === after.stops.count, "Pull all hidden once nothing is left")
         stop()
         finish()
       }

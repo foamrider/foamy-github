@@ -21,9 +21,10 @@ omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
 2. Choose how many levels deep to search each folder, and the refresh intervals.
 3. Refresh (the button in the popup footer, `r`, or middle-click the widget) fetches remotes and updates status.
 4. A repository's arrows push or pull; the terminal button (or Enter) opens it in lazygit.
-5. **Pull all** (the double arrow left of the cog, or `p`) pulls every repository a row's pull
-   arrow would: behind, with no local changes and nothing to push. They are pulled one at a
-   time; the title shows the count pulled and anything that failed.
+5. **Pull all** (the arrow onto a line left of the cog, or `p`) pulls every repository a row's
+   pull arrow would: behind, with no local changes and nothing to push. It shows only when
+   there is something to pull. They are pulled one at a time; the title shows the count pulled
+   and anything that failed.
 
 The popup lists repositories that need attention: ahead, behind, changed, or
 whose last fetch failed. A failed fetch is shown on the repository's row, in
@@ -32,7 +33,7 @@ configured…`); hover it for the full message. The footer shows how many
 repositories were found, when their status was last updated (hover it for
 the last remote sync), and Refresh, which spins while a fetch runs.
 
-Keyboard: arrows or `hjkl` move one cursor through the rows, Pull all, Settings
+Keyboard: arrows or `hjkl` move one cursor through the rows, Pull all (when shown), Settings
 and Refresh (hovering moves the same cursor); Enter activates; `r` refreshes;
 `p` pulls all; `s` opens Settings; Esc closes (or leaves Settings); Tab and Shift+Tab move to
 the next bar panel.

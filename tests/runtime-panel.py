@@ -90,8 +90,8 @@ ShellRoot {
         check(panels[0].popup.bodyItem === null, "other monitors stay lazy")
         check(Plugin.Service.lastChecked > 0 || Plugin.Service.refreshing, "status arrived from the watcher")
         // Refresh lives in the footer (count, freshness, refresh), not in the
-        // header (which holds Pull all); the cursor walks rows, then Pull all,
-        // Settings and Refresh.
+        // header (which holds Pull all, only while something can be pulled);
+        // the cursor walks rows, then Pull all (when shown), Settings and Refresh.
         var footers = collect(view, function(item) { return item.objectName === "githubFooter" })
         check(footers.length === 1 && footers[0].showRefresh && footers[0].refreshButton.objectName === "foamyFooterRefresh", "footer with refresh")
         check(footers.length === 1 && footers[0].source === "0 repositories", "footer leads with the repository count")
@@ -100,9 +100,10 @@ ShellRoot {
           return collect(band, function(item) { return item.iconName === "refresh-cw" }).length === 0
         }), "no refresh in the header")
         var pullAll = collect(view, function(item) { return item.objectName === "pullAllAction" })
-        check(pullAll.length === 1 && pullAll[0].iconName === "chevrons-down" && !pullAll[0].active, "Pull all in the header, off with nothing to pull")
-        check(view.pullAllStop === view.stops.count && view.settingsStop === view.pullAllStop + 1
-          && view.refreshStop === view.settingsStop + 1, "cursor: rows, Pull all, Settings, Refresh")
+        check(pullAll.length === 1 && pullAll[0].iconName === "arrow-down-to-line", "Pull all in the header")
+        check(view.pullableCount === 0 && !view.showPullAll && !pullAll[0].visible, "Pull all hidden with nothing to pull")
+        check(view.pullAllStop === -1 && view.settingsStop === view.stops.count
+          && view.refreshStop === view.settingsStop + 1, "cursor without Pull all: rows, Settings, Refresh")
         // Legacy global trust migrates once after the first complete scan, in
         // both live-monitoring and timed-polling mode.
         var leaderSaves = panels[0].bar.saved

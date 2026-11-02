@@ -47,7 +47,8 @@ PanelKeyCatcher {
   // Cursor stops: each row, then its "LFS" button when the repository uses
   // Git LFS and is untrusted, then (note open, trust available) its "Trust
   // this repository" button; then Settings (header) and Refresh (footer),
-  // as in foamy-weather. Pull all sits before Settings, as in the header.
+  // as in foamy-weather. Pull all sits before Settings, as in the header,
+  // and only while something can be pulled (or a Pull all is running).
   readonly property var stops: {
     var rows = [], infos = [], trusts = [], count = 0
     for (var i = 0; i < repos.length; i++) {
@@ -60,10 +61,11 @@ PanelKeyCatcher {
   }
   // The repository (path) whose Git LFS note is open under its row: one at a time.
   property string lfsNotePath: ""
-  readonly property int pullAllStop: stops.count
-  readonly property int settingsStop: stops.count + 1
-  readonly property int refreshStop: stops.count + 2
   readonly property int pullableCount: service && service.pullableRepos ? service.pullableRepos.length : 0
+  readonly property bool showPullAll: pullableCount > 0 || (!!service && service.pullingAll)
+  readonly property int pullAllStop: showPullAll ? stops.count : -1
+  readonly property int settingsStop: stops.count + (showPullAll ? 1 : 0)
+  readonly property int refreshStop: settingsStop + 1
   readonly property var trustedList: Model.trustedRepositories(settings)
   readonly property var lfsRepositories: service && service.lfsRepos ? service.lfsRepos : []
   readonly property string healthText: {
@@ -90,7 +92,7 @@ PanelKeyCatcher {
   implicitHeight: editingSettings ? settingsPage.implicitHeight : list.contentHeight
   blocked: editingSettings
 
-  FoamyCursor { id: cursor; count: root.stops.count + 3 }   // rows (+ LFS, trust), pull all, settings, refresh
+  FoamyCursor { id: cursor; count: root.refreshStop + 1 }   // rows (+ LFS, trust), pull all, settings, refresh
 
   onMoveRequested: function(dx, dy) { cursor.move(dy !== 0 ? dy : dx) }
   onActivateRequested: root.activate(cursor.index)
@@ -259,7 +261,8 @@ PanelKeyCatcher {
         trailing: [
           FoamyAction {
             objectName: "pullAllAction"
-            iconName: "chevrons-down"
+            visible: root.showPullAll
+            iconName: "arrow-down-to-line"
             tooltipText: (root.pullableCount > 0 ? FoamyI18n.tn("Pull %1 repositories", root.pullableCount)
               : FoamyI18n.t("Nothing to pull")) + " · P"
             actionEnabled: !root.busy && root.pullableCount > 0
