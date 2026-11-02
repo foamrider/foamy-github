@@ -34,6 +34,11 @@ ShellRoot {
   property int checks: 0
   property double startedAt: 0
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
+  function collect(item, test) {
+    var found = test(item) ? [item] : []
+    for (var i = 0; i < item.children.length; i++) found = found.concat(collect(item.children[i], test))
+    return found
+  }
   function finish() { console.log("FOAMY CHECKS " + checks); console.log("FOAMY DONE"); Qt.quit() }
 
   FloatingWindow {
@@ -69,6 +74,8 @@ ShellRoot {
         var view = panel.popup.bodyItem
         check(view !== null && view.showPullAll && view.pullAllStop === view.stops.count
           && view.settingsStop === view.pullAllStop + 1, "Pull all shown, with its cursor stop before Settings")
+        var icons = view ? collect(view, function(item) { return item.name === "arrow-down-to-line" && item.known !== undefined }) : []
+        check(icons.length === 1 && icons[0].known, "Pull all draws arrow-down-to-line from the kit")
         service.pullAll()
         check(service.pullingAll && service.repositoryActionRunning, "Pull all started")
         service.pullAll()
