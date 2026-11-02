@@ -5,6 +5,8 @@ import Quickshell.Io
 import Quickshell.Networking
 import "kit"
 import "Model.js" as Model
+import "Preferences.js" as Schema
+import "kit/FoamyPrefs.js" as Prefs
 
 // Repository state and every Git helper, once per shell. 4.5 draws one bar
 // (and so one Panel) per monitor; all of them read this singleton, and only
@@ -14,6 +16,12 @@ Item {
   id: root
 
   property var settings: ({})
+  // The widget's schema; the panel saves through the same fields. Every
+  // setting below is read through it: a missing or invalid value reads as its
+  // default, as in Settings. (JSON copy: Omarchy can hand a list over as a QML
+  // sequence wrapper.)
+  readonly property var fields: Schema.fields.concat(Model.listFields)
+  readonly property var preferences: Prefs.values(fields, JSON.parse(JSON.stringify(settings || {})))
   readonly property bool active: FoamyShared.memberCount("github") > 0
   function tr(label, values) { return FoamyI18n.t(label, values) }
   property var status: Model.defaultStatus()
@@ -47,14 +55,14 @@ Item {
   property double watchStartedAt: 0
 
   readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("github_status.py").toString().replace(/^file:\/\//, ""))
-  readonly property var repositoryFolders: Model.repositoryFolders(settings)
+  readonly property var repositoryFolders: preferences.repositoryFolders
   readonly property string folderArguments: JSON.stringify(repositoryFolders)
   onFolderArgumentsChanged: Qt.callLater(function() { root.restartWatcher(true) })
   // Per-repository trust: absolute paths whose own Git config runs in
   // automatic checks (the panel offers it for Git LFS repositories). The old
   // global switch stays honoured until the panel migrates it once.
-  readonly property bool legacyTrustAll: setting("trustRepositoryConfig", false) === true
-  readonly property var trustedRepositories: Model.trustedRepositories(settings)
+  readonly property bool legacyTrustAll: preferences.trustRepositoryConfig
+  readonly property var trustedRepositories: Model.trustedRepositories(preferences)
   readonly property string trustArguments: legacyTrustAll ? "*" : JSON.stringify(trustedRepositories)
   onTrustArgumentsChanged: Qt.callLater(function() { root.restartWatcher(true) })
   function helperArguments() {
@@ -69,10 +77,11 @@ Item {
   readonly property var affectedRepos: Model.displayedRepos(repos)
   readonly property var totals: status.totals || Model.defaultStatus().totals
   readonly property var sync: status.sync || Model.defaultStatus().sync
-  readonly property bool inotifyEnabled: setting("inotifyEnabled", true) !== false
+  readonly property bool inotifyEnabled: preferences.inotifyEnabled
   onInotifyEnabledChanged: Qt.callLater(function() { root.restartWatcher(true) })
-  readonly property int refreshIntervalSec: setting("refreshIntervalSec", 30) === 0 ? 0 : intSetting("refreshIntervalSec", 30, 10, 3600)
-  readonly property int fetchIntervalSec: intSetting("fetchIntervalSec", 900, 300, 86400)
+  // 0 turns timed refresh off.
+  readonly property int refreshIntervalSec: preferences.refreshIntervalSec
+  readonly property int fetchIntervalSec: preferences.fetchIntervalSec
   readonly property bool busy: refreshing || syncing || repositoryActionRunning
   // A limited connectivity probe can still allow Git access; block offline/portal states.
   readonly property bool networkReady: Networking.connectivity === NetworkConnectivity.Full
@@ -104,17 +113,6 @@ Item {
   // don't rebuild every watch plan; otherwise take one fresh status.
   function popupOpened() {
     if (!(root.inotifyEnabled && root.monitoring)) root.refresh()
-  }
-
-  function setting(name, fallback) {
-    var value = settings ? settings[name] : undefined
-    return value === undefined || value === null ? fallback : value
-  }
-
-  function intSetting(name, fallback, minimum, maximum) {
-    var value = parseInt(String(setting(name, fallback)), 10)
-    if (!isFinite(value)) value = fallback
-    return Math.max(minimum, Math.min(maximum, value))
   }
 
   function restartWatcher(resetBackoff) {

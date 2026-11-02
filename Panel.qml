@@ -7,7 +7,6 @@ import qs.Commons as Commons
 import qs.Ui
 import "kit"
 import "Model.js" as Model
-import "Preferences.js" as Schema
 
 // Foamy GitHub bar widget: one per bar (4.5 draws a bar per monitor). State
 // and Git helpers live in the Service singleton, once per shell; the
@@ -67,14 +66,8 @@ Panel {
   function openSettings() { settingsState.show() }
   function closeSettings() { settingsState.hide() }
 
-  // repositoryFolders: a list of {path, depth}, validated by Model.parseFolderRows.
-  readonly property var fields: Schema.fields.concat([{
-    key: "trustedRepositories", type: "array", maxItems: 256, defaultValue: [],
-    validate: function(value) { return Model.validTrustedList(value) }
-  }, {
-    key: "repositoryFolders", type: "array", maxItems: 32, defaultValue: [],
-    validate: function(value) { var parsed = Model.parseFolderRows(value); return parsed.error ? parsed.error : true }
-  }])
+  // The schema the Service reads its settings through.
+  readonly property var fields: Service.fields
   FoamyPrefsQueue {
     id: prefs
     bar: root.bar

@@ -1,6 +1,6 @@
-// Widget settings schema (mirrors manifest.json barWidget.schema). Saving goes
-// through kit/FoamyPrefs.js; repositoryFolders is a list, validated by
-// Model.parseFolderRows and saved by Panel.saveFolders().
+// Widget settings schema (mirrors manifest.json barWidget.schema). Reading and
+// saving go through kit/FoamyPrefs.js; the list settings (repositoryFolders,
+// trustedRepositories) are Model.listFields, validated by Model.js.
 var fields = [
   { key: "inotifyEnabled", type: "boolean", defaultValue: true },
   { key: "refreshIntervalSec", type: "integer", min: 0, max: 3600, step: 5, defaultValue: 30 },

@@ -68,6 +68,21 @@ ShellRoot {
         check(Kit.FoamyShared.memberCount("github") === 3, "three members")
         check(Plugin.Service.active, "service active")
         check(Plugin.Service.settings.fetchIntervalSec === 900, "leader fed settings")
+        // The service reads every setting through the schema: a hand-edited
+        // value out of range or of the wrong type is the default (no clamp),
+        // and 0 keeps timed refresh off.
+        var fed = JSON.parse(JSON.stringify(Plugin.Service.settings))
+        check(Plugin.Service.refreshIntervalSec === 30 && Plugin.Service.legacyTrustAll
+          && Plugin.Service.trustedRepositories.length === 2, "service reads the fed settings")
+        Plugin.Service.settings = { inotifyEnabled: @INOTIFY@, refreshIntervalSec: 5000, fetchIntervalSec: 60,
+          repositoryFolders: [{ path: "relative", depth: 2 }], trustRepositoryConfig: true, trustedRepositories: "x" }
+        check(Plugin.Service.refreshIntervalSec === 30 && Plugin.Service.fetchIntervalSec === 900, "out-of-range intervals read as the default")
+        check(Plugin.Service.folderArguments === "[]" && Plugin.Service.trustedRepositories.length === 0, "invalid lists read as the default")
+        Plugin.Service.settings = Object.assign({}, fed, { refreshIntervalSec: 5 })
+        check(Plugin.Service.refreshIntervalSec === 5, "an in-range interval runs as saved")
+        Plugin.Service.settings = Object.assign({}, fed, { refreshIntervalSec: 0 })
+        check(Plugin.Service.refreshIntervalSec === 0, "0 keeps timed refresh off")
+        Plugin.Service.settings = fed
         panels[1].open()
       } else if (n === 1) {
         var view = panels[1].popup.bodyItem

@@ -19,6 +19,14 @@ test('folder rows reject empty paths, relative paths, invalid depths and oversiz
   assert.match(Model.parseFolderRows(Array(33).fill('/tmp')).error, /32/)
 })
 
+test('the list settings validate with the folder and trust rules and report their messages', () => {
+  const field = key => Model.listFields.find(f => f.key === key)
+  assert.equal(field('repositoryFolders').validate([{path:'~/Projects',depth:2}, '/srv']), true)
+  assert.match(field('repositoryFolders').validate([{path:'Projects',depth:2}]), /absolute path/)
+  assert.equal(field('trustedRepositories').validate([{path:'/r/a',identity:'1:1:1'}]), true)
+  assert.match(field('trustedRepositories').validate(['/r/a']), /absolute paths/)
+})
+
 test('unavailable repositories stay visible and cannot reuse old safety checks', () => {
   const before = {...Model.defaultStatus(), repos:[{path:'/repo', label:'repo', complete:true,
     ahead:1, behind:2, dirtyCount:3, affected:true}]}

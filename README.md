@@ -48,6 +48,7 @@ the next bar panel.
 | Git LFS: trust per repository | none | Shown only when a Git LFS repository is found. See [Trust model](#trust-model) |
 
 Settings save in place (`bar.shell.updateEntryInline`, else `omarchy bar set`).
+A missing or out-of-range value (say, hand-edited) reads as its default.
 
 **Detect changes automatically** groups changes saved close together over
 300 ms and checks only the affected repositories. Ignored dependency/build

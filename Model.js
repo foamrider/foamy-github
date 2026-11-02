@@ -257,10 +257,21 @@ function parseFolderRows(rows) {
   return { folders: folders, error: "" }
 }
 
+// Schema fields of the two list settings, validated here (Preferences.js
+// holds the others; Service.fields joins them).
+var listFields = [{
+  key: "trustedRepositories", type: "array", maxItems: 256, defaultValue: [],
+  validate: function(value) { return validTrustedList(value) }
+}, {
+  key: "repositoryFolders", type: "array", maxItems: 32, defaultValue: [],
+  validate: function(value) { var parsed = parseFolderRows(value); return parsed.error ? parsed.error : true }
+}]
+
 if (typeof module !== "undefined") {
   module.exports = {
     repositoryFolders: repositoryFolders,
     parseFolderRows: parseFolderRows,
+    listFields: listFields,
     defaultStatus: defaultStatus,
     parseStatus: parseStatus,
     unavailableStatus: unavailableStatus,

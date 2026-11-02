@@ -61,6 +61,7 @@ ShellRoot {
       var service = Plugin.Service
       if (phase === 0) {
         if (service.repos.length < 3 || service.busy) return
+        check(service.refreshIntervalSec === 0 && service.fetchIntervalSec === 86400, "0 keeps timed refresh off")
         check(service.pullableRepos.length === 2, "two clean clones can pull: " + service.pullableRepos.length)
         service.pullAll()
         check(service.pullingAll && service.repositoryActionRunning, "Pull all started")
