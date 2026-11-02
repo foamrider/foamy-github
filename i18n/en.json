@@ -47,6 +47,14 @@
     "one": "Updated %1 minute ago",
     "other": "Updated %1 minutes ago"
   },
+  "Updated %1 hours ago": {
+    "one": "Updated %1 hour ago",
+    "other": "Updated %1 hours ago"
+  },
+  "Updated %1 days ago": {
+    "one": "Updated %1 day ago",
+    "other": "Updated %1 days ago"
+  },
   "Fetching repositories…": "Fetching repositories…",
   "Push %1": "Push %1",
   "Pull %1": "Pull %1",

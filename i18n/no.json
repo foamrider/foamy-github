@@ -47,6 +47,14 @@
     "one": "Oppdatert for %1 minutt siden",
     "other": "Oppdatert for %1 minutter siden"
   },
+  "Updated %1 hours ago": {
+    "one": "Oppdatert for %1 time siden",
+    "other": "Oppdatert for %1 timer siden"
+  },
+  "Updated %1 days ago": {
+    "one": "Oppdatert for %1 dag siden",
+    "other": "Oppdatert for %1 dager siden"
+  },
   "Fetching repositories…": "Henter prosjekter…",
   "Push %1": "Send %1",
   "Pull %1": "Hent %1",

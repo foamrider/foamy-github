@@ -342,7 +342,7 @@ PanelKeyCatcher {
         width: parent.width
         horizontalPadding: FoamyStyle.padding
         source: FoamyI18n.tn("%1 repositories", root.service ? root.service.status.repoCount : 0)
-        status: root.service ? Model.updatedText(root.service.lastChecked, root.now, FoamyI18n.t, FoamyI18n.tn) : ""
+        status: root.service ? FoamyI18n.updatedAgo(root.service.lastChecked * 1000, root.now) : ""
         statusTooltip: root.lastSyncText
         refreshing: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
         refreshEnabled: !root.busy

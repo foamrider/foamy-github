@@ -31,17 +31,6 @@ test('repository metadata and timestamps use the selected language and keep Engl
   assert.equal(Model.relativeTime(1, 172801000, nb), 'for 2 d siden')
 })
 
-test('the update label matches the other plugins and ages after the last successful scan', () => {
-  for (const timestamp of [0, -1, NaN, undefined])
-    assert.equal(Model.updatedText(timestamp, 1000000, nb), '')
-  assert.equal(Model.updatedText(1000, 1000000), 'Updated just now')
-  assert.equal(Model.updatedText(1000, 1000000, nb), 'Oppdatert nå')
-  assert.equal(Model.updatedText(940, 1000000, undefined, enn), 'Updated 1 minute ago')
-  assert.equal(Model.updatedText(940, 1000000, nb, nbn), 'Oppdatert for 1 minutt siden')
-  assert.equal(Model.updatedText(880, 1000000), 'Updated 2 minutes ago')
-  assert.equal(Model.updatedText(880, 1000000, nb, nbn), 'Oppdatert for 2 minutter siden')
-})
-
 test('fetch errors render inline after the status line and translate', () => {
   const repo = {branch:'main', ahead:0, behind:0, dirtyCount:10, complete:true,
     syncError:'No origin remote configured. Add one in lazygit, then refresh.'}

@@ -110,15 +110,6 @@ function plural(key, count) {
   return translate(key, [count])
 }
 
-function updatedText(timestampSec, nowMs, tr, tn) {
-  tr = tr || translate
-  tn = tn || plural
-  if (!isFinite(timestampSec) || timestampSec <= 0) return ""
-  var minutes = Math.max(0, Math.floor((nowMs - timestampSec * 1000) / 60000))
-  if (minutes === 0) return tr("Updated just now")
-  return tn("Updated %1 minutes ago", minutes)
-}
-
 // Repositories the popup lists: anything affected locally, plus clean ones
 // whose last fetch failed, so their inline error stays visible.
 function displayedRepos(repos) {
@@ -274,7 +265,6 @@ if (typeof module !== "undefined") {
     parseStatus: parseStatus,
     unavailableStatus: unavailableStatus,
     relativeTime: relativeTime,
-    updatedText: updatedText,
     repositoryMeta: repositoryMeta,
     watchRetry: watchRetry,
     displayedRepos: displayedRepos,
