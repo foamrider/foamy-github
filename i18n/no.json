@@ -135,5 +135,14 @@
   "Trust isn't available for this repository's filesystem.": "Klarering er ikke tilgjengelig for filsystemet dette prosjektet ligger på.",
   "Repository changed; refresh and try again.": "Prosjektet er endret; oppdater og prøv igjen.",
   "More options": "Flere valg",
-  "More information": "Mer informasjon"
+  "More information": "Mer informasjon",
+  "Pull %1 repositories": {
+    "one": "Hent %1 prosjekt",
+    "other": "Hent %1 prosjekter"
+  },
+  "Nothing to pull": "Ingenting å hente",
+  "Pulled %1 repositories": {
+    "one": "Hentet %1 prosjekt",
+    "other": "Hentet %1 prosjekter"
+  }
 }

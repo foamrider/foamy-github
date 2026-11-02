@@ -47,7 +47,7 @@ PanelKeyCatcher {
   // Cursor stops: each row, then its "LFS" button when the repository uses
   // Git LFS and is untrusted, then (note open, trust available) its "Trust
   // this repository" button; then Settings (header) and Refresh (footer),
-  // as in foamy-weather.
+  // as in foamy-weather. Pull all sits before Settings, as in the header.
   readonly property var stops: {
     var rows = [], infos = [], trusts = [], count = 0
     for (var i = 0; i < repos.length; i++) {
@@ -60,8 +60,10 @@ PanelKeyCatcher {
   }
   // The repository (path) whose Git LFS note is open under its row: one at a time.
   property string lfsNotePath: ""
-  readonly property int settingsStop: stops.count
-  readonly property int refreshStop: stops.count + 1
+  readonly property int pullAllStop: stops.count
+  readonly property int settingsStop: stops.count + 1
+  readonly property int refreshStop: stops.count + 2
+  readonly property int pullableCount: service && service.pullableRepos ? service.pullableRepos.length : 0
   readonly property var trustedList: Model.trustedRepositories(settings)
   readonly property var lfsRepositories: service && service.lfsRepos ? service.lfsRepos : []
   readonly property string healthText: {
@@ -88,7 +90,7 @@ PanelKeyCatcher {
   implicitHeight: editingSettings ? settingsPage.implicitHeight : list.contentHeight
   blocked: editingSettings
 
-  FoamyCursor { id: cursor; count: root.stops.count + 2 }   // rows (+ LFS, trust), settings, refresh
+  FoamyCursor { id: cursor; count: root.stops.count + 3 }   // rows (+ LFS, trust), pull all, settings, refresh
 
   onMoveRequested: function(dx, dy) { cursor.move(dy !== 0 ? dy : dx) }
   onActivateRequested: root.activate(cursor.index)
@@ -97,6 +99,7 @@ PanelKeyCatcher {
   onTextKey: function(text) {
     if (text === "s" || text === "S") root.settingsRequested()
     else if ((text === "r" || text === "R") && !root.busy) root.service.fetch()
+    else if (text === "p" || text === "P") root.pullAll()
   }
   onOpenedChanged: if (!opened) { cursor.reset(); lfsNotePath = "" }
   onEditingSettingsChanged: {
@@ -114,7 +117,7 @@ PanelKeyCatcher {
     function onIndexChanged() {
       var row = root.rowForStop(cursor.index)
       if (row >= 0) list.positionViewAtIndex(row, ListView.Contain)
-      else if (cursor.index === root.settingsStop) list.positionViewAtBeginning()
+      else if (cursor.index === root.settingsStop || cursor.index === root.pullAllStop) list.positionViewAtBeginning()
       else if (cursor.index === root.refreshStop) list.positionViewAtEnd()
     }
   }
@@ -156,6 +159,11 @@ PanelKeyCatcher {
     else if (stops.rows.indexOf(index) >= 0) root.repositoryRequested(repos[stops.rows.indexOf(index)])
     else if (index === refreshStop) { if (!busy) service.fetch() }
     else if (index === settingsStop) root.settingsRequested()
+    else if (index === pullAllStop) pullAll()
+  }
+
+  function pullAll() {
+    if (service && !busy && pullableCount > 0) service.pullAll()
   }
 
   Timer {
@@ -248,6 +256,19 @@ PanelKeyCatcher {
         settingsHasCursor: cursor.at(root.settingsStop)
         onSettingsClicked: root.settingsRequested()
         onSettingsHovered: function(hovered) { if (hovered) cursor.hover(root.settingsStop) }
+        trailing: [
+          FoamyAction {
+            objectName: "pullAllAction"
+            iconName: "chevrons-down"
+            tooltipText: (root.pullableCount > 0 ? FoamyI18n.tn("Pull %1 repositories", root.pullableCount)
+              : FoamyI18n.t("Nothing to pull")) + " · P"
+            actionEnabled: !root.busy && root.pullableCount > 0
+            hasCursor: cursor.at(root.pullAllStop)
+            foreground: FoamyPalette.secondaryText
+            onHoveredChanged: if (hovered) cursor.hover(root.pullAllStop)
+            onClicked: root.pullAll()
+          }
+        ]
         Flow {
           Layout.fillWidth: true
           spacing: FoamyStyle.padding
@@ -692,8 +713,7 @@ PanelKeyCatcher {
         FoamyAction {
           iconName: "arrow-down"
           tooltipText: FoamyI18n.t("Pull %1", [repoRow.repo ? String(repoRow.repo.label) : ""])
-          enabled: !root.busy && !!repoRow.repo && repoRow.repo.complete === true && repoRow.repo.behind > 0
-            && repoRow.repo.dirtyCount === 0 && repoRow.repo.ahead === 0
+          enabled: !root.busy && Model.canPull(repoRow.repo)
           foreground: FoamyPalette.secondaryText
           onClicked: root.service.pullRepository(repoRow.repo)
         }

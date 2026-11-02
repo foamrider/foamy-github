@@ -135,5 +135,14 @@
   "Trust isn't available for this repository's filesystem.": "Trust isn't available for this repository's filesystem.",
   "Repository changed; refresh and try again.": "Repository changed; refresh and try again.",
   "More options": "More options",
-  "More information": "More information"
+  "More information": "More information",
+  "Pull %1 repositories": {
+    "one": "Pull %1 repository",
+    "other": "Pull %1 repositories"
+  },
+  "Nothing to pull": "Nothing to pull",
+  "Pulled %1 repositories": {
+    "one": "Pulled %1 repository",
+    "other": "Pulled %1 repositories"
+  }
 }

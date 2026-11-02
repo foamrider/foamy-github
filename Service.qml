@@ -91,6 +91,8 @@ Item {
     }
     // The last bar instance went away (plugin disabled): stop every helper.
     networkReadyTimer.stop()
+    pullAllQueue = []
+    pullAllResult = null
     watchProcess.running = false
     statusProcess.running = false
     syncProcess.running = false
@@ -203,8 +205,41 @@ Item {
     runRepositoryAction("pull", repo)
   }
 
-  function runRepositoryAction(mode, repo) {
-    if (root.busy || !root.active || !repo || !repo.path || repo.complete !== true) return
+  // Pull all: every repository a row's Pull would take, one at a time through
+  // the same helper (which checks each again before pulling). The next pull
+  // starts as the previous one exits, before its status refresh.
+  readonly property var pullableRepos: Model.pullableRepos(repos)
+  property var pullAllQueue: []
+  property var pullAllResult: null            // { pulled, failures: [message] } while running
+  readonly property bool pullingAll: pullAllResult !== null
+  function pullAll() {
+    if (root.busy || !root.active || pullableRepos.length === 0) return
+    pullAllResult = { pulled: 0, failures: [] }
+    pullAllQueue = pullableRepos.slice()
+    pullNext()
+  }
+  function pullNext() {
+    while (pullAllQueue.length > 0) {
+      var repo = pullAllQueue[0]
+      pullAllQueue = pullAllQueue.slice(1)
+      if (runRepositoryAction("pull", repo, true)) return
+    }
+    finishPullAll()
+  }
+  function finishPullAll() {
+    var result = pullAllResult
+    pullAllResult = null
+    pullAllQueue = []
+    if (!result) return
+    actionMessages = result.pulled > 0 ? [{ label: "Pulled %1 repositories", count: result.pulled }] : []
+    operationError = result.failures.join(" · ")
+  }
+
+  // `queued`: the next Pull all step, which may follow a status refresh the
+  // previous step started (the helper's lock still keeps Git operations apart).
+  function runRepositoryAction(mode, repo, queued) {
+    if ((queued ? root.repositoryActionRunning || root.syncing : root.busy) || !root.active
+        || !repo || !repo.path || repo.complete !== true) return false
     repositoryActionRunning = true
     operationError = ""
     actionMessageTimer.stop()
@@ -212,6 +247,7 @@ Item {
       [String(repo.label || repo.name || "repository")])
     repositoryActionProcess.command = ["python3", helperPath, mode, String(repo.path)].concat(helperArguments())
     repositoryActionProcess.running = true
+    return true
   }
 
   function applyStatus(raw) {
@@ -376,6 +412,19 @@ Item {
       try {
         result = JSON.parse(String(repositoryActionOutput.text || "{}"))
       } catch (e) {}
+      if (root.pullingAll) {
+        var step = root.pullAllResult
+        if (result && result.ok) step.pulled++
+        else step.failures.push(result ? String(result.message || "Repository action failed")
+          : String(repositoryActionError.text || "Repository action failed").trim())
+        root.pullAllResult = step
+        root.pullNext()
+        if (root.pullingAll) return
+        actionMessageTimer.restart()
+        root.refresh()
+        root.retryScheduledFetch()
+        return
+      }
       if (result && (result.ok || result.busy)) {
         root.setActionStatus(String(result.message || "Repository action complete"))
         root.operationError = ""

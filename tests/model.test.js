@@ -81,6 +81,18 @@ test('per-repository trust: entries carry path and identity', () => {
   assert.deepEqual(Model.lfsRepos(rows).map(r => r.label), ['A', 'b'])
 })
 
+test('Pull all takes the repositories a row would pull', () => {
+  const behind = {path:'/a', complete:true, behind:2, ahead:0, dirtyCount:0}
+  const dirty = {...behind, path:'/b', dirtyCount:1}
+  const diverged = {...behind, path:'/c', ahead:1}
+  const current = {...behind, path:'/d', behind:0}
+  const unchecked = {...behind, path:'/e', complete:false}
+  assert.deepEqual(Model.pullableRepos([behind, dirty, diverged, current, unchecked, null]).map(r => r.path), ['/a'])
+  assert.equal(Model.canPull(behind), true)
+  assert.equal(Model.canPull(dirty), false, 'local changes stay with lazygit')
+  assert.deepEqual(Model.pullableRepos(undefined), [])
+})
+
 test('Settings lists only repositories using LFS; trust records of others stay', () => {
   const dotfiles = {label:'.dotfiles', path:'/home/me/.dotfiles', identity:'1:1:1', usesLfs:false}
   const assets = {label:'assets', path:'/home/me/assets', identity:'2:2:2', usesLfs:true}

@@ -180,6 +180,16 @@ function withTrust(list, repo, trusted) {
   return out
 }
 
+// A pull the row's button (and Pull all) offers: behind its upstream with a
+// clean working tree and nothing of its own to push, so it fast-forwards.
+function canPull(repo) {
+  return !!repo && repo.complete === true && repo.behind > 0 && repo.dirtyCount === 0 && repo.ahead === 0
+}
+
+function pullableRepos(repos) {
+  return (repos || []).filter(canPull)
+}
+
 // Repositories Settings → Git LFS lists, by label: only those that use Git
 // LFS. Trust records of other repositories (one that stopped using LFS, or
 // isn't found) are kept as they are, never pruned; they just aren't listed.
@@ -268,6 +278,8 @@ if (typeof module !== "undefined") {
     repositoryMeta: repositoryMeta,
     watchRetry: watchRetry,
     displayedRepos: displayedRepos,
+    canPull: canPull,
+    pullableRepos: pullableRepos,
     trustedRepositories: trustedRepositories,
     withTrust: withTrust,
     isTrusted: isTrusted,
