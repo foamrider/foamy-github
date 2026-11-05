@@ -1,4 +1,4 @@
-// foamy-kit 0.4.6 62abe59f3f9762b3d8a1526be20572aa7400d58b883ad85d24199eef069532fb — do not edit; change foamy-kit and run sync
+// foamy-kit 0.4.7 2661feae27f7fce972aaf1bd53363dfbc4297d256012cc3d051737d433f1bf76 — do not edit; change foamy-kit and run sync
 import QtQuick
 import qs.Commons as Commons
 import qs.Ui
@@ -24,7 +24,9 @@ import qs.Ui
 // `statusClickable` makes it a link (statusClicked). The refresh button
 // spins while `refreshing` and is inert then; `showRefresh: false` hides it.
 // No horizontal padding of its own: place it in the padded body, or set
-// `horizontalPadding` when the body runs edge to edge.
+// `horizontalPadding` when the body runs edge to edge. The row sits
+// `spacing` under the hairline and `spacing` above the footer's bottom, so it
+// is centred between them; put nothing under it (the popup ends there).
 Column {
   id: root
 
@@ -48,7 +50,7 @@ Column {
   signal statusClicked()
 
   spacing: FoamyStyle.gapLarge
-  bottomPadding: FoamyStyle.gapSmall
+  bottomPadding: spacing
 
   Rectangle {
     visible: root.divider
