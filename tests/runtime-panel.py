@@ -180,13 +180,13 @@ ShellRoot {
 status = 0
 import subprocess
 import tempfile
-sys.path.insert(0, str(PLUGIN))
-import github_status  # noqa: E402
+sys.path.insert(0, str(PLUGIN / "tests"))
+from blackbox import command  # noqa: E402  (FOAMY_HELPER, as in the unit tests)
 TRUST_REPO = tempfile.mkdtemp(prefix="foamy-github-runtime-repo-")
 import atexit, shutil  # noqa: E401
 atexit.register(shutil.rmtree, TRUST_REPO, True)
 subprocess.run(["git", "init", "-q", TRUST_REPO], check=True)
-TRUST_IDENTITY = github_status.current_identity(TRUST_REPO)
+TRUST_IDENTITY = subprocess.run(command("identity", TRUST_REPO), capture_output=True, text=True, check=True).stdout.strip()
 SHELL = SHELL.replace("@REPO@", TRUST_REPO).replace("@IDENT@", TRUST_IDENTITY)
 
 for host in (sys.argv[1:] or ["4.0", "4.5"]):

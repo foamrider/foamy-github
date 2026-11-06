@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run the Python suite repeatedly to catch timing-dependent failures.
-#   bash tests/stress-python.sh [runs=40] [parallel=4] [logdir=/tmp/foamy-github-stress]
+# Run the unit suite repeatedly to catch timing-dependent failures (the helper
+# from FOAMY_HELPER, see tests/blackbox.py).
+#   bash tests/stress.sh [runs=40] [parallel=4] [logdir=/tmp/foamy-github-stress]
 # Each run's output is kept as <logdir>/run-N.log; failures are listed at the end.
 set -u
 runs=${1:-40}

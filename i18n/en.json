@@ -152,5 +152,6 @@
   "Pulled %1 repositories": {
     "one": "Pulled %1 repository",
     "other": "Pulled %1 repositories"
-  }
+  },
+  "This plugin's helper isn't available for this CPU.": "This plugin's helper isn't available for this CPU."
 }

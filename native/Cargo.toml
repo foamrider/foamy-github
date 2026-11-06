@@ -1,0 +1,17 @@
+[package]
+name = "foamy-github-helper"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Bounded locks, Landlock exec restriction (ExecOnly), bubblewrap (Bwrap),
+# which() and the panic hook.
+foamy-helper = { path = "../kit/rust/foamy-helper", features = ["sandbox"] }
+# statx (birth times), openat/fstatat without following links, inotify,
+# poll, kill/killpg; already a dependency of foamy-helper.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process", "event"] }
+# sigaction for the SIGTERM/SIGINT/SIGHUP cleanup; already a dependency of
+# foamy-helper's sandbox feature.
+libc = "0.2.153"

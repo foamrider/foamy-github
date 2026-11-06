@@ -152,5 +152,6 @@
   "Pulled %1 repositories": {
     "one": "Hentet %1 prosjekt",
     "other": "Hentet %1 prosjekter"
-  }
+  },
+  "This plugin's helper isn't available for this CPU.": "Hjelpeprogrammet til denne utvidelsen er ikke tilgjengelig for denne prosessoren."
 }
