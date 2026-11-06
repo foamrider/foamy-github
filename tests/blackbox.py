@@ -6,8 +6,7 @@ the aarch64 build through qemu binfmt:
 
   FOAMY_HELPER='["bin/aarch64/foamy-github-helper"]' python3 -m unittest discover -s tests -p 'test_*.py'
 
-Without it the tests run the Python helpers (github_status.py and
-github_watch.py).
+The default is this machine's build, bin/<machine>/foamy-github-helper.
 
 Every test gets a temporary HOME, XDG_CACHE_HOME and XDG_RUNTIME_DIR, an
 empty global Git config (GIT_CONFIG_GLOBAL=/dev/null, no system config), no
@@ -38,7 +37,6 @@ import queue
 import shutil
 import socket
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -51,9 +49,7 @@ REAL_GIT = os.path.realpath(shutil.which("git", path=SYSTEM_PATH) or "/usr/bin/g
 
 def _prefix():
   raw = os.environ.get("FOAMY_HELPER")
-  if not raw:
-    return None
-  prefix = json.loads(raw)
+  prefix = json.loads(raw) if raw else [str(ROOT / "bin" / platform.machine() / "foamy-github-helper")]
   program = prefix[0] if "/" in prefix[0] else shutil.which(prefix[0])
   if not program:
     raise RuntimeError(f"helper program not found: {prefix[0]}")
@@ -66,10 +62,6 @@ PREFIX = _prefix()
 
 def command(subcommand, *args):
   """The helper's argv for one subcommand."""
-  if PREFIX is None:
-    if subcommand == "watch":
-      return [sys.executable, str(ROOT / "github_watch.py"), *args]
-    return [sys.executable, str(ROOT / "github_status.py"), subcommand, *args]
   return [*PREFIX, subcommand, *args]
 
 
@@ -84,7 +76,7 @@ def _elf_machine(path):
 
 # An aarch64 helper on an x86_64 host runs under qemu-user, which has
 # neither Landlock nor seccomp: the helper reports them unavailable.
-EMULATED = PREFIX is not None and _elf_machine(PREFIX[0]) == 0xB7 and platform.machine() != "aarch64"
+EMULATED = _elf_machine(PREFIX[0]) == 0xB7 and platform.machine() != "aarch64"
 
 
 def _works(argv):

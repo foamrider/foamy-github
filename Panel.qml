@@ -94,7 +94,7 @@ Panel {
     // that was inspected: re-verify its identity from a fresh pin first.
     if (identityCheck.running) return
     identityCheck.repo = { path: String(repo.path), identity: String(repo.identity) }
-    identityCheck.command = ["python3", Service.helperPath, "identity", identityCheck.repo.path]
+    identityCheck.command = Service.helperCommand(["identity", identityCheck.repo.path])
     identityCheck.running = true
   }
   Process {
@@ -103,7 +103,9 @@ Panel {
     stdout: StdioCollector { id: identityOutput; waitForEnd: true }
     onExited: function(exitCode) {
       var current = String(identityOutput.text || "").trim()
-      if (exitCode === 0 && repo && current !== "" && current === repo.identity)
+      if (Service.markUnavailable(exitCode))
+        root.settingsError = FoamyI18n.t(Service.operationError)
+      else if (exitCode === 0 && repo && current !== "" && current === repo.identity)
         prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, true))
       else
         root.settingsError = FoamyI18n.t("Repository changed; refresh and try again.")
