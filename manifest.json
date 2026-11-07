@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "foamy.github",
   "name": "Foamy GitHub",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "foamrider",
   "description": "Local Git repository status with per-repository actions.",
   "kinds": [

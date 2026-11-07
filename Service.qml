@@ -7,6 +7,7 @@ import "kit"
 import "Model.js" as Model
 import "Preferences.js" as Schema
 import "kit/FoamyPrefs.js" as Prefs
+import "kit/FoamyNative.js" as FoamyNative
 
 // Repository state and every Git helper, once per shell. 4.5 draws one bar
 // (and so one Panel) per monitor; all of them read this singleton, and only
@@ -54,7 +55,21 @@ Item {
   property int watchRetryMs: Model.WATCH_RETRY_MIN_MS
   property double watchStartedAt: 0
 
-  readonly property string helperPath: decodeURIComponent(Qt.resolvedUrl("github_status.py").toString().replace(/^file:\/\//, ""))
+  // The native helper (bin/<arch>/foamy-github-helper). Exit 126/127: none
+  // for this CPU; then it is never started again (no retry loop).
+  readonly property string pluginDir: FoamyNative.localPath(Qt.resolvedUrl("."))
+  property bool helperUnavailable: false
+  function helperCommand(args) {
+    return FoamyNative.command(root.pluginDir, "foamy-github-helper", args)
+  }
+  function markUnavailable(exitCode) {
+    if (!FoamyNative.unavailable(exitCode)) return false
+    if (!root.helperUnavailable) console.warn("foamy.github: the native helper isn't available for this CPU (exit", exitCode + ")")
+    root.helperUnavailable = true
+    root.operationError = FoamyNative.UNAVAILABLE_TEXT
+    status = Model.unavailableStatus(status, FoamyNative.UNAVAILABLE_TEXT)
+    return true
+  }
   readonly property var repositoryFolders: preferences.repositoryFolders
   readonly property string folderArguments: JSON.stringify(repositoryFolders)
   onFolderArgumentsChanged: Qt.callLater(function() { root.restartWatcher(true) })
@@ -116,7 +131,7 @@ Item {
   }
 
   function restartWatcher(resetBackoff) {
-    if (!root.active) return
+    if (!root.active || root.helperUnavailable) return
     if (resetBackoff) root.watchRetryMs = Model.WATCH_RETRY_MIN_MS
     root.monitoring = false
     if (watchProcess.running) {
@@ -132,14 +147,14 @@ Item {
       return
     }
     root.watchedFolders = root.folderArguments
-    watchProcess.command = ["python3", root.helperPath.replace(/github_status\.py$/, "github_watch.py")].concat(root.helperArguments())
+    watchProcess.command = root.helperCommand(["watch"].concat(root.helperArguments()))
     root.watchStartedAt = Date.now()
     root.refreshing = true
     watchProcess.running = true
   }
 
   function refresh() {
-    if (!root.active) return
+    if (!root.active || root.helperUnavailable) return
     if (root.inotifyEnabled && root.monitoring && watchProcess.running) {
       root.refreshing = true
       watchProcess.write("refresh\n")
@@ -148,7 +163,7 @@ Item {
     if (statusProcess.running) return
     refreshing = true
     scannedFolders = folderArguments
-    statusProcess.command = ["python3", helperPath, "status"].concat(helperArguments())
+    statusProcess.command = helperCommand(["status"].concat(helperArguments()))
     statusProcess.running = true
   }
 
@@ -180,7 +195,7 @@ Item {
   }
 
   function synchronize() {
-    if (root.busy || !root.active) return
+    if (root.busy || !root.active || root.helperUnavailable) return
     if (!root.networkReady) {
       setActionStatus("Waiting for network…")
       actionMessageTimer.restart()
@@ -191,7 +206,7 @@ Item {
     // An earlier completion timer must not clear the new progress title.
     actionMessageTimer.stop()
     setActionStatus("Fetching repositories…")
-    syncProcess.command = ["python3", helperPath, "fetch"].concat(helperArguments())
+    syncProcess.command = helperCommand(["fetch"].concat(helperArguments()))
     syncProcess.running = true
   }
 
@@ -236,14 +251,14 @@ Item {
   // `queued`: the next Pull all step, which may follow a status refresh the
   // previous step started (the helper's lock still keeps Git operations apart).
   function runRepositoryAction(mode, repo, queued) {
-    if ((queued ? root.repositoryActionRunning || root.syncing : root.busy) || !root.active
+    if ((queued ? root.repositoryActionRunning || root.syncing : root.busy) || !root.active || root.helperUnavailable
         || !repo || !repo.path || repo.complete !== true) return false
     repositoryActionRunning = true
     operationError = ""
     actionMessageTimer.stop()
     setActionStatus(mode === "push" ? "Pushing %1…" : "Pulling %1…",
       [String(repo.label || repo.name || "repository")])
-    repositoryActionProcess.command = ["python3", helperPath, mode, String(repo.path)].concat(helperArguments())
+    repositoryActionProcess.command = helperCommand([mode, String(repo.path)].concat(helperArguments()))
     repositoryActionProcess.running = true
     return true
   }
@@ -318,6 +333,7 @@ Item {
         return
       }
       if (!root.active) return
+      if (root.markUnavailable(exitCode)) return
       root.watchFailed = true
       root.watchDetail = String(watchOutput.text || "Filesystem watcher exited").trim().slice(0, 240)
       var ran = Date.now() - root.watchStartedAt
@@ -373,6 +389,7 @@ Item {
         return
       }
       if (root.monitoring) return
+      if (root.markUnavailable(exitCode)) return
       if (exitCode === 0) root.applyStatus(statusOutput.text)
       else root.failStatus(String(statusError.text || "Repository status failed").trim().slice(0, 240))
       root.retryScheduledFetch()
@@ -385,6 +402,10 @@ Item {
     stderr: StdioCollector { id: syncError; waitForEnd: true }
     onExited: function(exitCode) {
       root.syncing = false
+      if (root.markUnavailable(exitCode)) {
+        root.setActionStatus("")
+        return
+      }
       var outcome = Model.fetchOutcome(exitCode, syncOutput.text, syncError.text)
       if (outcome.status === "busy") {
         root.setActionStatus(outcome.message || "Repository synchronization is already running")
@@ -406,6 +427,12 @@ Item {
     stderr: StdioCollector { id: repositoryActionError; waitForEnd: true }
     onExited: function(exitCode) {
       root.repositoryActionRunning = false
+      if (root.markUnavailable(exitCode)) {
+        root.pullAllQueue = []
+        root.pullAllResult = null
+        root.setActionStatus("")
+        return
+      }
       var result = null
       try {
         result = JSON.parse(String(repositoryActionOutput.text || "{}"))

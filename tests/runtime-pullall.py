@@ -2,13 +2,17 @@
 """Pull all, end to end: the real Panel.qml and Service in an isolated
 offscreen Quickshell (foamy-kit's harness) over local Git repositories.
 
-  python3 tests/runtime-pullall.py [4.0|4.5 ...]     (default: both)
+  python3 tests/runtime-pullall.py [4.5|4.0|both ...]     (default: 4.5)
 
 Three clones of one local remote are behind it; one also has local changes.
 Pull all pulls the two clean ones, one after the other, leaves the changed
 one alone, and reports the count; its header button shows only while
 something can be pulled. Requires ~/GitHub/Personal/foamy-kit (or
-FOAMY_KIT)."""
+FOAMY_KIT).
+
+Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
+FOAMY_HOST_45. 4.0 runs only against an Omarchy 4.0 shell tree in
+FOAMY_HOST_40; without one, 4.0 and `both` print a SKIP line for it."""
 import atexit
 import os
 import shutil
@@ -18,8 +22,24 @@ import tempfile
 from pathlib import Path
 
 KIT = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"))
+# The installed shell is 4.5; set before the harness reads it.
+os.environ.setdefault("FOAMY_HOST_45", "/usr/share/omarchy/shell")
 sys.path.insert(0, str(KIT / "preview"))
 import harness  # noqa: E402
+
+
+def hosts(args, name):
+    """4.5 by default; 4.0 only with FOAMY_HOST_40 (no installed 4.0 shell)."""
+    chosen = []
+    for arg in args or ["4.5"]:
+        if arg not in ("4.0", "4.5", "both"):
+            sys.exit(f"unknown host {arg!r}: use 4.5, 4.0 or both")
+        chosen += ["4.5", "4.0"] if arg == "both" else [arg]
+    if "4.0" in chosen and not os.environ.get("FOAMY_HOST_40"):
+        print(f"SKIP {name} 4.0: set FOAMY_HOST_40 to an Omarchy 4.0 shell tree")
+        chosen = [h for h in chosen if h != "4.0"]
+    return list(dict.fromkeys(chosen))
+
 
 PLUGIN = Path(__file__).resolve().parents[1]
 SHELL = r'''
@@ -134,7 +154,7 @@ for clone in clones:
 remote_head = head(seed)
 
 status = 0
-for host in (sys.argv[1:] or ["4.0", "4.5"]):
+for host in hosts(sys.argv[1:], "runtime-pullall"):
     for clone in clones:                 # each host starts behind again
         if head(clone) == remote_head:
             git(clone, "reset", "-q", "--hard", "HEAD~1")

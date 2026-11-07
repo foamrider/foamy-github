@@ -6,10 +6,12 @@ Local Git repository status, fetch, push, and pull.
 
 ## Install
 
-Requires Omarchy 4.5 (also loads on 4.0.6, in English), Git, Python 3, Bash,
-util-linux `setpriv` with Landlock and `bubblewrap` (all standard on Omarchy),
-`jq` and `wl-clipboard`. Opening a repository requires `lazygit` and Omarchy's
-terminal launcher; **Browse for folder** uses `qml6` and `hyprctl`.
+Requires Omarchy 4.5 on x86_64 or aarch64,
+Git, Bash, `bubblewrap` (standard on Omarchy), `jq` and `wl-clipboard`. The
+plugin's helper is a bundled static binary (`bin/<arch>/foamy-github-helper`),
+so nothing is built on install; on other CPUs the panel says the helper isn't
+available. Opening a repository requires `lazygit` and Omarchy's terminal
+launcher; **Browse for folder** uses `qml6` and `hyprctl`.
 
 ```sh
 omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
@@ -37,6 +39,8 @@ Keyboard: arrows or `hjkl` move one cursor through the rows, Pull all (when show
 and Refresh (hovering moves the same cursor); Enter activates; `r` refreshes;
 `p` pulls all; `s` opens Settings; Esc closes (or leaves Settings); Tab and Shift+Tab move to
 the next bar panel.
+IPC: `omarchy-shell foamy.github open|close|toggle|settings|refresh|status`
+(`refresh` fetches remotes; `status` prints JSON).
 
 ## Settings
 
@@ -107,13 +111,14 @@ each Git command reads the config again. A repository changed during a check,
 for example by an include adding a filter that `.gitattributes` already
 selects, could slip past them. So untrusted **status checks** also run under a
 [Landlock](https://docs.kernel.org/userspace-api/landlock.html) execute
-restriction (`setpriv` from util-linux): only the Git binary and its loader
+restriction, applied by the helper itself right before it starts Git (inside
+the namespace below when there is one): only the Git binary and its loader
 may be executed, so no filter, hook, shell or helper can start at all.
 
 A plain filter that can't run passes the content through, so counts stay
 right. A `required` one fails the check, which then shows **Status
-unavailable**. This costs about 1.5 ms per repository check (10.4 vs 8.9 ms,
-7 Git calls).
+unavailable**. This costs about 0.6 ms per Git call (measured: 8.2 vs 7.6 ms
+for `git --version` in the namespace).
 
 **Automatic fetches** can't run under that restriction, because they need ssh
 and your credential helpers. Instead, Git fetches the repository in place,
@@ -181,8 +186,8 @@ true) stays a bare key, not an empty value (false).
 
 Without bubblewrap the checks fall back to the snapshot overrides plus
 Landlock, which leaves a race: someone who can already write into the
-repository could change its config during a check. Where `setpriv` or Landlock is missing (Omarchy's kernel and util-linux have
-both), status checks fall back to the snapshot overrides alone. A repository
+repository could change its config during a check. Where Landlock is missing (Omarchy's kernel has
+it), status checks fall back to the snapshot overrides alone. A repository
 rewritten during a check could then still run a filter; the trust settings
 can't close that gap. Your global Git config, credential helpers (for example `gh auth
 git-credential`) and SSH agent keep working. Repository-local credential
@@ -284,23 +289,43 @@ Provided **as is**, without warranty or guaranteed support. Use at your own risk
 
 ## Language
 
-Language follows **Omarchy → Setup → Language** on Omarchy 4.5 (English and
-Norwegian catalogs; other languages fall back to English). Omarchy 4.0 shows
-the plugin in English.
+Language follows **Omarchy → Setup → Language** (English and Norwegian
+catalogs; other languages fall back to English).
 
 ## Development
 
 `kit/` holds shared components copied from [foamy-kit](https://github.com/foamrider/foamy-kit); edit them there, not here.
 
+The helper is Rust (`native/`, its contract at the top of
+`native/src/main.rs`), built with foamy-kit's tool into committed static
+binaries for x86_64 and aarch64 (reproducible; `native/native.pin` records
+the sources and checksums). After changing `native/`, rebuild and commit
+`bin/` with the pin:
+
+```sh
+export CARGO_TARGET_DIR=~/.cache/foamy-native/foamy-github   # never a target/ in the plugin
+~/GitHub/Personal/foamy-kit/tools/build-native.sh . --test   # fmt, clippy, cargo test
+~/GitHub/Personal/foamy-kit/tools/build-native.sh .          # both arches, native.pin
+~/GitHub/Personal/foamy-kit/tools/build-native.sh . --verify # byte-identical clean rebuild
+```
+
+The unit tests (Python, dev only) run the helper as a process: this machine's
+binary by default, another one with `FOAMY_HELPER` (the aarch64 build runs
+through qemu binfmt; qemu-user has no Landlock, so those checks skip).
+
 ```sh
 node --test tests/model.test.js tests/preferences.test.js && node tests/i18n.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
+FOAMY_HELPER='["bin/aarch64/foamy-github-helper"]' python3 -m unittest discover -s tests -p 'test_*.py'
+bash tests/stress.sh                               # the unit suite, 40 runs, 4 at a time
 bash tests/kit-check.sh
-python3 tests/i18n-runtime.py                     # OMARCHY_PATH=<4.5 tree> for 4.5
-python3 tests/runtime-panel.py                     # offscreen, needs foamy-kit
+python3 tests/i18n-runtime.py                     # live language switching; OMARCHY_PATH for another tree
+python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
-~/GitHub/Personal/foamy-kit/preview/render.py . --host both
+~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
 
-Shared components in `kit/` come from [foamy-kit](https://github.com/foamrider/foamy-kit);
-don't edit them here.
+The runtime tests and the preview target Omarchy 4.5, the installed
+`/usr/share/omarchy/shell` (`FOAMY_HOST_45` selects another shell tree). Pass
+`4.0` or `both` to also run 4.0; that needs an Omarchy 4.0 shell tree in
+`FOAMY_HOST_40`, and prints a SKIP line without one.

@@ -3,3 +3,4 @@ __pycache__/
 *.local.json
 shell.json
 sync-state.json
+/target/
