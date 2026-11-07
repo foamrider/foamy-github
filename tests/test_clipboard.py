@@ -111,7 +111,7 @@ class ClipboardTests(unittest.TestCase):
         while time.monotonic() < deadline:
             try:
                 state = status.read_text().split()[2]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):  # gone before the open, or before the read
                 return
             if state == "Z":
                 return
