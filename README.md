@@ -6,7 +6,7 @@ Local Git repository status, fetch, push, and pull.
 
 ## Install
 
-Requires Omarchy 4.5 (also loads on 4.0.6, in English) on x86_64 or aarch64,
+Requires Omarchy 4.5 on x86_64 or aarch64,
 Git, Bash, `bubblewrap` (standard on Omarchy), `jq` and `wl-clipboard`. The
 plugin's helper is a bundled static binary (`bin/<arch>/foamy-github-helper`),
 so nothing is built on install; on other CPUs the panel says the helper isn't
@@ -289,9 +289,8 @@ Provided **as is**, without warranty or guaranteed support. Use at your own risk
 
 ## Language
 
-Language follows **Omarchy → Setup → Language** on Omarchy 4.5 (English and
-Norwegian catalogs; other languages fall back to English). Omarchy 4.0 shows
-the plugin in English.
+Language follows **Omarchy → Setup → Language** (English and Norwegian
+catalogs; other languages fall back to English).
 
 ## Development
 
@@ -320,8 +319,13 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 FOAMY_HELPER='["bin/aarch64/foamy-github-helper"]' python3 -m unittest discover -s tests -p 'test_*.py'
 bash tests/stress.sh                               # the unit suite, 40 runs, 4 at a time
 bash tests/kit-check.sh
-python3 tests/i18n-runtime.py                     # OMARCHY_PATH=<4.5 tree> for 4.5
-python3 tests/runtime-panel.py                     # offscreen, needs foamy-kit
+python3 tests/i18n-runtime.py                     # live language switching; OMARCHY_PATH for another tree
+python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
-~/GitHub/Personal/foamy-kit/preview/render.py . --host both
+~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
+
+The runtime tests and the preview target Omarchy 4.5, the installed
+`/usr/share/omarchy/shell` (`FOAMY_HOST_45` selects another shell tree). Pass
+`4.0` or `both` to also run 4.0; that needs an Omarchy 4.0 shell tree in
+`FOAMY_HOST_40`, and prints a SKIP line without one.
