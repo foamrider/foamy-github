@@ -39,6 +39,8 @@ Keyboard: arrows or `hjkl` move one cursor through the rows, Pull all (when show
 and Refresh (hovering moves the same cursor); Enter activates; `r` refreshes;
 `p` pulls all; `s` opens Settings; Esc closes (or leaves Settings); Tab and Shift+Tab move to
 the next bar panel.
+IPC: `omarchy-shell foamy.github open|close|toggle|settings|refresh|status`
+(`refresh` fetches remotes; `status` prints JSON).
 
 ## Settings
 
@@ -323,6 +325,3 @@ python3 tests/runtime-panel.py                     # offscreen, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
 ~/GitHub/Personal/foamy-kit/preview/render.py . --host both
 ```
-
-Shared components in `kit/` come from [foamy-kit](https://github.com/foamrider/foamy-kit);
-don't edit them here.

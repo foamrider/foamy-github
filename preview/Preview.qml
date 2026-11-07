@@ -68,7 +68,10 @@ Item {
       preview.row("Work/old-site", "main", 0, 0, 0, { trusted: true, identity: "65:4096:1" })
     ]
     readonly property var lfsRepos: Model.lfsRepos(repos)
+    readonly property var pullableRepos: Model.pullableRepos(affectedRepos)
+    readonly property bool pullingAll: false
     function fetch() {}
+    function pullAll() {}
     function pushRepository(repo) {}
     function pullRepository(repo) {}
   }
