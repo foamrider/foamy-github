@@ -174,6 +174,23 @@ class GitHook:
             self.errors.append(repr(error))
       finally:
         os.close(fd)                               # EOF: an empty included config
+      # A blocked reader wakes to EOF only if no writer is back by the time it
+      # runs, and open(O_WRONLY) returns at once while a reader holds the
+      # FIFO: reopening straight away can starve Git for seconds. Wait until
+      # these readers have let go of it first.
+      self.released([pid for pid, _argv in readers])
+
+  def released(self, pids, timeout=2):
+    target = str(self.fifo)
+    deadline = time.monotonic() + timeout
+    for pid in pids:
+      while time.monotonic() < deadline:
+        try:
+          if not any(os.readlink(f"/proc/{pid}/fd/{fd}") == target for fd in os.listdir(f"/proc/{pid}/fd")):
+            break
+        except OSError:                            # gone, or an fd closed while listing
+          break
+        time.sleep(.0005)
 
   def stop(self):
     self.stopping = True
