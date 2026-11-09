@@ -102,6 +102,8 @@
   },
   "All repositories are clean and match their upstream": "Alle prosjekter er rene og i takt med upstream",
   "Couldn't open the folder browser. Enter a path instead.": "Kunne ikke åpne mappevelgeren. Skriv inn en sti i stedet.",
+  "The folder browser needs a session bus, and there is none. Enter a path instead.": "Mappevelgeren trenger en øktbuss, og det finnes ingen. Skriv inn en sti i stedet.",
+  "No folder browser is running (xdg-desktop-portal). Enter a path instead.": "Ingen mappevelger kjører (xdg-desktop-portal). Skriv inn en sti i stedet.",
   "Couldn't save the setting.": "Kunne ikke lagre innstillingen.",
   "That value isn't allowed.": "Den verdien er ikke tillatt.",
   "Settings can't be saved: this widget has no bar entry.": "Innstillingene kan ikke lagres: modulen har ingen oppføring i linjen.",

@@ -240,6 +240,10 @@ function repositoryFolders(settings) {
 }
 
 function parseFolderRows(rows) {
+  // Since Qt 6.12 a list passed through a QML `var` signal argument (the
+  // view's foldersEdited) arrives as a sequence wrapper, not an Array.
+  if (rows && typeof rows === "object" && !Array.isArray(rows) && typeof rows.length === "number")
+    rows = Array.prototype.slice.call(rows)
   if (!Array.isArray(rows) || rows.length > 32) return { error: "Use at most 32 repository folders." }
   var folders = []
   for (var i = 0; i < rows.length; i++) {
@@ -267,8 +271,23 @@ var listFields = [{
   validate: function(value) { var parsed = parseFolderRows(value); return parsed.error ? parsed.error : true }
 }]
 
+// The helper's `pick-folder` reply (the last stdout line): {path} for a
+// choice, {cancelled: true}, or {error: code} (the helper's code, or
+// PORTAL_FAILED when the timeout backstop stopped it, else FAILED). Exit
+// codes 126/127 (no helper for this CPU) are the caller's to check first.
+function folderPickReply(exitCode, stdout) {
+  var data = null
+  try { data = JSON.parse(String(stdout || "").trim().split("\n").pop()) } catch (error) { data = null }
+  if (exitCode === 0 && data && data.ok === true && data.cancelled === true) return { cancelled: true }
+  if (exitCode === 0 && data && data.ok === true && typeof data.path === "string" && data.path.charAt(0) === "/")
+    return { path: data.path }
+  if (exitCode === 124 || exitCode === 137) return { error: "PORTAL_FAILED" }
+  return { error: data && typeof data.code === "string" && /^[A-Z_]{1,40}$/.test(data.code) ? data.code : "FAILED" }
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
+    folderPickReply: folderPickReply,
     repositoryFolders: repositoryFolders,
     parseFolderRows: parseFolderRows,
     listFields: listFields,

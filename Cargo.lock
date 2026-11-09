@@ -45,6 +45,7 @@ dependencies = [
  "foamy-helper",
  "libc",
  "rustix",
+ "serde_json",
 ]
 
 [[package]]

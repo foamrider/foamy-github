@@ -7,6 +7,10 @@ test('folder rows preserve legacy depth and merge duplicates using the deepest s
     folders: [{path:'~/Projects',depth:3}, {path:'/tmp/repo',depth:0}], error: ''
   })
   assert.deepEqual(Model.parseFolderRows([]).folders, [])
+  // A QML `var` signal argument is an array-like sequence on Qt 6.12.
+  assert.deepEqual(Model.parseFolderRows({length: 1, 0: {path:'/home/u/Tøst', depth:2}}), {
+    folders: [{path:'/home/u/Tøst', depth:2}], error: ''
+  })
   assert.deepEqual(Model.repositoryFolders({repositoryFolders:[]}), [])
   assert.deepEqual(Model.repositoryFolders({}), [])
 })
@@ -147,4 +151,29 @@ test('fetch helper output is validated before reporting', () => {
   assert.deepEqual(Model.fetchOutcome(1, JSON.stringify({ok: false, failures: [{}, {}]}), ''), {status: 'done', message: '', failed: 2})
   assert.equal(Model.fetchOutcome(0, JSON.stringify({ok: true, failures: []}), '').failed, 0)
   assert.equal(Model.fetchOutcome(0, JSON.stringify({busy: true, message: 'x'}), '').status, 'busy')
+})
+
+test('the pick-folder reply gives a path, a cancel or an error code', () => {
+  assert.deepEqual(Model.folderPickReply(0, '{"ok":true,"path":"/home/me/Code"}\n'), {path: '/home/me/Code'})
+  assert.deepEqual(Model.folderPickReply(0, 'noise\n{"ok":true,"cancelled":true}\n'), {cancelled: true})
+  assert.deepEqual(Model.folderPickReply(1, '{"ok":false,"code":"NO_SESSION_BUS","error":"no bus"}\n'), {error: 'NO_SESSION_BUS'})
+  assert.deepEqual(Model.folderPickReply(1, '{"ok":false,"code":"PORTAL_UNAVAILABLE","error":"x"}'), {error: 'PORTAL_UNAVAILABLE'})
+  // The timeout backstop, garbage, a relative path, a code that isn't one.
+  assert.deepEqual(Model.folderPickReply(124, ''), {error: 'PORTAL_FAILED'})
+  assert.deepEqual(Model.folderPickReply(137, ''), {error: 'PORTAL_FAILED'})
+  assert.deepEqual(Model.folderPickReply(0, 'not json'), {error: 'FAILED'})
+  assert.deepEqual(Model.folderPickReply(0, '{"ok":true,"path":"Code"}'), {error: 'FAILED'})
+  assert.deepEqual(Model.folderPickReply(1, '{"ok":false,"code":"<b>x</b>"}'), {error: 'FAILED'})
+  assert.deepEqual(Model.folderPickReply(1, '{"ok":true,"path":"/a"}'), {error: 'FAILED'})
+})
+
+test('the folder browser is the helper\'s pick-folder, under a timeout, with no picker script', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const panel = fs.readFileSync(path.join(__dirname, '../Panel.qml'), 'utf8')
+  assert.match(panel, /\["timeout", "--kill-after=5s", "1830s"\]\.concat\(Service\.helperCommand\(\["pick-folder",/)
+  assert.match(panel, /Model\.folderPickReply\(exitCode, folderPickerOutput\.text\)/)
+  assert.doesNotMatch(panel, /folder-picker\.sh|FolderPicker\.qml|GITHUB_FOLDER|"bash"/)
+  for (const gone of ['folder-picker.sh', 'FolderPicker.qml'])
+    assert.equal(fs.existsSync(path.join(__dirname, '..', gone)), false, gone)
 })

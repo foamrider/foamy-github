@@ -141,7 +141,8 @@ Panel {
     prefs.save("repositoryFolders", parsed.folders)
   }
 
-  // The folder chooser is a separate window: release the popup while it is open.
+  // The folder chooser is the desktop's (xdg-desktop-portal, through the
+  // helper's pick-folder), a separate window: release the popup while it is open.
   function browseFolder(index) {
     if (folderPicker.running) return
     browsingRow = index
@@ -152,14 +153,21 @@ Panel {
 
   Process {
     id: folderPicker
-    command: ["bash", decodeURIComponent(Qt.resolvedUrl("folder-picker.sh").toString().replace(/^file:\/\//, "")),
-      FoamyI18n.t("Choose a repository folder"), FoamyI18n.t("Choose")]
+    // The helper waits up to 30 minutes for the choice (the dialog waits on
+    // the user) and then answers PORTAL_FAILED; this is the backstop.
+    command: ["timeout", "--kill-after=5s", "1830s"].concat(Service.helperCommand(["pick-folder",
+      FoamyI18n.t("Choose a repository folder"), FoamyI18n.t("Choose")]))
     stdout: StdioCollector { id: folderPickerOutput; waitForEnd: true }
     onExited: function(exitCode) {
-      var match = String(folderPickerOutput.text).match(/(?:GITHUB_FOLDER=)?(file:\/\/[^\r\n]*)/)
+      var reply = Model.folderPickReply(exitCode, folderPickerOutput.text)
       root.open()
-      if (exitCode !== 0) root.settingsError = FoamyI18n.t("Couldn't open the folder browser. Enter a path instead.")
-      else if (match && root.view) root.view.setFolderPath(root.browsingRow, decodeURIComponent(match[1].replace(/^file:\/\//, "")))
+      if (Service.markUnavailable(exitCode)) root.settingsError = FoamyI18n.t(Service.operationError)
+      else if (reply.error === "NO_SESSION_BUS")
+        root.settingsError = FoamyI18n.t("The folder browser needs a session bus, and there is none. Enter a path instead.")
+      else if (reply.error === "PORTAL_UNAVAILABLE")
+        root.settingsError = FoamyI18n.t("No folder browser is running (xdg-desktop-portal). Enter a path instead.")
+      else if (reply.error) root.settingsError = FoamyI18n.t("Couldn't open the folder browser. Enter a path instead.")
+      else if (reply.path && root.view) root.view.setFolderPath(root.browsingRow, reply.path)
       Qt.callLater(function() { root.returningFromBrowser = false; root.browsingRow = -1 })
     }
   }

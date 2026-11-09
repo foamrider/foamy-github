@@ -10,8 +10,12 @@ publish = false
 # which() and the panic hook.
 foamy-helper = { path = "../kit/rust/foamy-helper", features = ["sandbox"] }
 # statx (birth times), openat/fstatat without following links, inotify,
-# poll, kill/killpg; already a dependency of foamy-helper.
-rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process", "event"] }
+# poll, kill/killpg, getuid and getrandom (pick-folder's D-Bus
+# authentication and handle token); already a dependency of foamy-helper.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process", "event", "rand"] }
 # sigaction for the SIGTERM/SIGINT/SIGHUP cleanup; already a dependency of
 # foamy-helper's sandbox feature.
 libc = "0.2.153"
+# pick-folder's JSON reply through foamy_helper::json::run; already a
+# dependency of foamy-helper.
+serde_json = "1"
