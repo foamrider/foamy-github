@@ -11,7 +11,9 @@ Git, Bash, `bubblewrap` (standard on Omarchy), `jq` and `wl-clipboard`. The
 plugin's helper is a bundled static binary (`bin/<arch>/foamy-github-helper`),
 so nothing is built on install; on other CPUs the panel says the helper isn't
 available. Opening a repository requires `lazygit` and Omarchy's terminal
-launcher; **Browse for folder** uses `qml6` and `hyprctl`.
+launcher; **Browse for folder** opens the desktop's folder chooser through
+xdg-desktop-portal (standard on Omarchy; the helper asks it over the session
+bus).
 
 ```sh
 omarchy plugin add https://github.com/foamrider/foamy-github.git --enable

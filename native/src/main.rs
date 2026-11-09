@@ -8,6 +8,7 @@
 //! foamy-github-helper [status|fetch|push|pull|identity] [REPOSITORY]
 //!                     [--folders-json JSON] [--trusted-json JSON] [--trust-repository-config]
 //! foamy-github-helper watch --folders-json JSON [--trusted-json JSON] [--trust-repository-config]
+//! foamy-github-helper pick-folder [TITLE [ACCEPT_LABEL]]
 //! ```
 //!
 //! Options as Python's argparse took them: anywhere, `--opt=value`, unique
@@ -53,6 +54,11 @@
 //!   each batch of filesystem changes (0.3 s window) and after any line on
 //!   stdin (full rescan); EOF on stdin exits 0. A failure prints
 //!   `Filesystem monitoring stopped: <reason>` to stderr and exits 1.
+//! - `pick-folder`: the desktop's folder chooser (xdg-desktop-portal, see
+//!   `portal.rs`): `{"ok": true, "path"}`, `{"ok": true, "cancelled": true}`
+//!   or `{"ok": false, "code", "error"}` (`INVALID_ARGUMENT`,
+//!   `NO_SESSION_BUS`, `PORTAL_UNAVAILABLE`, `PORTAL_FAILED`) with exit 1.
+//!   Starts no programs; waits up to 30 minutes and dies with its parent.
 //! - Bad settings, the repository/scan/watch limits, an oversized cache or
 //!   summary: the message on stderr, exit 1, nothing on stdout.
 //! - SIGTERM/SIGINT/SIGHUP: every running Git process group is killed, the
@@ -109,11 +115,13 @@
 //! no test-only variables.
 
 mod config;
+mod dbus;
 mod error;
 mod git;
 mod json;
 mod paths;
 mod pin;
+mod portal;
 mod pystr;
 mod status;
 mod sync;
@@ -253,6 +261,10 @@ fn main() -> ExitCode {
     match args.first().map(|arg| arg.as_bytes()) {
         Some(b"exec-only") => exec_only(&args[1..]),
         Some(b"watch") => watch_main(&args[1..]),
+        Some(b"pick-folder") => foamy_helper::json::run(
+            || portal::main("foamy-github-helper", &args[1..]),
+            foamy_helper::json::error_reply,
+        ),
         _ => status_main(&args),
     }
 }

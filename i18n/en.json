@@ -102,6 +102,8 @@
   },
   "All repositories are clean and match their upstream": "All repositories are clean and match their upstream",
   "Couldn't open the folder browser. Enter a path instead.": "Couldn't open the folder browser. Enter a path instead.",
+  "The folder browser needs a session bus, and there is none. Enter a path instead.": "The folder browser needs a session bus, and there is none. Enter a path instead.",
+  "No folder browser is running (xdg-desktop-portal). Enter a path instead.": "No folder browser is running (xdg-desktop-portal). Enter a path instead.",
   "Couldn't save the setting.": "Couldn't save the setting.",
   "That value isn't allowed.": "That value isn't allowed.",
   "Settings can't be saved: this widget has no bar entry.": "Settings can't be saved: this widget has no bar entry.",
