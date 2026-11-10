@@ -1,11 +1,11 @@
-# native.pin: written by foamy-kit tools/build-native.sh; do not edit.
+# native.pin: written by kit/native/build-native.sh; do not edit.
 # check.sh and tests/kit-check.sh verify bin/<arch>/<binary> against it and
 # report the binaries stale when `source` no longer matches the crate, kit/rust,
-# Cargo.toml, Cargo.lock and rust-toolchain.toml. Rebuild: foamy-kit tools/build-native.sh <plugin>.
+# Cargo.toml, Cargo.lock and rust-toolchain.toml. Rebuild: kit/native/build-native.sh .
 crate native
 binary foamy-github-helper
 toolchain 1.99.1
-kit 0.5.2
-source f8f92312d05b40bd0a76d63a33d082f89e7554a776297b03f4871bee1eb744fe
-862e8d9d12c7e998bb3d8ddfedd657a45bce8f30b82f764b853874db47e0c8f5  bin/aarch64/foamy-github-helper
-b3b433198e85cdebdfa35d4d79182c995ea17b4ff6564167be79d8f947699c9f  bin/x86_64/foamy-github-helper
+kit 0.7.0
+source 89404f14ac78d0755955ff9db0c1701641dd0be63074999e526aa81a3833424f
+2e82b82a9bd89ff70e32e51947486eb8513b3bf0b48a3ac76cb81c12e216b642  bin/aarch64/foamy-github-helper
+bd35966dfb5bbbf45e8ff666100708edbe007787b7f214fb68d42004bb58ed93  bin/x86_64/foamy-github-helper
