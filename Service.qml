@@ -54,6 +54,10 @@ Item {
   // Watcher retry backoff: 30 s doubling to 30 min; reset after a stable run.
   property int watchRetryMs: Model.WATCH_RETRY_MIN_MS
   property double watchStartedAt: 0
+  // The start of the running watcher's stderr. The watcher lives as long as
+  // the shell, so only watchStderrLimit characters are kept (240 are shown).
+  readonly property int watchStderrLimit: 4096
+  property string watchStderr: ""
 
   // The native helper (bin/<arch>/foamy-github-helper). Exit 126/127: none
   // for this CPU; then it is never started again (no retry loop).
@@ -149,6 +153,7 @@ Item {
     root.watchedFolders = root.folderArguments
     watchProcess.command = root.helperCommand(["watch"].concat(root.helperArguments()))
     root.watchStartedAt = Date.now()
+    root.watchStderr = ""
     root.refreshing = true
     watchProcess.running = true
   }
@@ -324,7 +329,14 @@ Item {
         root.retryScheduledFetch()
       }
     }
-    stderr: StdioCollector { id: watchOutput; waitForEnd: true }
+    // Chunks as they arrive (no split), so only watchStderrLimit is ever kept.
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(data) {
+        if (root.watchStderr.length < root.watchStderrLimit)
+          root.watchStderr += String(data).slice(0, root.watchStderrLimit - root.watchStderr.length)
+      }
+    }
     onExited: function(exitCode) {
       root.monitoring = false
       root.refreshing = false
@@ -335,7 +347,7 @@ Item {
       if (!root.active) return
       if (root.markUnavailable(exitCode)) return
       root.watchFailed = true
-      root.watchDetail = String(watchOutput.text || "Filesystem watcher exited").trim().slice(0, 240)
+      root.watchDetail = String(root.watchStderr || "Filesystem watcher exited").trim().slice(0, 240)
       var ran = Date.now() - root.watchStartedAt
       var retry = Model.watchRetry(root.watchRetryMs, ran)
       watchRetry.interval = retry.delay
