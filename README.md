@@ -376,6 +376,7 @@ bash tests/kit-check.sh
 python3 tests/i18n-runtime.py                     # live language switching; OMARCHY_PATH for another tree
 python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
+python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
 ~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
 
