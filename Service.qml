@@ -27,7 +27,10 @@ Item {
   function tr(label, values) { return FoamyI18n.t(label, values) }
   property var status: Model.defaultStatus()
   property double lastChecked: 0
+  // The folders and trust the running (or last) status check was started
+  // with; a check that a settings change overtook is dropped and repeated.
   property string scannedFolders: ""
+  property string scannedTrust: ""
   property bool refreshing: false
   property bool syncing: false
   property bool repositoryActionRunning: false
@@ -168,6 +171,7 @@ Item {
     if (statusProcess.running) return
     refreshing = true
     scannedFolders = folderArguments
+    scannedTrust = trustArguments
     statusProcess.command = helperCommand(["status"].concat(helperArguments()))
     statusProcess.running = true
   }
@@ -395,8 +399,8 @@ Item {
     stderr: StdioCollector { id: statusError; waitForEnd: true }
     onExited: function(exitCode) {
       root.refreshing = false
-      // Do not display a scan of the old folders after settings change mid-scan.
-      if (root.scannedFolders !== root.folderArguments) {
+      // Do not display a scan of the old folders or trust after settings change mid-scan.
+      if (root.scannedFolders !== root.folderArguments || root.scannedTrust !== root.trustArguments) {
         root.refresh()
         return
       }
