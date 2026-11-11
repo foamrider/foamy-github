@@ -1,7 +1,6 @@
 """Bounds on Git output, records, time, discovery and watches (black-box)."""
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import time
