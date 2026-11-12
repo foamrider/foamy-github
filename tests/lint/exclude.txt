@@ -1,0 +1,2 @@
+# Paths a check must not read (`<glob> [checks]  # reason`); see the kit README, "Tooling".
+preview/Before.qml  qmllint  # the --trio Before scene: qmllint calls its `import qs.Ui` unused, but without it render.py --trio renders no Before column (checked)

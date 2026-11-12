@@ -1,0 +1,10 @@
+# Dynamic entry points Vulture can't see (`<name>  # reason`).
+GetDevices  # tests/fake_nm.py: a D-Bus method, called over the bus by Quickshell
+GetAllDevices  # tests/fake_nm.py: a D-Bus method, called over the bus by Quickshell
+CheckConnectivity  # tests/fake_nm.py: a D-Bus method of NetworkManager's interface
+Get  # tests/fake_nm.py: org.freedesktop.DBus.Properties.Get, called over the bus
+GetAll  # tests/fake_nm.py: org.freedesktop.DBus.Properties.GetAll, called over the bus
+invalidated  # tests/fake_nm.py: the PropertiesChanged signal's third argument (its D-Bus signature)
+bus_name  # tests/fake_nm.py: kept referenced so the bus name stays owned
+do_GET  # tests/test_trust.py: http.server.BaseHTTPRequestHandler calls it per GET
+log_message  # tests/test_trust.py: overrides BaseHTTPRequestHandler's request logging
