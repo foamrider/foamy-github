@@ -1,8 +1,9 @@
 #!/bin/bash
 # foamy-github's own tests; tests/validate.sh runs this after the linters.
 #   --ci    no Quickshell, no Omarchy host: the node tests and the Python unit
-#           suite, which runs the helper over temporary Git repositories
-#           (test_clipboard's QML case skips itself without qs or the kit)
+#           suite, which runs the helper over temporary Git repositories and
+#           kit/clipboard.sh's shell cases (test_clipboard's QML case skips
+#           itself; the whole test skips without the kit's hostenv)
 #   --fast  skip the offscreen Quickshell runtime tests
 # The other architecture's helper runs the unit suite too when this machine
 # can execute it (qemu-user binfmt on x86_64), with core dumps off.
@@ -25,6 +26,8 @@ run() {
   "$@" || status=1
 }
 skip() { echo "SKIP $*"; }
+# test_clipboard.py's QML case skips itself when this is set.
+if ((ci)); then export FOAMY_SUITE_CI=1; fi
 
 run node --test tests/model.test.js tests/preferences.test.js
 run node tests/i18n.test.cjs

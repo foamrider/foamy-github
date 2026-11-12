@@ -1,4 +1,11 @@
-"""Bound clipboard producers in real subprocesses and exercise the QML editor."""
+"""Bound clipboard producers in real subprocesses and exercise the QML editor.
+
+The stand-in wl-paste, clipboard-fixture and timeout come from the kit's
+hostenv.clipboard_fakes(): bash builtins, and a timeout that keeps
+clipboard.sh's 2 s only for the modes whose outcome is that deadline, so a
+loaded machine can't fail a paste that works. Requires
+~/GitHub/Personal/foamy-kit (or FOAMY_KIT); the shell cases need no
+Quickshell or Omarchy host, so tests/suite.sh --ci runs them."""
 
 import json
 import os
@@ -13,52 +20,35 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "kit/clipboard.sh"
-MOCK = """#!/usr/bin/python3
-import json, os, signal, sys, time
-from pathlib import Path
-state = Path(os.environ["TEST_CLIPBOARD_STATE"])
-if Path(sys.argv[0]).name == "clipboard-fixture":
-    state.write_text(sys.argv[1])
-    sys.exit(0)
-mode = state.read_text()
-Path(str(state) + ".pid").write_text(str(os.getpid()))
-Path(str(state) + ".args").write_text(json.dumps(sys.argv[1:]))
-if mode == "failure": sys.exit(1)
-if mode == "ignore":
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    time.sleep(30)
-if mode == "stall": time.sleep(30)
-if mode in ("stream", "slow"):
-    while True:
-        os.write(1, b"x" * (4096 if mode == "stream" else 1))
-        if mode == "slow": time.sleep(0.1)
-if mode == "delayed": time.sleep(0.4)
-values = {"normal": "folder", "unicode": "/home/test/Blåbær 📁",
-          "empty": "", "limit": "x" * 16384, "large": "x" * 16385,
-          "nul": "a\\x00b", "lines": "one\\r\\ntwo\\u2028three",
-          "delayed": "later", "long": "x" * 400}
-os.write(1, values.get(mode, "folder").encode())
-"""
+KIT = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"))
+if (KIT / "preview/hostenv.py").is_file():
+    sys.path.insert(0, str(KIT / "preview"))
+    import hostenv
+else:
+    hostenv = None
 
 
 class ClipboardTests(unittest.TestCase):
     def setUp(self):
+        if hostenv is None:
+            self.skipTest(f"foamy-kit not found at {KIT} (set FOAMY_KIT)")
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name)
-        self.state = self.base / "state"
-        self.state.write_text("normal")
-        for name in ("wl-paste", "clipboard-fixture"):
-            path = self.base / name
-            path.write_text(MOCK)
-            path.chmod(0o755)
-        self.env = dict(os.environ, TEST_CLIPBOARD_STATE=str(self.state), PATH=f"{self.base}:{os.environ['PATH']}")
+        self.env = dict(os.environ, **hostenv.clipboard_fakes(self.base / "bin"))
+        self.state = Path(self.env["TEST_CLIPBOARD_STATE"])
 
     def read(self, mode, selection="clipboard"):
         self.state.write_text(mode)
         started = time.monotonic()
-        result = subprocess.run(["bash", str(HELPER), selection], env=self.env, capture_output=True, timeout=5)
-        self.assertLess(time.monotonic() - started, 4)
+        # A deadline mode ends at clipboard.sh's 2 s; any other paste ends by
+        # itself, however long a loaded machine takes.
+        deadline = mode in hostenv.CLIPBOARD_DEADLINE_MODES
+        result = subprocess.run(
+            ["bash", str(HELPER), selection], env=self.env, capture_output=True, timeout=5 if deadline else 90
+        )
+        if deadline:
+            self.assertLess(time.monotonic() - started, 4)
         self.assertLessEqual(len(result.stdout), 100000)
         return result
 
@@ -134,11 +124,8 @@ class ClipboardTests(unittest.TestCase):
         runner = shutil.which("qs")
         if not runner:
             self.skipTest("Quickshell is unavailable")
-        kit = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"))
-        if not (kit / "preview/hostenv.py").is_file():
-            self.skipTest("foamy-kit (FOAMY_KIT) is unavailable")
-        sys.path.insert(0, str(kit / "preview"))
-        import hostenv
+        if os.environ.get("FOAMY_SUITE_CI"):
+            self.skipTest("tests/suite.sh --ci runs no Quickshell")
 
         # Quickshell's statically registered Io plugin requires the qs executable.
         # A stock qmltestrunner cannot load it as a dynamic QML plugin.
@@ -171,19 +158,27 @@ ShellRoot {
             QT_QPA_PLATFORMTHEME="",
             XDG_RUNTIME_DIR=str(runtime),
         )
+        wayland = env["QT_QPA_PLATFORM"] == "wayland"
         # The harness's isolation: no Omarchy bin dir or AppImage libraries,
-        # no audio server, no system bus.
-        hostenv.isolate(env, self.base)
-        if env["QT_QPA_PLATFORM"] == "wayland":
+        # no audio server, system or session bus, and the live compositor
+        # only in wayland mode.
+        hostenv.isolate(env, self.base, display=wayland)
+        if wayland:
             # Keep test logs/IPC private without hiding the host compositor socket.
             display = Path(os.environ["WAYLAND_DISPLAY"])
             if not display.is_absolute():
                 env["WAYLAND_DISPLAY"] = str(Path(os.environ["XDG_RUNTIME_DIR"]) / display)
-        result = subprocess.run(
-            [runner, "-p", str(fixture), "--no-color"], env=env, text=True, capture_output=True, timeout=35
-        )
-        output = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 0, output)
+        # Its own process group, so the pastes its Processes started stop
+        # with it. Each paste may take up to 60 s on a loaded machine.
+        log = self.base / "qs.log"
+        with log.open("w") as out:
+            with hostenv.ProcessGroup(
+                [runner, "-p", str(fixture), "--no-color"], env=env, stdout=out, stderr=subprocess.STDOUT
+            ) as shell:
+                code = shell.wait(300)
+        output = log.read_text(errors="replace")
+        self.assertIsNotNone(code, "qs did not finish within 300 s:\n" + output)
+        self.assertEqual(code, 0, output)
         self.assertRegex(output, r"CLIPBOARD_RESULT passed=[1-9][0-9]* failed=0")
         self.assertIn("failed=0", output, output)
         print(output[output.index("CLIPBOARD_RESULT") :].splitlines()[0])
