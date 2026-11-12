@@ -31,7 +31,6 @@ FOAMY_HOST_45."""
 import atexit
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -40,6 +39,7 @@ KIT = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"
 sys.path.insert(0, str(KIT / "preview"))
 import harness  # noqa: E402
 import hostenv  # noqa: E402
+import fake_nm  # noqa: E402
 
 PLUGIN = Path(__file__).resolve().parents[1]
 REPO = "/foamy-test/repo"
@@ -390,17 +390,15 @@ def main():
         plugin = hostenv.fake_helper_plugin(PLUGIN, work / "plugin", "foamy-github-helper", helper)
         shell = SHELL.replace("@STATE@", str(state)).replace("@REPO@", REPO)
         # A short prefix: the run's IPC socket path must stay under 108 bytes.
-        run = harness.Run(host, shell, plugin=plugin, prefix="fgh-life-", system_bus="private").start()
-        nm = subprocess.Popen(
-            [sys.executable, str(PLUGIN / "tests/fake_nm.py"), run.system_bus_address, str(state / "connectivity")],
-            stdout=subprocess.PIPE,
-            text=True,
-        )
+        run = harness.Run(host, shell, plugin=plugin, prefix="fgh-life-", system_bus="private")
+        # The fake must own its name before qs starts: Quickshell looks for
+        # NetworkManager only once, at start.
+        run.start_buses()
         try:
-            run.wait(180)
+            with fake_nm.start(run.system_bus_address, state / "connectivity"):
+                run.start()
+                run.wait(180)
         finally:
-            nm.kill()
-            nm.wait()
             run.stop()
         run.ok = "FOAMY DONE" in run.log and not run.failures()
         if run.host_commands():
