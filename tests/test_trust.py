@@ -441,6 +441,7 @@ class TrustModelTest(Case):
         self.assertFalse(marker.exists(), "a filter from the user's config ran under the exec restriction")
         self.assertFalse(row["complete"], row)
 
+    @needs_bwrap
     def test_fetch_settings_added_after_the_snapshot_cannot_run_anything(self):
         for url, edit in (
             (f"ext::sh -c {self.evil.replace(' ', '% ')}", ("protocol.ext.allow", "always")),
@@ -455,6 +456,7 @@ class TrustModelTest(Case):
                 self.repo_git("config", "--unset-all", edit[0])
         self.assertNotRun()
 
+    @needs_bwrap
     def test_trusted_config_keeps_the_repository_behaviour(self):
         # Trusted runs execute the repository's config, inside the pinned
         # namespace where only its Git directory is writable.
@@ -463,7 +465,30 @@ class TrustModelTest(Case):
         self.status_row(trust_all=True)
         self.assertTrue(self.marker.exists())
 
+    def test_without_bubblewrap_trust_is_ignored_and_fetches_are_skipped(self):
+        # README: without bubblewrap there is no pin, so no identity to trust;
+        # trusted repositories are checked like untrusted ones and automatic
+        # fetches are skipped with a message, before any Git process.
+        self.without_bwrap()
+        self.file_remote()
+        self.repo_git("config", "core.fsmonitor", self.evil)
+        self.assertEqual(self.identity(self.path), "")
+        row = self.status_row(trust_all=True)
+        self.assertIs(row["trusted"], False)
+        self.assertTrue(row["complete"], row["error"])
+        for trust_all in (False, True):
+            with self.subTest(trust_all=trust_all):
+                result = self.fetched(trust_all=trust_all)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["attempts"], 0)
+                self.assertEqual(
+                    result["message"],
+                    "Automatic fetch needs bubblewrap (bwrap) to run safely. Fetch this repository in lazygit.",
+                )
+        self.assertNotRun()
+
     # ---- unattended fetch ---------------------------------------------------------------
+    @needs_bwrap
     def test_fetch_disables_hooks(self):
         self.file_remote()
         hooks = self.path / ".git/hooks"
@@ -475,6 +500,7 @@ class TrustModelTest(Case):
         self.assertTrue(result["ok"], result)
         self.assertNotRun()
 
+    @needs_bwrap
     def test_fetch_runs_no_automatic_gc_or_maintenance(self):
         # Codex P1: gc.recentObjectsHook runs when fetch triggers `gc --auto`.
         self.file_remote()
@@ -506,6 +532,7 @@ class TrustModelTest(Case):
         self.assertTrue(result["ok"], result)
         self.assertNotRun()
 
+    @needs_bwrap
     def test_fetch_ignores_repository_credential_helpers_and_askpass(self):
         # Codex security: a local `store --file=<repo>/loot` (or any helper) must
         # never see the user's credentials; global helpers keep working.
@@ -577,6 +604,7 @@ class TrustModelTest(Case):
         self.fetched()
         self.assertNotRun()
 
+    @needs_bwrap
     def test_fetch_ignores_alternate_refs_command(self):
         remote = self.file_remote()
         (self.path / ".git/objects/info").mkdir(exist_ok=True)
@@ -587,6 +615,7 @@ class TrustModelTest(Case):
         self.assertIn("alternates", result["message"])
         self.assertNotRun()
 
+    @needs_bwrap
     def test_repository_network_settings_never_reach_the_fetch(self):
         # The fetch runs on a frozen config: repository http.* / remote proxy
         # settings, even ones added after the snapshot, are never read.
@@ -618,6 +647,7 @@ class TrustModelTest(Case):
         self.assertFalse(self.fetched()["ok"])
         self.assertEqual(seen, [], "an untrusted certificate was accepted")
 
+    @needs_bwrap
     def test_user_config_empty_resets_and_conditional_includes_behave_natively(self):
         # Codex: an empty reset in global config must keep a system header off;
         # includeIf hasconfig:remote.*.url and gitdir: must apply.
@@ -653,6 +683,7 @@ class TrustModelTest(Case):
         self.assertFalse(self.fetched()["ok"])
         self.assertEqual(seen, [], "the included sslVerify=false won over the later global sslVerify=true")
 
+    @needs_bwrap
     def test_trusted_submodules_are_not_inspected(self):
         # Codex security: trust covers one repository, not its submodules.
         sub = self.init_repo(self.root / "subsource", files={})
@@ -665,6 +696,7 @@ class TrustModelTest(Case):
         self.assertTrue(row["trusted"] and row["complete"], row)
         self.assertNotRun()
 
+    @needs_bwrap
     def test_swapped_worktree_pointing_at_the_trusted_git_dir_is_untrusted(self):
         # Codex security: a replacement worktree whose .git file points back at
         # the original (unchanged) Git directory passed a Git-dir-only identity.
@@ -692,6 +724,7 @@ class TrustModelTest(Case):
             self.repo_git("config", key, value, cwd=hostile)
         return hostile
 
+    @needs_bwrap
     def test_rewritten_git_pointer_after_the_pin_is_ignored(self):
         # Codex P1: Git rediscovered the Git dir through a mutable .git file.
         self.file_remote()
@@ -746,6 +779,7 @@ class TrustModelTest(Case):
             "the fetch wrote into the repository swapped in after the snapshot",
         )
 
+    @needs_bwrap
     def test_origin_url_from_the_users_own_config(self):
         # Codex: a global (or globally included) remote.origin.url must work
         # when the repository has none of its own.
@@ -759,6 +793,7 @@ class TrustModelTest(Case):
                 result = self.fetched()
                 self.assertTrue(result["ok"], result)
 
+    @needs_bwrap
     def test_user_protocol_policy_is_not_unattended_permission(self):
         # Codex P1: protocol.<x>.allow=user means "when the user asked"; an
         # automatic fetch must not treat it as allowed.
@@ -775,6 +810,7 @@ class TrustModelTest(Case):
         self.assertNotIn("ext", allowed)
         self.assertNotIn("file", allowed)
 
+    @needs_bwrap
     def test_symlinked_git_dir_paths_refuse_the_fetch(self):
         # Codex P2: a symlinked objects dir or refs/remotes/origin would send the
         # fetch's writes into another (victim) repository.
@@ -1000,6 +1036,7 @@ class TrustModelTest(Case):
         self.assertTrue(row["complete"], row["error"])
         self.assertEqual(row["dirtyCount"], expected, "a mid-check config edit changed what status inspected")
 
+    @needs_bwrap
     def test_per_worktree_dir_replaced_after_the_check_is_not_used(self):
         # Codex P1: <common>/worktrees/<name> was mounted before <common>, so the
         # common bind hid the pinned per-worktree directory.
@@ -1018,6 +1055,7 @@ class TrustModelTest(Case):
         self.status_row(worktree, trusted=trust)
         self.assertFalse(marker.exists(), "the replaced per-worktree directory was used")
 
+    @needs_bwrap
     def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
         # Codex security: trust was checked on the path, then Git reopened it.
         hostile_marker = self.root / "swapped.ran"
@@ -1064,6 +1102,7 @@ class TrustModelTest(Case):
             "the fetch updated another repository",
         )
 
+    @needs_bwrap
     def test_private_ca_from_user_config_applies_despite_repository_tls_settings(self):
         # Codex P2: the user's global http.sslCAInfo must still apply when the
         # repository sets its own (URL-specific) TLS settings.
@@ -1076,6 +1115,7 @@ class TrustModelTest(Case):
         self.assertFalse(self.fetched()["ok"])  # 404, but only after a verified TLS handshake
         self.assertTrue(seen, "TLS failed: the global private CA didn't apply")
 
+    @needs_bwrap
     def test_fetch_updates_real_refs_tags_and_prunes(self):
         self.file_remote()
         upstream = self.root / "upstream"
@@ -1098,6 +1138,7 @@ class TrustModelTest(Case):
             directory = self.root / "cache/foamy-github" / leftovers
             self.assertFalse(directory.exists() and list(directory.iterdir()), leftovers)
 
+    @needs_bwrap
     def test_local_origins_need_a_trusted_repository(self):
         # Codex P1: a repository-chosen local origin (path, file://, relative,
         # ~, or an insteadOf rewrite to a local path) reads another repository
@@ -1130,6 +1171,7 @@ class TrustModelTest(Case):
         result = self.fetched()
         self.assertTrue(result["ok"], result)
 
+    @needs_bwrap
     def test_one_failing_repository_does_not_abort_the_sync(self):
         self.file_remote()
         bad = self.root / "bad"
@@ -1140,6 +1182,7 @@ class TrustModelTest(Case):
         self.assertIn(str(bad), by_path)
         self.assertNotIn(str(self.path), by_path)
 
+    @needs_bwrap
     def test_blobless_partial_clone_stays_blobless(self):
         # Codex: Git 2.43 records only remote.origin.promisor/partialclonefilter.
         upstream = self.init_repo(self.root / "pc-upstream", commit=False)
@@ -1226,12 +1269,16 @@ class TrustModelTest(Case):
         self.watch_plan(clone)
         self.assertFalse(row["trusted"])
         self.assertNotEqual(git("cat-file", "-e", blob).returncode, 0, "untrusted status fetched a missing blob")
+        if not BWRAP:
+            # Without bubblewrap there is no identity, so nothing can be trusted.
+            self.skipTest("the trusted part needs a working bubblewrap")
         row = self.status_row(clone, trusted=trust)
-        self.assertIs(row["trusted"], BWRAP)
+        self.assertIs(row["trusted"], True)
         self.assertTrue(row["complete"], row["error"])
         self.assertEqual(row["dirtyCount"], 1)
         self.assertEqual(git("cat-file", "-e", blob).returncode, 0, "trusted status did not lazy-fetch like Git does")
 
+    @needs_bwrap
     def test_shallow_fetch_never_follows_planted_symlinks(self):
         # Codex security: a shallow update must not write through a planted
         # symlink. Git itself now writes the shallow file (O_EXCL lock file).
@@ -1256,6 +1303,7 @@ class TrustModelTest(Case):
         self.assertTrue(self.fetched(clone)["ok"])
         self.assertEqual(outside.read_text(), "precious\n")
 
+    @needs_bwrap
     def test_frozen_fetch_handles_reftable_sha256_and_worktrees(self):
         for variant in ("reftable", "sha256", "worktree", "shallow", "partial"):
             with self.subTest(variant=variant):
@@ -1291,6 +1339,7 @@ class TrustModelTest(Case):
                 symref = self.git("symbolic-ref", "-q", "refs/remotes/origin/HEAD", cwd=path, check=False).strip()
                 self.assertEqual(symref, "refs/remotes/origin/main")  # clone's symbolic origin/HEAD untouched
 
+    @needs_bwrap
     def test_repository_extra_headers_are_not_sent_and_global_ones_are(self):
         # Codex: http.extraHeader is a list; a last-wins override left the
         # repository's headers in place (and a local empty value cleared the user's).
@@ -1306,6 +1355,7 @@ class TrustModelTest(Case):
         self.assertIn("X-Global: one", seen)
         self.assertIn("X-Global-Two: two", seen)
 
+    @needs_bwrap
     def test_repository_ssh_command_is_never_used_unless_trusted(self):
         # Codex security P1: a repository sshCommand with UserKnownHostsFile and
         # accept-new could append to ~/.bashrc. Untrusted fetches ignore it.
@@ -1326,6 +1376,7 @@ class TrustModelTest(Case):
         self.fetched()
         self.assertEqual(set(self.marker.read_text().split()), {"global-ssh"})
 
+    @needs_bwrap
     def test_unattended_fetch_never_prompts(self):
         # Without any configured sshCommand, ssh runs in batch mode, and nothing
         # can prompt: no askpass, SSH_ASKPASS_REQUIRE=never.
@@ -1343,6 +1394,7 @@ class TrustModelTest(Case):
         self.fetched()
         self.assertIn("askpass=[/usr/bin/my-askpass]", self.ssh_record().splitlines()[0])
 
+    @needs_bwrap
     def test_user_config_parameters_are_kept(self):
         # The caller's own command-scope config (GIT_CONFIG_COUNT/KEY/VALUE)
         # stays in force; the helper's overrides come after it.
@@ -1501,6 +1553,7 @@ class PerRepositoryTrustTest(HelperTest):
         self.assertTrue(row["usesLfs"])
         self.assertFalse(marker.exists())
 
+    @needs_bwrap
     def test_trust_applies_only_to_that_exact_repository(self):
         markers = {name: self.root / name / ".git/ran" for name in ("a", "b")}  # writable in each pinned namespace
         repos = {}
@@ -1512,27 +1565,29 @@ class PerRepositoryTrustTest(HelperTest):
         link.symlink_to(repos["a"])
         trust = [{"path": str(link), "identity": self.identity(repos["a"])}]  # symlinks resolve
         rows = {row["name"]: row for row in self.status([{"path": str(self.root), "depth": 1}], trust)["repos"]}
-        self.assertIs(rows["a"]["trusted"], BWRAP)
+        self.assertIs(rows["a"]["trusted"], True)
         self.assertTrue(rows["a"]["usesLfs"])
         self.assertFalse(rows["b"]["trusted"])
-        self.assertIs(markers["a"].exists(), BWRAP, "a trusted repository runs its own config")
+        self.assertIs(markers["a"].exists(), True, "a trusted repository runs its own config")
         self.assertFalse(markers["b"].exists(), "an untrusted repository stays hardened")
 
+    @needs_bwrap
     def test_moved_repository_is_untrusted_again(self):
         repo, _ = self.make_repo("orig", {".gitattributes": "* filter=lfs\n"})
         trust = self.trust(repo)
-        self.assertIs(self.row(repo, trusted=trust)["trusted"], BWRAP)
+        self.assertIs(self.row(repo, trusted=trust)["trusted"], True)
         moved = self.root / "moved"
         repo.rename(moved)
         self.assertFalse(self.row(moved, trusted=trust)["trusted"])
 
+    @needs_bwrap
     def test_repository_replaced_at_the_same_path_is_untrusted(self):
         # Codex security: trust must not pass to a different repository that
         # later sits at the trusted path (deleted and re-created, or swapped).
         marker = self.root / "replacement.ran"
         repo, _run = self.make_repo("trusted", {".gitattributes": "* filter=lfs\n"})
         trust = self.trust(repo)
-        self.assertIs(self.row(repo, trusted=trust)["trusted"], BWRAP)
+        self.assertIs(self.row(repo, trusted=trust)["trusted"], True)
         shutil.rmtree(repo)
         replacement, run = self.make_repo("trusted", {"file.txt": "x\n"})  # same path, new repository
         run("config", "core.fsmonitor", f"touch {marker}")
@@ -1545,6 +1600,7 @@ class PerRepositoryTrustTest(HelperTest):
         os.rename(swapped, repo)  # swap another one in
         self.assertFalse(self.row(repo, trusted=trust)["trusted"])
 
+    @needs_bwrap
     def test_identity_without_a_birth_time_trusts_nothing(self):
         # Codex security: without a birth time, device+inode can be reused by a
         # replacement, so an identity without one (or an older single-directory

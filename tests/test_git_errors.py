@@ -41,6 +41,7 @@ class GitErrorsTest(HelperTest):
         message = "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\nand the repository exists."
         self.assertEqual(self.error(message), "git@github.com: Permission denied (publickey).")
 
+    @needs_bwrap
     def test_missing_origin_is_actionable_and_is_not_retried(self):
         self.init_repo(self.root / "plain")
         started = time.monotonic()
