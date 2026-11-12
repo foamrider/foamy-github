@@ -13,6 +13,7 @@ leader. Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
+
 import os
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ import harness  # noqa: E402
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
-SHELL = r'''
+SHELL = r"""
 import QtQuick
 import Quickshell
 import "harness"
@@ -199,39 +200,54 @@ ShellRoot {
     }
   }
 }
-'''
+"""
 
 status = 0
 import subprocess
 import tempfile
+
 sys.path.insert(0, str(PLUGIN / "tests"))
 from blackbox import command  # noqa: E402  (FOAMY_HELPER, as in the unit tests)
+
 TRUST_REPO = tempfile.mkdtemp(prefix="foamy-github-runtime-repo-")
 import atexit, shutil  # noqa: E401
+
 atexit.register(shutil.rmtree, TRUST_REPO, True)
 subprocess.run(["git", "init", "-q", TRUST_REPO], check=True)
-TRUST_IDENTITY = subprocess.run(command("identity", TRUST_REPO), capture_output=True, text=True, check=True).stdout.strip()
+TRUST_IDENTITY = subprocess.run(
+    command("identity", TRUST_REPO), capture_output=True, text=True, check=True
+).stdout.strip()
 SHELL = SHELL.replace("@REPO@", TRUST_REPO).replace("@IDENT@", TRUST_IDENTITY)
 
 for host in harness.available_hosts(what="runtime-panel"):
-  for mode in ("true", "false"):        # inotifyEnabled: live monitoring, then timed polling
-    run = harness.Run(host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-").run(timeout=60)
-    checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
-    # Any QML warning from the plugin's own files fails the run too.
-    warnings = [line for line in run.log.splitlines() if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line]
-    if warnings:
-        run.ok = False
-        print("\n".join(warnings))
-    # The isolated harness stubs every omarchy command; none may run.
-    if run.host_commands():
-        run.ok = False
-        print("host commands ran:", *run.host_commands(), sep="\n  ")
+    for mode in ("true", "false"):  # inotifyEnabled: live monitoring, then timed polling
+        run = harness.Run(
+            host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-"
+        ).run(timeout=60)
+        checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
+        # Any QML warning from the plugin's own files fails the run too.
+        warnings = [
+            line
+            for line in run.log.splitlines()
+            if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line
+        ]
+        if warnings:
+            run.ok = False
+            print("\n".join(warnings))
+        # The isolated harness stubs every omarchy command; none may run.
+        if run.host_commands():
+            run.ok = False
+            print("host commands ran:", *run.host_commands(), sep="\n  ")
 
-    if run.ok:
-        print(f"{host} ({'live monitoring' if mode == 'true' else 'polling'}): runtime passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
-        run.cleanup()
-    else:
-        status = 1
-        print(f"{host} ({'live monitoring' if mode == 'true' else 'polling'}): runtime FAILED; log at {run.base}/qs.log")
-        print("\n".join(run.failures() or run.log.splitlines()[-30:]))
+        if run.ok:
+            print(
+                f"{host} ({'live monitoring' if mode == 'true' else 'polling'}): runtime passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)"
+            )
+            run.cleanup()
+        else:
+            status = 1
+            print(
+                f"{host} ({'live monitoring' if mode == 'true' else 'polling'}): runtime FAILED; log at {run.base}/qs.log"
+            )
+            print("\n".join(run.failures() or run.log.splitlines()[-30:]))
 sys.exit(status)

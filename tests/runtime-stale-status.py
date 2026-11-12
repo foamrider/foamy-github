@@ -18,6 +18,7 @@ event, not on time. Temp HOME; no network. Requires ~/GitHub/Personal/foamy-kit
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
+
 import atexit
 import os
 import shlex
@@ -35,7 +36,7 @@ import hostenv  # noqa: E402
 PLUGIN = Path(__file__).resolve().parents[1]
 REPO = "/foamy-test/repo"
 
-SHELL = r'''
+SHELL = r"""
 import QtQuick
 import Quickshell
 import Quickshell.Io
@@ -100,7 +101,7 @@ ShellRoot {
   }
   Timer { interval: 40000; running: true; onTriggered: { check(false, "timed out"); shell.finish() } }
 }
-'''
+"""
 
 
 def fake_plugin(work):
@@ -147,8 +148,9 @@ for host in harness.available_hosts(what="runtime-stale-status"):
     run = harness.Run(host, shell, plugin=plugin, prefix=f"foamy-github-stale-{host}-").run(timeout=60)
     runs = counter.read_text().strip() if counter.exists() else "0"
     # Any QML warning from the plugin's own files fails the run too.
-    warnings = [line for line in run.log.splitlines()
-                if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line]
+    warnings = [
+        line for line in run.log.splitlines() if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line
+    ]
     if warnings:
         run.ok = False
         print("\n".join(warnings))
@@ -159,7 +161,9 @@ for host in harness.available_hosts(what="runtime-stale-status"):
         print("host commands ran:", *run.host_commands(), sep="\n  ")
 
     if run.ok:
-        print(f"{host}: stale status passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks, {runs} status runs)")
+        print(
+            f"{host}: stale status passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks, {runs} status runs)"
+        )
         run.cleanup()
     else:
         status = 1

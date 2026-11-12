@@ -12,6 +12,7 @@ FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
+
 import atexit
 import os
 import shutil
@@ -26,7 +27,7 @@ import harness  # noqa: E402
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
-SHELL = r'''
+SHELL = r"""
 import QtQuick
 import Quickshell
 import "harness"
@@ -100,13 +101,23 @@ ShellRoot {
   }
   Timer { interval: 40000; running: true; onTriggered: { check(false, "timed out"); shell.finish() } }
 }
-'''
+"""
 
 
 def git(cwd, *args):
-    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
-                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-                        "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": "/dev/null"})
+    subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        },
+    )
 
 
 def head(cwd):
@@ -139,11 +150,12 @@ remote_head = head(seed)
 
 status = 0
 for host in harness.available_hosts(what="runtime-pullall"):
-    for clone in clones:                 # each host starts behind again
+    for clone in clones:  # each host starts behind again
         if head(clone) == remote_head:
             git(clone, "reset", "-q", "--hard", "HEAD~1")
-    run = harness.Run(host, SHELL.replace("@ROOT@", str(ROOT)), plugin=PLUGIN,
-                      prefix=f"foamy-github-pullall-{host}-").run(timeout=60)
+    run = harness.Run(
+        host, SHELL.replace("@ROOT@", str(ROOT)), plugin=PLUGIN, prefix=f"foamy-github-pullall-{host}-"
+    ).run(timeout=60)
     pulled = [head(clone) == remote_head for clone in clones]
     if pulled != [True, True, False]:
         run.ok = False

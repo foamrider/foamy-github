@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "kit/clipboard.sh"
-MOCK = '''#!/usr/bin/python3
+MOCK = """#!/usr/bin/python3
 import json, os, signal, sys, time
 from pathlib import Path
 state = Path(os.environ["TEST_CLIPBOARD_STATE"])
@@ -38,7 +38,7 @@ values = {"normal": "folder", "unicode": "/home/test/Blåbær 📁",
           "nul": "a\\x00b", "lines": "one\\r\\ntwo\\u2028three",
           "delayed": "later", "long": "x" * 400}
 os.write(1, values.get(mode, "folder").encode())
-'''
+"""
 
 
 class ClipboardTests(unittest.TestCase):
@@ -52,21 +52,18 @@ class ClipboardTests(unittest.TestCase):
             path = self.base / name
             path.write_text(MOCK)
             path.chmod(0o755)
-        self.env = dict(os.environ, TEST_CLIPBOARD_STATE=str(self.state),
-                        PATH=f"{self.base}:{os.environ['PATH']}")
+        self.env = dict(os.environ, TEST_CLIPBOARD_STATE=str(self.state), PATH=f"{self.base}:{os.environ['PATH']}")
 
     def read(self, mode, selection="clipboard"):
         self.state.write_text(mode)
         started = time.monotonic()
-        result = subprocess.run(["bash", str(HELPER), selection], env=self.env,
-                                capture_output=True, timeout=5)
+        result = subprocess.run(["bash", str(HELPER), selection], env=self.env, capture_output=True, timeout=5)
         self.assertLess(time.monotonic() - started, 4)
         self.assertLessEqual(len(result.stdout), 100000)
         return result
 
     def test_unicode_empty_and_limit(self):
-        for mode, expected in (("unicode", "/home/test/Blåbær 📁"),
-                               ("empty", ""), ("limit", "x" * 16384)):
+        for mode, expected in (("unicode", "/home/test/Blåbær 📁"), ("empty", ""), ("limit", "x" * 16384)):
             with self.subTest(mode=mode):
                 result = self.read(mode)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -121,8 +118,9 @@ class ClipboardTests(unittest.TestCase):
 
     def test_watchdog_survives_wrapper_destruction(self):
         self.state.write_text("stall")
-        with subprocess.Popen(["bash", str(HELPER), "clipboard"], env=self.env,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        with subprocess.Popen(
+            ["bash", str(HELPER), "clipboard"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ) as process:
             pid_file = Path(str(self.state) + ".pid")
             deadline = time.monotonic() + 2
             while not pid_file.exists() and time.monotonic() < deadline:
@@ -141,10 +139,12 @@ class ClipboardTests(unittest.TestCase):
             self.skipTest("foamy-kit (FOAMY_KIT) is unavailable")
         sys.path.insert(0, str(kit / "preview"))
         import hostenv
+
         # Quickshell's statically registered Io plugin requires the qs executable.
         # A stock qmltestrunner cannot load it as a dynamic QML plugin.
         fixture = self.base / "shell.qml"
-        fixture.write_text('''import QtQuick
+        fixture.write_text(
+            """import QtQuick
 import Quickshell
 ShellRoot {
     FloatingWindow {
@@ -155,16 +155,22 @@ ShellRoot {
         Loader { anchors.fill: parent; source: %s }
     }
 }
-''' % json.dumps(str(ROOT / "tests/tst_clipboard.qml")))
+"""
+            % json.dumps(str(ROOT / "tests/tst_clipboard.qml"))
+        )
         # The kit's SafeTextField imports qs.Commons and qs.Ui from the host shell (read-only links).
         host = Path(os.environ.get("OMARCHY_SHELL_PATH", "/usr/share/omarchy/shell"))
         for name in ("Commons", "Ui"):
             (self.base / name).symlink_to(host / name, target_is_directory=True)
         runtime = self.base / "runtime"
         runtime.mkdir(mode=0o700)
-        env = dict(self.env, QT_QPA_PLATFORM=os.environ.get("FOAMY_TEST_PLATFORM", "offscreen"),
-                   QT_QUICK_BACKEND="software", QT_QPA_PLATFORMTHEME="",
-                   XDG_RUNTIME_DIR=str(runtime))
+        env = dict(
+            self.env,
+            QT_QPA_PLATFORM=os.environ.get("FOAMY_TEST_PLATFORM", "offscreen"),
+            QT_QUICK_BACKEND="software",
+            QT_QPA_PLATFORMTHEME="",
+            XDG_RUNTIME_DIR=str(runtime),
+        )
         # The harness's isolation: no Omarchy bin dir or AppImage libraries,
         # no audio server, no system bus.
         hostenv.isolate(env, self.base)
@@ -173,13 +179,14 @@ ShellRoot {
             display = Path(os.environ["WAYLAND_DISPLAY"])
             if not display.is_absolute():
                 env["WAYLAND_DISPLAY"] = str(Path(os.environ["XDG_RUNTIME_DIR"]) / display)
-        result = subprocess.run([runner, "-p", str(fixture), "--no-color"],
-                                env=env, text=True, capture_output=True, timeout=35)
+        result = subprocess.run(
+            [runner, "-p", str(fixture), "--no-color"], env=env, text=True, capture_output=True, timeout=35
+        )
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, output)
         self.assertRegex(output, r"CLIPBOARD_RESULT passed=[1-9][0-9]* failed=0")
         self.assertIn("failed=0", output, output)
-        print(output[output.index("CLIPBOARD_RESULT"):].splitlines()[0])
+        print(output[output.index("CLIPBOARD_RESULT") :].splitlines()[0])
 
 
 if __name__ == "__main__":

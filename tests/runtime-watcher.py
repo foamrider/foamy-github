@@ -18,6 +18,7 @@ costs several times the stderr). Temp HOME; no network. Requires
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
+
 import atexit
 import os
 import shlex
@@ -41,7 +42,7 @@ STDERR_BYTES = 16 * 1024 * 1024
 GROWTH_LIMIT_KB = 16 * 1024
 HEAD = "FAKE-WATCH-HEAD run "
 
-SHELL = r'''
+SHELL = r"""
 import QtQuick
 import Quickshell
 import "harness"
@@ -106,7 +107,7 @@ ShellRoot {
   }
   Timer { interval: 40000; running: true; onTriggered: { check(false, "timed out"); shell.finish() } }
 }
-'''.replace("@HEAD@", HEAD)
+""".replace("@HEAD@", HEAD)
 
 
 def fake_plugin(work):
@@ -149,14 +150,21 @@ for host in harness.available_hosts(what="runtime-watcher"):
         print(f"expected peak memory samples from qs (pid {shell_pid}), got {samples}")
     else:
         growth = max(int(sample[1]) for sample in samples) - int(samples[0][1])
-        print(f"{host}: qs peak memory grew {growth} kB over {runs} watcher runs of {STDERR_BYTES >> 20} MiB stderr each")
+        print(
+            f"{host}: qs peak memory grew {growth} kB over {runs} watcher runs of {STDERR_BYTES >> 20} MiB stderr each"
+        )
         if growth >= GROWTH_LIMIT_KB:
             run.ok = False
-            print(f"the shell's peak memory grew {growth} kB (limit {GROWTH_LIMIT_KB} kB): the watcher's stderr was kept")
+            print(
+                f"the shell's peak memory grew {growth} kB (limit {GROWTH_LIMIT_KB} kB): the watcher's stderr was kept"
+            )
     # Any QML warning from the plugin's own files fails the run too (the
     # Service's own "foamy.github:" report of the failure is expected).
-    warnings = [line for line in run.log.splitlines()
-                if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line and "foamy.github:" not in line]
+    warnings = [
+        line
+        for line in run.log.splitlines()
+        if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line and "foamy.github:" not in line
+    ]
     if warnings:
         run.ok = False
         print("\n".join(warnings))

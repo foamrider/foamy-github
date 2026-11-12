@@ -143,7 +143,9 @@ def main():
             print("\n".join(warnings))
         checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
         if run.ok:
-            print(f"{host}: stored lists passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
+            print(
+                f"{host}: stored lists passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)"
+            )
             run.cleanup()
         else:
             status = 1
