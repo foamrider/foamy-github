@@ -376,6 +376,19 @@ kit/native/build-native.sh .          # both arches, native.pin
 kit/native/build-native.sh . --verify # byte-identical clean rebuild
 ```
 
+All checks run with one command (foamy-kit's "Tooling"; `mise install`
+first, for the pinned linters):
+
+```sh
+tests/validate.sh          # kit-check, linters, formatters, native tests, then tests/suite.sh
+tests/validate.sh --ci     # what GitHub's runner does: no Quickshell or Omarchy host
+tests/validate.sh --fast   # no native tests, no offscreen runtime tests
+```
+
+`tests/suite.sh` is this repository's part of it: the node tests and the
+unit suite (on both arches when this machine runs the other one), then,
+without `--ci` or `--fast`, every runtime test below. The individual commands:
+
 The unit tests (Python, dev only) run the helper as a process: this machine's
 binary by default, another one with `FOAMY_HELPER` (the aarch64 build runs
 through qemu binfmt; qemu-user has no Landlock, so those checks skip).
@@ -391,7 +404,7 @@ python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foa
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
 python3 tests/runtime-stale-status.py              # a status check overtaken by a trust change is redone
-python3 tests/runtime-lifecycle.py                 # helper jobs across unload (fake helper, fake NetworkManager)
+python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust edits and IPC refresh (fake helper, fake NetworkManager)
 python3 tests/runtime-stored.py                    # an invalid folder or trust list in shell.json is named and kept
 ~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
