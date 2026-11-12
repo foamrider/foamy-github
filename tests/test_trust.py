@@ -109,7 +109,8 @@ class Case(HelperTest):
     certs = self.root / "certs"
     if not (certs / "server.pem").exists():
       certs.mkdir(exist_ok=True)
-      run = lambda *args: subprocess.run(["openssl", *args], check=True, capture_output=True, cwd=certs)
+      def run(*args):
+        return subprocess.run(["openssl", *args], check=True, capture_output=True, cwd=certs)
       run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=Foamy test CA",
           "-keyout", "ca.key", "-out", "ca.pem", "-addext", "basicConstraints=critical,CA:TRUE")
       run("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", "server.key", "-out", "server.csr")
@@ -606,7 +607,8 @@ class TrustModelTest(Case):
     hostile = self.hostile_repo(f"http://127.0.0.1:{port}/x.git", (("http.extraHeader", "X-Hostile: 1"),
                                                                     ("core.fsmonitor", self.evil)))
     worktree = self.linked_worktree()
-    rewrite = lambda: (worktree / ".git").write_text(f"gitdir: {hostile / '.git'}\n")
+    def rewrite():
+      return (worktree / ".git").write_text(f"gitdir: {hostile / '.git'}\n")
     self.on_git(rewrite)                                         # right after the pin
     result = self.fetched(worktree)
     self.assertEqual(seen, [], "the fetch followed the rewritten .git file")
@@ -920,7 +922,8 @@ class TrustModelTest(Case):
     self.repo_git("tag", "v1", cwd=upstream)
     self.repo_git("push", "-q", "origin", "v1", "HEAD:refs/heads/gone", cwd=upstream)
     self.assertTrue(self.fetched()["ok"])
-    real = lambda ref: self.git("rev-parse", "--verify", "-q", ref, cwd=self.path, check=False).strip()
+    def real(ref):
+      return self.git("rev-parse", "--verify", "-q", ref, cwd=self.path, check=False).strip()
     head = self.repo_git("rev-parse", "HEAD", cwd=upstream).strip()
     self.assertEqual(real("refs/remotes/origin/main"), head)
     self.assertEqual(real("refs/remotes/origin/gone"), head)
@@ -1024,7 +1027,8 @@ class TrustModelTest(Case):
     subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", self.served("lazy-upstream"), str(clone)],
                    check=True, capture_output=True, env=self.git_env)
     offline = {**self.git_env, "GIT_NO_LAZY_FETCH": "1"}
-    git = lambda *args: subprocess.run(["git", "-C", str(clone), *args], env=offline, capture_output=True, text=True)
+    def git(*args):
+      return subprocess.run(["git", "-C", str(clone), *args], env=offline, capture_output=True, text=True)
     blob = git("rev-parse", "HEAD:old.txt").stdout.strip()
     git("read-tree", "HEAD")
     (clone / "new.txt").write_text("".join(f"{n}\n" for n in range(199)))
@@ -1210,7 +1214,8 @@ class PerRepositoryTrustTest(HelperTest):
 
   def make_repo(self, name, files=None):
     path = self.init_repo(self.root / name, files=files)
-    run = lambda *args: self.git(*args, cwd=path)
+    def run(*args):
+      return self.git(*args, cwd=path)
     return path.resolve(), run
 
   def test_detection_from_attributes_and_lfsconfig(self):
