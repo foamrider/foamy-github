@@ -60,14 +60,34 @@ ShellRoot {
                     trustRepositoryConfig: true,
                     trustedRepositories: [{ path: "/r/a", identity: "1:1:1|2:2:2" }, { path: "/r/b", identity: "3:3:3|4:4:4" }] } }))
     }
-    step.start()
+    step.next()
   }
 
-  Timer {
+  // Each step runs once the state the previous one started has arrived (a
+  // condition, not a fixed delay); a step that never becomes ready fails.
+  FoamyWait { id: wait }
+  readonly property var ready: [
+    function() { return Kit.FoamyShared.memberCount("github") === 3 && Plugin.Service.active
+      && Plugin.Service.settings.fetchIntervalSec === 900 },
+    // The first complete scan arrived and the legacy trust was migrated.
+    function() {
+      var saves = panels[0].bar.saved
+      return panels[1].popup.bodyItem !== null && Plugin.Service.lastChecked > 0
+        && saves.length > 0 && saves[saves.length - 1].settings.trustRepositoryConfig === false
+    },
+    function() { return panels[1].editingSettings && !panels[1].prefs.busy },
+    // Both identity checks ended; the destroyed leader left.
+    function() {
+      return JSON.stringify(panels[1].bar.saved).indexOf("@IDENT@") >= 0
+        && panels[2].settingsError !== "" && Kit.FoamyShared.memberCount("github") === 2
+    },
+    function() { return !Plugin.Service.active }
+  ]
+  QtObject {
     id: step
-    interval: 1500
     property int n: 0
-    onTriggered: {
+    function next() { wait.waitFor(shell.ready[n], 20000, run, "step " + n + " ready") }
+    function run() {
       if (n === 0) {
         check(Kit.FoamyShared.memberCount("github") === 3, "three members")
         check(Plugin.Service.active, "service active")
@@ -175,7 +195,7 @@ ShellRoot {
         return
       }
       n++
-      restart()
+      next()
     }
   }
 }
