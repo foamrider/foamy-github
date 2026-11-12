@@ -192,8 +192,11 @@ Item {
     statusProcess.running = true
   }
 
+  // "ok" when a fetch started, else why not: "unavailable" (no helper for
+  // this CPU), "busy" (a refresh, fetch or repository action runs) or
+  // "offline" (the network isn't ready). The IPC `refresh` answers this.
   function fetch() {
-    synchronize()
+    return synchronize()
   }
 
   function fetchWhenIdle() {
@@ -220,11 +223,12 @@ Item {
   }
 
   function synchronize() {
-    if (root.busy || !root.active || root.helperUnavailable) return
+    if (!root.active || root.helperUnavailable) return "unavailable"
+    if (root.busy) return "busy"
     if (!root.networkReady) {
       setActionStatus("Waiting for network…")
       actionMessageTimer.restart()
-      return
+      return "offline"
     }
     syncing = true
     operationError = ""
@@ -234,6 +238,7 @@ Item {
     fetchTrust = trustArguments
     syncProcess.command = helperCommand(["fetch"].concat(helperArguments()))
     syncProcess.running = true
+    return "ok"
   }
 
   function pushRepository(repo) {

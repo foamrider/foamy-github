@@ -48,7 +48,8 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function settings(): void { root.openSettings() }
-    function refresh(): string { Service.fetch(); return "ok" }
+    // ok, busy, offline or unavailable: whether a fetch started (Service.fetch).
+    function refresh(): string { return Service.fetch() }
     function status(): string { return JSON.stringify({ repositories: Service.status.repoCount, affected: Service.status.affectedCount, totals: Service.totals, syncing: Service.syncing, monitoring: Service.monitoring }) }
   }
 

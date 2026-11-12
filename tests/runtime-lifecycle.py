@@ -18,6 +18,9 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
   and fetch that were started with it; the check is redone and the fetch
   runs again with the new trust, with no error. Granting trust stops
   neither.
+- ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
+  started, "busy" while one runs, "offline" without the network and
+  "unavailable" once the helper exits 127.
 
 Timed polling only (no live monitoring); temp HOME; no network. Requires
 ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
@@ -157,7 +160,7 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps, trustSteps)
+  readonly property var steps: [].concat(unloadSteps, trustSteps, ipcSteps)
 
   // unload: no error is left on the shared Service by a job the last bar's
   // unload stopped (its exit handler ran after `active` went false).
@@ -303,6 +306,70 @@ ShellRoot {
       })
     }
   ]
+
+  // ipc: the real IPC target, called the way omarchy-shell does.
+  FileView { id: connectivityFile; path: shell.state + "/connectivity"; printErrors: false }
+  Process {
+    id: ipcCall
+    property var then: null
+    command: ["qs", "ipc", "-n", "-p", decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")),
+              "call", "foamy.github", "refresh"]
+    stdout: StdioCollector { id: ipcOutput; waitForEnd: true }
+    onExited: function(exitCode) { var then = ipcCall.then; ipcCall.then = null; then(exitCode === 0 ? String(ipcOutput.text).trim() : "exit " + exitCode) }
+  }
+  function refreshOverIpc(then) { ipcCall.then = then; ipcCall.running = true }
+  readonly property var ipcSteps: [
+    function(next) {
+      until(function() { return !service.busy }, "ipc: idle", function() {
+        var started = count("start fetch")
+        refreshOverIpc(function(answer) {
+          check(answer === "ok", "ipc: refresh answers ok when a fetch starts: " + answer)
+          until(function() { return count("start fetch") > started && !service.busy }, "ipc: the fetch ran", next)
+        })
+      })
+    },
+    function(next) {
+      block(["fetch"], function() {
+        var started = count("start fetch")
+        service.fetch()
+        until(function() { return service.syncing && count("start fetch") > started }, "ipc: a fetch runs", function() {
+          refreshOverIpc(function(answer) {
+            check(answer === "busy", "ipc: refresh answers busy while a fetch runs: " + answer)
+            check(count("start fetch") === started + 1, "ipc: a busy refresh starts nothing")
+            block([])
+            until(function() { return !service.busy }, "ipc: the fetch ends", next)
+          })
+        })
+      })
+    },
+    function(next) {
+      connectivityFile.setText("1\n")
+      until(function() { return !service.networkReady }, "ipc: the network goes down", function() {
+        var started = count("start fetch")
+        refreshOverIpc(function(answer) {
+          check(answer === "offline", "ipc: refresh answers offline without the network: " + answer)
+          check(count("start fetch") === started, "ipc: an offline refresh starts nothing")
+          next()
+        })
+      })
+    },
+    function(next) {
+      blockFile.setText("")
+      // The next helper start exits 127: no helper for this CPU.
+      failFile.setText("1\n")
+      until(function() { failRead.reload(); return failRead.text() === "1\n" }, "ipc: the fail file is written", function() {
+        service.refresh()
+        until(function() { return service.helperUnavailable }, "ipc: the helper is unavailable", function() {
+          refreshOverIpc(function(answer) {
+            check(answer === "unavailable", "ipc: refresh answers unavailable without a helper: " + answer)
+            next()
+          })
+        })
+      })
+    }
+  ]
+  FileView { id: failFile; path: shell.state + "/fail127"; printErrors: false }
+  FileView { id: failRead; path: shell.state + "/fail127"; blockLoading: true; printErrors: false }
 
   Component.onCompleted: go()
   Timer { interval: 120000; running: true; onTriggered: { check(false, "timed out at step " + shell.at); console.log("FOAMY DONE"); Qt.quit() } }

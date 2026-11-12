@@ -42,7 +42,9 @@ and Refresh (hovering moves the same cursor); Enter activates; `r` refreshes;
 `p` pulls all; `s` opens Settings; Esc closes (or leaves Settings); Tab and Shift+Tab move to
 the next bar panel.
 IPC: `omarchy-shell foamy.github open|close|toggle|settings|refresh|status`
-(`refresh` fetches remotes; `status` prints JSON).
+(`refresh` fetches remotes and answers `ok` when the fetch started, else
+`busy`, `offline` or `unavailable` when the helper can't run on this CPU;
+`status` prints JSON).
 
 ## Settings
 
