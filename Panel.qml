@@ -103,10 +103,7 @@ Panel {
     bar: root.bar
     moduleName: root.moduleName
     fields: root.fields
-    // A JSON copy, as the Service reads them: a list handed over as a QML
-    // sequence wrapper (not an Array) would read as an invalid stored array,
-    // which FoamyPrefs refuses to replace, so no folder or trust edit saved.
-    settings: JSON.parse(JSON.stringify(root.settings || {}))
+    settings: root.settings
   }
   // A list hand-edited into an invalid shape reads as empty, and FoamyPrefs
   // refuses to replace it (that would drop every entry): say so, and keep its
