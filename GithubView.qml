@@ -29,13 +29,13 @@ PanelKeyCatcher {
   property bool trustLocked: false
   property double now: Date.now()
 
-  signal closeRequestedByView()
-  signal settingsRequested()
-  signal settingsClosed()
+  signal closeRequestedByView
+  signal settingsRequested
+  signal settingsClosed
   signal saveRequested(string key, var value)
   signal foldersEdited(var rows)
   signal browseRequested(int index)
-  signal retryRequested()
+  signal retryRequested
   // Errors raised inside the view (clipboard paste) go to the Panel, which owns settingsError.
   signal settingsErrorReported(string message)
   signal switchPanelRequested(int direction)
@@ -60,7 +60,12 @@ PanelKeyCatcher {
       infos.push(lfs ? count++ : -1)
       trusts.push(lfs && repos[i].path === lfsNotePath && !!repos[i].identity ? count++ : -1)
     }
-    return { rows: rows, infos: infos, trusts: trusts, count: count }
+    return {
+      rows: rows,
+      infos: infos,
+      trusts: trusts,
+      count: count
+    }
   }
   // The repository (path) whose Git LFS note is open under its row: one at a time.
   property string lfsNotePath: ""
@@ -72,48 +77,68 @@ PanelKeyCatcher {
   readonly property var trustedList: Model.trustedRepositories(settings)
   readonly property var lfsRepositories: service && service.lfsRepos ? service.lfsRepos : []
   readonly property string healthText: {
-    if (!service) return ""
-    if (service.syncing) return FoamyI18n.t("Fetching repositories…")
-    if (service.lastError !== "") return FoamyI18n.t("Repository check needs attention")
-    if (service.lastChecked === 0) return FoamyI18n.t("Checking repositories…")
-    if (service.status.repoCount === 0) return FoamyI18n.t("No repositories found")
-    if (service.status.affectedCount === 0 && !sync.stale && !hasFailures) return FoamyI18n.t("Everything is in sync")
-    if (service.status.affectedCount === 0 && !hasFailures) return FoamyI18n.t("Working trees are clean")
+    if (!service)
+      return ""
+    if (service.syncing)
+      return FoamyI18n.t("Fetching repositories…")
+    if (service.lastError !== "")
+      return FoamyI18n.t("Repository check needs attention")
+    if (service.lastChecked === 0)
+      return FoamyI18n.t("Checking repositories…")
+    if (service.status.repoCount === 0)
+      return FoamyI18n.t("No repositories found")
+    if (service.status.affectedCount === 0 && !sync.stale && !hasFailures)
+      return FoamyI18n.t("Everything is in sync")
+    if (service.status.affectedCount === 0 && !hasFailures)
+      return FoamyI18n.t("Working trees are clean")
     return FoamyI18n.tn("%1 repositories need attention", Math.max(service.status.affectedCount, repos.length))
   }
   readonly property string statusTitle: service && service.actionStatus !== "" ? service.actionStatus : healthText
-  readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning
-    || (service.refreshing && service.lastChecked === 0))
+  readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
   property int progressStep: 0
   // Animated dots only while shown and motion is allowed; otherwise a static ellipsis.
-  readonly property string displayTitle: animateTitle && !FoamyMotion.reduceMotion
-    ? statusTitle.replace(/(?:…|\.{1,3})$/, "") + [".", "..", "..."][progressStep]
-    : statusTitle
+  readonly property string displayTitle: animateTitle && !FoamyMotion.reduceMotion ? statusTitle.replace(/(?:…|\.{1,3})$/, "") + [".", "..", "..."][progressStep] : statusTitle
   readonly property string lastSyncText: FoamyI18n.t("Last remote sync %1", [Model.relativeTime(sync.lastSuccess, now, FoamyI18n.t)])
 
   implicitWidth: FoamyStyle.popupWidth
   implicitHeight: editingSettings ? settingsPage.implicitHeight : list.contentHeight
   blocked: editingSettings
 
-  FoamyCursor { id: cursor; count: root.refreshStop + 1 }   // rows (+ LFS, trust), pull all, settings, refresh
+  // rows (+ LFS, trust), pull all, settings, refresh
+  FoamyCursor {
+    id: cursor
+    count: root.refreshStop + 1
+  }
 
-  onMoveRequested: function(dx, dy) { cursor.move(dy !== 0 ? dy : dx) }
+  onMoveRequested: function (dx, dy) {
+    cursor.move(dy !== 0 ? dy : dx)
+  }
   onActivateRequested: root.activate(cursor.index)
   onCloseRequested: root.closeRequestedByView()
-  onTabRequested: function(direction) { root.switchPanelRequested(direction) }
-  onTextKey: function(text) {
-    if (text === "s" || text === "S") root.settingsRequested()
-    else if ((text === "r" || text === "R") && !root.busy) root.service.fetch()
-    else if (text === "p" || text === "P") root.pullAll()
+  onTabRequested: function (direction) {
+    root.switchPanelRequested(direction)
   }
-  onOpenedChanged: if (!opened) { cursor.reset(); lfsNotePath = "" }
+  onTextKey: function (text) {
+    if (text === "s" || text === "S")
+      root.settingsRequested()
+    else if ((text === "r" || text === "R") && !root.busy)
+      root.service.fetch()
+    else if (text === "p" || text === "P")
+      root.pullAll()
+  }
+  onOpenedChanged: if (!opened) {
+    cursor.reset()
+    lfsNotePath = ""
+  }
   onEditingSettingsChanged: {
     if (editingSettings) {
       loadFolders()
       settingsPage.resetScroll()
       Qt.callLater(settingsPage.focusBack)
     } else {
-      Qt.callLater(function() { root.forceActiveFocus() })
+      Qt.callLater(function () {
+        root.forceActiveFocus()
+      })
     }
   }
 
@@ -121,61 +146,83 @@ PanelKeyCatcher {
     target: cursor
     function onIndexChanged() {
       var row = root.rowForStop(cursor.index)
-      if (row >= 0) list.positionViewAtIndex(row, ListView.Contain)
-      else if (cursor.index === root.settingsStop || cursor.index === root.pullAllStop) list.positionViewAtBeginning()
-      else if (cursor.index === root.refreshStop) list.positionViewAtEnd()
+      if (row >= 0)
+        list.positionViewAtIndex(row, ListView.Contain)
+      else if (cursor.index === root.settingsStop || cursor.index === root.pullAllStop)
+        list.positionViewAtBeginning()
+      else if (cursor.index === root.refreshStop)
+        list.positionViewAtEnd()
     }
   }
 
   function rowForStop(index) {
     var row = stops.rows.indexOf(index)
-    if (row < 0) row = stops.infos.indexOf(index)
+    if (row < 0)
+      row = stops.infos.indexOf(index)
     return row >= 0 ? row : stops.trusts.indexOf(index)
   }
 
   // Open or fold a repository's Git LFS note (the cursor stays where it is).
   function toggleLfsNote(repo) {
-    if (!repo) return
+    if (!repo)
+      return
     lfsNotePath = lfsNotePath === repo.path ? "" : String(repo.path)
   }
 
   // Preview/tests: open a row's Git LFS note with the cursor on its LFS button.
-  function clearCursor() { cursor.reset(); lfsNotePath = "" }
+  function clearCursor() {
+    cursor.reset()
+    lfsNotePath = ""
+  }
   function showLfsInfo(row) {
-    if (row < 0 || row >= stops.infos.length || stops.infos[row] < 0) return
+    if (row < 0 || row >= stops.infos.length || stops.infos[row] < 0)
+      return
     lfsNotePath = String(repos[row].path)
     cursor.hover(stops.infos[row])
   }
   // Preview/tests: the keyboard cursor on the footer's Refresh button.
-  function showRefreshCursor() { cursor.hover(refreshStop) }
+  function showRefreshCursor() {
+    cursor.hover(refreshStop)
+  }
   // Preview: scroll Settings to its end (the Git LFS section, when shown).
-  function showSettingsEnd() { settingsPage.keepVisible(lfsSection.visible ? lfsSection : refreshSection) }
+  function showSettingsEnd() {
+    settingsPage.keepVisible(lfsSection.visible ? lfsSection : refreshSection)
+  }
 
   function activate(index) {
-    if (index < 0) return
+    if (index < 0)
+      return
     var info = stops.infos.indexOf(index)
     var trust = stops.trusts.indexOf(index)
-    if (info >= 0) toggleLfsNote(repos[info])
+    if (info >= 0)
+      toggleLfsNote(repos[info])
     else if (trust >= 0) {
       root.trustRequested(repos[trust], true)
       lfsNotePath = ""
-      cursor.hover(stops.rows[trust])         // stay on that repository once its LFS button goes
-    }
-    else if (stops.rows.indexOf(index) >= 0) root.repositoryRequested(repos[stops.rows.indexOf(index)])
-    else if (index === refreshStop) { if (!busy) service.fetch() }
-    else if (index === settingsStop) root.settingsRequested()
-    else if (index === pullAllStop) pullAll()
+      // stay on that repository once its LFS button goes
+      cursor.hover(stops.rows[trust])
+    } else if (stops.rows.indexOf(index) >= 0)
+      root.repositoryRequested(repos[stops.rows.indexOf(index)])
+    else if (index === refreshStop) {
+      if (!busy)
+        service.fetch()
+    } else if (index === settingsStop)
+      root.settingsRequested()
+    else if (index === pullAllStop)
+      pullAll()
   }
 
   function pullAll() {
-    if (service && !busy && pullableCount > 0) service.pullAll()
+    if (service && !busy && pullableCount > 0)
+      service.pullAll()
   }
 
   Timer {
     interval: 400
     repeat: true
     running: root.opened && root.animateTitle && !FoamyMotion.reduceMotion
-    onRunningChanged: if (!running) root.progressStep = 0
+    onRunningChanged: if (!running)
+      root.progressStep = 0
     onTriggered: root.progressStep = (root.progressStep + 1) % 3
   }
 
@@ -189,13 +236,22 @@ PanelKeyCatcher {
   }
 
   // ---- folder rows (settings) ---------------------------------------------------
-  ListModel { id: folderRows }
+  ListModel {
+    id: folderRows
+  }
 
   function loadFolders() {
     var result = Model.parseFolderRows(Model.repositoryFolders(root.settings))
     folderRows.clear()
-    if (!result.error) result.folders.forEach(function(folder) { folderRows.append(folder) })
-    if (folderRows.count === 0) folderRows.append({ path: "", depth: 2 })
+    if (!result.error)
+      result.folders.forEach(function (folder) {
+        folderRows.append(folder)
+      })
+    if (folderRows.count === 0)
+      folderRows.append({
+        path: "",
+        depth: 2
+      })
   }
 
   function folderList() {
@@ -203,27 +259,38 @@ PanelKeyCatcher {
     for (var i = 0; i < folderRows.count; i++) {
       var row = folderRows.get(i)
       // Blank editor rows are placeholders, not configured directories.
-      if (row.path.trim() !== "") rows.push({ path: row.path, depth: row.depth })
+      if (row.path.trim() !== "")
+        rows.push({
+          path: row.path,
+          depth: row.depth
+        })
     }
     return rows
   }
 
   function setFolderPath(index, path) {
-    if (index < 0 || index >= folderRows.count) return
+    if (index < 0 || index >= folderRows.count)
+      return
     folderRows.setProperty(index, "path", path)
     root.foldersEdited(folderList())
-    Qt.callLater(function() {
+    Qt.callLater(function () {
       var row = folderRepeater.itemAt(index)
-      if (row) row.focusPath()
+      if (row)
+        row.focusPath()
     })
   }
 
   function addFolder() {
-    if (folderRows.count >= 32) return
-    folderRows.append({ path: "", depth: 2 })
-    Qt.callLater(function() {
+    if (folderRows.count >= 32)
+      return
+    folderRows.append({
+      path: "",
+      depth: 2
+    })
+    Qt.callLater(function () {
       var row = folderRepeater.itemAt(folderRows.count - 1)
-      if (row) row.focusPath()
+      if (row)
+        row.focusPath()
     })
   }
 
@@ -239,12 +306,19 @@ PanelKeyCatcher {
     model: root.editingSettings ? [] : root.repos
     cacheBuffer: 0
     // A wheel notch scrolls about three rows, however the mouse splits it.
-    FoamyWheelScroll { id: wheel; target: list }
+    FoamyWheelScroll {
+      id: wheel
+      target: list
+    }
     ScrollBar.vertical: ScrollBar {
       visible: list.interactive
       width: FoamyStyle.gapSmall
       padding: 0
-      contentItem: Rectangle { implicitWidth: FoamyStyle.gapSmall; radius: FoamyStyle.pillRadius(width); color: FoamyPalette.mutedText }
+      contentItem: Rectangle {
+        implicitWidth: FoamyStyle.gapSmall
+        radius: FoamyStyle.pillRadius(width)
+        color: FoamyPalette.mutedText
+      }
       background: Item {}
     }
 
@@ -260,39 +334,65 @@ PanelKeyCatcher {
         meta: root.displayTitle
         settingsHasCursor: cursor.at(root.settingsStop)
         onSettingsClicked: root.settingsRequested()
-        onSettingsHovered: function(hovered) { if (hovered) cursor.hover(root.settingsStop) }
+        onSettingsHovered: function (hovered) {
+          if (hovered)
+            cursor.hover(root.settingsStop)
+        }
         trailing: [
           FoamyAction {
             objectName: "pullAllAction"
             visible: root.showPullAll
             iconName: "arrow-down-to-line"
-            tooltipText: (root.pullableCount > 0 ? FoamyI18n.tn("Pull %1 repositories", root.pullableCount)
-              : FoamyI18n.t("Nothing to pull")) + " · P"
+            tooltipText: (root.pullableCount > 0 ? FoamyI18n.tn("Pull %1 repositories", root.pullableCount) : FoamyI18n.t("Nothing to pull")) + " · P"
             actionEnabled: !root.busy && root.pullableCount > 0
             hasCursor: cursor.at(root.pullAllStop)
             foreground: FoamyPalette.secondaryText
-            onHoveredChanged: if (hovered) cursor.hover(root.pullAllStop)
+            onHoveredChanged: if (hovered)
+              cursor.hover(root.pullAllStop)
             onClicked: root.pullAll()
           }
         ]
         Flow {
           Layout.fillWidth: true
           spacing: FoamyStyle.padding
-          SummaryCount { value: root.totals.aheadRepos; label: FoamyI18n.t("ahead"); symbol: "↑"; tint: FoamyPalette.onSurface(FoamyPalette.success) }
-          SummaryCount { value: root.totals.behindRepos; label: FoamyI18n.t("behind"); symbol: "↓"; tint: FoamyPalette.onSurface(FoamyPalette.info) }
-          SummaryCount { value: root.totals.dirtyRepos; label: FoamyI18n.t("changed"); symbol: "•"; tint: FoamyPalette.onSurface(FoamyPalette.warning) }
-          SummaryCount { visible: value > 0; value: root.totals.failedRepos; label: FoamyI18n.t("failed"); symbol: "!"; tint: FoamyPalette.onSurface(FoamyPalette.error) }
+          SummaryCount {
+            value: root.totals.aheadRepos
+            label: FoamyI18n.t("ahead")
+            symbol: "↑"
+            tint: FoamyPalette.onSurface(FoamyPalette.success)
+          }
+          SummaryCount {
+            value: root.totals.behindRepos
+            label: FoamyI18n.t("behind")
+            symbol: "↓"
+            tint: FoamyPalette.onSurface(FoamyPalette.info)
+          }
+          SummaryCount {
+            value: root.totals.dirtyRepos
+            label: FoamyI18n.t("changed")
+            symbol: "•"
+            tint: FoamyPalette.onSurface(FoamyPalette.warning)
+          }
+          SummaryCount {
+            visible: value > 0
+            value: root.totals.failedRepos
+            label: FoamyI18n.t("failed")
+            symbol: "!"
+            tint: FoamyPalette.onSurface(FoamyPalette.error)
+          }
         }
       }
-      Item { width: parent.width; height: FoamyStyle.gapLarge }
+      Item {
+        width: parent.width
+        height: FoamyStyle.gapLarge
+      }
       Text {
         id: statusWarning
         visible: !!root.service && (root.service.lastError !== "" || root.sync.stale)
         x: FoamyStyle.padding
         width: parent.width - FoamyStyle.padding * 2
         bottomPadding: FoamyStyle.gapLarge
-        text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError)
-          : root.lastSyncText + " · " + FoamyI18n.t("remote state may be stale")
+        text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError) : root.lastSyncText + " · " + FoamyI18n.t("remote state may be stale")
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignLeft
@@ -321,7 +421,8 @@ PanelKeyCatcher {
     footer: Column {
       width: list.width
       topPadding: FoamyStyle.gap
-      bottomPadding: 0                  // the footer has its own, as in foamy-weather
+      // the footer has its own, as in foamy-weather
+      bottomPadding: 0
       spacing: FoamyStyle.gapLarge
       Text {
         visible: root.repos.length === 0
@@ -329,10 +430,7 @@ PanelKeyCatcher {
         width: parent.width - FoamyStyle.padding * 2
         topPadding: FoamyStyle.gapLarge
         bottomPadding: FoamyStyle.gapLarge
-        text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.")
-          : root.service.lastChecked === 0 ? FoamyI18n.t("Checking local repositories…")
-          : root.service.status.repoCount === 0 ? FoamyI18n.t("No repositories yet. Add a folder in Settings.")
-          : FoamyI18n.t("All repositories are clean and match their upstream")
+        text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 ? FoamyI18n.t("Checking local repositories…") : root.service.status.repoCount === 0 ? FoamyI18n.t("No repositories yet. Add a folder in Settings.") : FoamyI18n.t("All repositories are clean and match their upstream")
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignLeft
@@ -354,7 +452,10 @@ PanelKeyCatcher {
         refreshEnabled: !root.busy
         refreshTooltip: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…") : FoamyI18n.t("Fetch remotes and refresh")
         refreshHasCursor: cursor.at(root.refreshStop)
-        onRefreshHovered: function(hovered) { if (hovered) cursor.hover(root.refreshStop) }
+        onRefreshHovered: function (hovered) {
+          if (hovered)
+            cursor.hover(root.refreshStop)
+        }
         onRefreshClicked: root.activate(root.refreshStop)
       }
     }
@@ -385,7 +486,9 @@ PanelKeyCatcher {
           required property int index
           required property string path
           required property int depth
-          function focusPath() { folderPath.forceActiveFocus() }
+          function focusPath() {
+            folderPath.forceActiveFocus()
+          }
           width: parent.width
           spacing: FoamyStyle.gap
           enabled: !root.browsing && !root.foldersLocked
@@ -406,20 +509,25 @@ PanelKeyCatcher {
             placeholderText: "~/Projects"
             translate: FoamyI18n.t
             Accessible.name: FoamyI18n.t("Repository folder %1", [folderRow.index + 1])
-            onPasteErrorChanged: if (pasteError !== "") root.settingsErrorReported(pasteError)
+            onPasteErrorChanged: if (pasteError !== "")
+              root.settingsErrorReported(pasteError)
             onTextEdited: folderRows.setProperty(folderRow.index, "path", text)
             onEditingFinished: root.foldersEdited(root.folderList())
-            onInputActiveFocusChanged: if (inputActiveFocus) settingsPage.keepVisible(folderRow)
+            onInputActiveFocusChanged: if (inputActiveFocus)
+              settingsPage.keepVisible(folderRow)
           }
           FoamyDropdown {
             Layout.preferredWidth: Style.space(96)
             showLabel: false
             label: FoamyI18n.t("Scan levels for %1", [folderRow.path])
             value: String(folderRow.depth)
-            options: [0, 1, 2, 3, 4, 5].map(function(depth) {
-              return { value: String(depth), label: FoamyI18n.tn("%1 levels", depth) }
+            options: [0, 1, 2, 3, 4, 5].map(function (depth) {
+              return {
+                value: String(depth),
+                label: FoamyI18n.tn("%1 levels", depth)
+              }
             })
-            onChanged: function(value) {
+            onChanged: function (value) {
               folderRows.setProperty(folderRow.index, "depth", Number(value))
               root.foldersEdited(root.folderList())
             }
@@ -432,7 +540,11 @@ PanelKeyCatcher {
             foreground: FoamyPalette.secondaryText
             onClicked: {
               folderRows.remove(folderRow.index)
-              if (folderRows.count === 0) folderRows.append({ path: "", depth: 2 })
+              if (folderRows.count === 0)
+                folderRows.append({
+                  path: "",
+                  depth: 2
+                })
               root.foldersEdited(root.folderList())
             }
           }
@@ -465,13 +577,30 @@ PanelKeyCatcher {
         label: Prefs.value(Schema.fields, root.settings, "inotifyEnabled") ? FoamyI18n.t("Fallback refresh every") : FoamyI18n.t("Refresh every")
         value: String(Prefs.value(Schema.fields, root.settings, "refreshIntervalSec"))
         options: [
-          { value: "0", label: FoamyI18n.t("Off") },
-          { value: "10", label: FoamyI18n.tn("%1 seconds", 10) },
-          { value: "30", label: FoamyI18n.tn("%1 seconds", 30) },
-          { value: "60", label: FoamyI18n.tn("%1 minutes", 1) },
-          { value: "300", label: FoamyI18n.tn("%1 minutes", 5) }
+          {
+            value: "0",
+            label: FoamyI18n.t("Off")
+          },
+          {
+            value: "10",
+            label: FoamyI18n.tn("%1 seconds", 10)
+          },
+          {
+            value: "30",
+            label: FoamyI18n.tn("%1 seconds", 30)
+          },
+          {
+            value: "60",
+            label: FoamyI18n.tn("%1 minutes", 1)
+          },
+          {
+            value: "300",
+            label: FoamyI18n.tn("%1 minutes", 5)
+          }
         ]
-        onChanged: function(value) { root.saveRequested("refreshIntervalSec", Number(value)) }
+        onChanged: function (value) {
+          root.saveRequested("refreshIntervalSec", Number(value))
+        }
       }
       FoamyDropdown {
         width: parent.width
@@ -479,12 +608,26 @@ PanelKeyCatcher {
         label: FoamyI18n.t("Fetch remotes every")
         value: String(Prefs.value(Schema.fields, root.settings, "fetchIntervalSec"))
         options: [
-          { value: "300", label: FoamyI18n.tn("%1 minutes", 5) },
-          { value: "900", label: FoamyI18n.tn("%1 minutes", 15) },
-          { value: "1800", label: FoamyI18n.tn("%1 minutes", 30) },
-          { value: "3600", label: FoamyI18n.tn("%1 hours", 1) }
+          {
+            value: "300",
+            label: FoamyI18n.tn("%1 minutes", 5)
+          },
+          {
+            value: "900",
+            label: FoamyI18n.tn("%1 minutes", 15)
+          },
+          {
+            value: "1800",
+            label: FoamyI18n.tn("%1 minutes", 30)
+          },
+          {
+            value: "3600",
+            label: FoamyI18n.tn("%1 hours", 1)
+          }
         ]
-        onChanged: function(value) { root.saveRequested("fetchIntervalSec", Number(value)) }
+        onChanged: function (value) {
+          root.saveRequested("fetchIntervalSec", Number(value))
+        }
       }
     }
 
@@ -503,8 +646,7 @@ PanelKeyCatcher {
           required property var modelData
           width: lfsSection.width
           label: String(modelData.label)
-          description: modelData.identity ? String(modelData.path)
-            : FoamyI18n.t("Trust isn't available for this repository's filesystem.")
+          description: modelData.identity ? String(modelData.path) : FoamyI18n.t("Trust isn't available for this repository's filesystem.")
           enabled: !!modelData.identity && !root.trustLocked
           checked: Model.isTrusted(root.trustedList, modelData)
           onClicked: root.trustRequested(modelData, !checked)
@@ -545,13 +687,9 @@ PanelKeyCatcher {
     readonly property bool unavailable: !!repo && repo.complete === false
     readonly property string meta: Model.repositoryMeta(repo, FoamyI18n.t, FoamyI18n.tn)
     readonly property string syncError: Model.syncErrorText(repo, FoamyI18n.t)
-    readonly property color stateColor: !repo ? FoamyPalette.success
-      : repo.complete === false || repo.syncError ? FoamyPalette.error
-      : repo.dirtyCount > 0 ? FoamyPalette.warning
-      : repo.behind > 0 ? FoamyPalette.info : FoamyPalette.success
+    readonly property color stateColor: !repo ? FoamyPalette.success : repo.complete === false || repo.syncError ? FoamyPalette.error : repo.dirtyCount > 0 ? FoamyPalette.warning : repo.behind > 0 ? FoamyPalette.info : FoamyPalette.success
 
-    height: content.implicitHeight + FoamyStyle.rowPadding * 2
-      + (lfsPanel.visible ? lfsPanel.implicitHeight + FoamyStyle.gap : 0)
+    height: content.implicitHeight + FoamyStyle.rowPadding * 2 + (lfsPanel.visible ? lfsPanel.implicitHeight + FoamyStyle.gap : 0)
     readonly property int rowStop: root.stops.rows[rowIndex] !== undefined ? root.stops.rows[rowIndex] : -1
     readonly property int infoStop: root.stops.infos[rowIndex] !== undefined ? root.stops.infos[rowIndex] : -1
     readonly property int trustStop: root.stops.trusts[rowIndex] !== undefined ? root.stops.trusts[rowIndex] : -1
@@ -563,7 +701,8 @@ PanelKeyCatcher {
     readonly property bool noteWanted: lfs && !trusted && !unavailable && !!repo && root.lfsNotePath === repo.path
     onNoteWantedChanged: {
       lfsNote.expanded = noteWanted
-      if (noteWanted) wheel.ensureVisible(lfsPanel)
+      if (noteWanted)
+        wheel.ensureVisible(lfsPanel)
     }
     Component.onCompleted: lfsNote.expanded = noteWanted
     hasCursor: cursor.at(rowStop)
@@ -614,13 +753,15 @@ PanelKeyCatcher {
           spacing: 0
           readonly property bool hasError: repoRow.syncError !== "" && !repoRow.unavailable
           readonly property real badgeSpace: lfsBadge.visible ? lfsBadge.width + FoamyStyle.gapSmall : 0
-          readonly property bool errorInline: hasError
-            && metaText.implicitWidth + badgeSpace + Math.min(errorMetrics.advanceWidth, width * 0.4) <= width
-          TextMetrics { id: errorMetrics; font: errorText.font; text: " · " + repoRow.syncError }
+          readonly property bool errorInline: hasError && metaText.implicitWidth + badgeSpace + Math.min(errorMetrics.advanceWidth, width * 0.4) <= width
+          TextMetrics {
+            id: errorMetrics
+            font: errorText.font
+            text: " · " + repoRow.syncError
+          }
           Text {
             id: metaText
-            width: statusLine.errorInline ? implicitWidth
-              : repoRow.unavailable ? statusLine.width : Math.min(implicitWidth, statusLine.width - statusLine.badgeSpace)
+            width: statusLine.errorInline ? implicitWidth : repoRow.unavailable ? statusLine.width : Math.min(implicitWidth, statusLine.width - statusLine.badgeSpace)
             height: Math.max(implicitHeight, lfsBadge.visible ? lfsBadge.height : 0)
             verticalAlignment: Text.AlignVCenter
             text: repoRow.meta
@@ -675,7 +816,8 @@ PanelKeyCatcher {
               Accessible.name: FoamyI18n.t("This repository uses Git LFS")
               Accessible.checkable: true
               Accessible.checked: repoRow.noteWanted
-              onHoveredChanged: if (hovered) cursor.hover(repoRow.infoStop)
+              onHoveredChanged: if (hovered)
+                cursor.hover(repoRow.infoStop)
               onClicked: {
                 cursor.hover(repoRow.infoStop)
                 root.toggleLfsNote(repoRow.repo)
@@ -696,7 +838,9 @@ PanelKeyCatcher {
             font.pixelSize: FoamyStyle.font.bodySmall
             Accessible.role: Accessible.AlertMessage
             Accessible.name: repoRow.syncError
-            HoverHandler { id: errorHover }
+            HoverHandler {
+              id: errorHover
+            }
             PanelToolTip {
               visible: errorHover.hovered && errorText.truncated
               text: repoRow.syncError
@@ -742,7 +886,8 @@ PanelKeyCatcher {
       anchors.topMargin: FoamyStyle.gap
       anchors.left: parent.left
       anchors.right: parent.right
-      anchors.leftMargin: FoamyStyle.rowPadding * 2 + 2     // past the state bar
+      // past the state bar
+      anchors.leftMargin: FoamyStyle.rowPadding * 2 + 2
       anchors.rightMargin: FoamyStyle.rowPadding
       spacing: FoamyStyle.gap
       FoamyInfoNote {
@@ -750,8 +895,7 @@ PanelKeyCatcher {
         width: parent.width
         showHeader: false
         focusable: false
-        text: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.")
-          + (repoRow.trustable ? "" : "\n" + FoamyI18n.t("Trust isn't available for this repository's filesystem."))
+        text: FoamyI18n.t("Automatic checks don't run a repository's own filters, so LFS files you edited may show as changed until Git refreshes.") + (repoRow.trustable ? "" : "\n" + FoamyI18n.t("Trust isn't available for this repository's filesystem."))
       }
       FoamyButton {
         objectName: "githubTrustButton"
@@ -759,7 +903,8 @@ PanelKeyCatcher {
         text: FoamyI18n.t("Trust this repository")
         iconName: "check"
         hasCursor: cursor.at(repoRow.trustStop)
-        onHoveredChanged: if (hovered) cursor.hover(repoRow.trustStop)
+        onHoveredChanged: if (hovered)
+          cursor.hover(repoRow.trustStop)
         onClicked: root.activate(repoRow.trustStop)
       }
     }
