@@ -373,7 +373,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 FOAMY_HELPER='["bin/aarch64/foamy-github-helper"]' python3 -m unittest discover -s tests -p 'test_*.py'
 bash tests/stress.sh                               # the unit suite, 40 runs, 4 at a time
 bash tests/kit-check.sh
-python3 tests/i18n-runtime.py                     # live language switching; OMARCHY_PATH for another tree
+python3 ~/GitHub/Personal/foamy-kit/preview/i18n_runtime.py .   # live language switching (the kit's catalog check)
 python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded

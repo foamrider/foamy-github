@@ -5,7 +5,7 @@
 crate native
 binary foamy-github-helper
 toolchain 1.99.1
-kit 0.8.0
-source 89404f14ac78d0755955ff9db0c1701641dd0be63074999e526aa81a3833424f
-2e82b82a9bd89ff70e32e51947486eb8513b3bf0b48a3ac76cb81c12e216b642  bin/aarch64/foamy-github-helper
-bd35966dfb5bbbf45e8ff666100708edbe007787b7f214fb68d42004bb58ed93  bin/x86_64/foamy-github-helper
+kit 0.9.0
+source 3ded094797cbc5929e6771a665093f443b48c88ba72d37f6e9e4d306ae5212ce
+8d8a831e5d1e465d4ca59852109a6640c1fcebbe28a1ba5d772e1a69e70a6ef5  bin/aarch64/foamy-github-helper
+cb97375801a0ee54a03fb19d3acd17bf58f7590fa985bf6a54e6aeb30b715a78  bin/x86_64/foamy-github-helper
