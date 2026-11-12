@@ -72,7 +72,10 @@ Panel {
     bar: root.bar
     moduleName: root.moduleName
     fields: root.fields
-    settings: root.settings
+    // A JSON copy, as the Service reads them: a list handed over as a QML
+    // sequence wrapper (not an Array) would read as an invalid stored array,
+    // which FoamyPrefs refuses to replace, so no folder or trust edit saved.
+    settings: JSON.parse(JSON.stringify(root.settings || {}))
   }
   readonly property string pageError: settingsError !== "" ? settingsError : prefs.error !== "" ? FoamyI18n.t(prefs.error) : ""
 
