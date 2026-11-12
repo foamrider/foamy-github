@@ -29,6 +29,7 @@ from pathlib import Path
 KIT = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"))
 sys.path.insert(0, str(KIT / "preview"))
 import harness  # noqa: E402
+import hostenv  # noqa: E402
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -110,9 +111,6 @@ ShellRoot {
 
 def fake_plugin(work):
     """A copy of the plugin whose helper is a script (fake `watch`)."""
-    plugin = work / "plugin"
-    shutil.copytree(PLUGIN, plugin, ignore=shutil.ignore_patterns(
-        ".git", "bin", "tests", "native", "rust", "target", "preview", "preview.png", "__pycache__"))
     counter = work / "watch-runs"
     memory = work / "memory"
     script = f"""#!/usr/bin/env bash
@@ -127,11 +125,7 @@ if [ "${{1-}}" = watch ]; then
 fi
 exec {shlex.join(PREFIX)} "$@"
 """
-    for arch in ("x86_64", "aarch64"):
-        helper = plugin / "bin" / arch / "foamy-github-helper"
-        helper.parent.mkdir(parents=True)
-        helper.write_text(script)
-        helper.chmod(0o755)
+    plugin = hostenv.fake_helper_plugin(PLUGIN, work / "plugin", "foamy-github-helper", script)
     return plugin, counter, memory
 
 
@@ -167,6 +161,11 @@ for host in harness.available_hosts(what="runtime-watcher"):
         run.ok = False
         print("\n".join(warnings))
     checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
+    # The isolated harness stubs every omarchy command; none may run.
+    if run.host_commands():
+        run.ok = False
+        print("host commands ran:", *run.host_commands(), sep="\n  ")
+
     if run.ok:
         print(f"{host}: watcher stderr passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
         run.cleanup()

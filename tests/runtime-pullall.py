@@ -148,6 +148,11 @@ for host in harness.available_hosts(what="runtime-pullall"):
     if pulled != [True, True, False]:
         run.ok = False
         print(f"pulled clones {pulled}, expected [True, True, False]")
+    # The isolated harness stubs every omarchy command; none may run.
+    if run.host_commands():
+        run.ok = False
+        print("host commands ran:", *run.host_commands(), sep="\n  ")
+
     if run.ok:
         print(f"{host}: pull all passed")
         run.cleanup()

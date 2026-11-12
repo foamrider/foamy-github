@@ -29,6 +29,7 @@ from pathlib import Path
 KIT = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"))
 sys.path.insert(0, str(KIT / "preview"))
 import harness  # noqa: E402
+import hostenv  # noqa: E402
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -104,9 +105,6 @@ ShellRoot {
 
 def fake_plugin(work):
     """A copy of the plugin whose helper is a script (fake `status`)."""
-    plugin = work / "plugin"
-    shutil.copytree(PLUGIN, plugin, ignore=shutil.ignore_patterns(
-        ".git", "bin", "tests", "native", "rust", "target", "preview", "preview.png", "__pycache__"))
     counter = work / "status-runs"
     release = work / "release"
     script = f"""#!/usr/bin/env bash
@@ -136,11 +134,7 @@ if [ "$runs" = 1 ]; then
 fi
 printf '{{"ok":true,"repoCount":1,"affectedCount":1,"totals":{{"dirtyRepos":1}},"repos":[{{"path":"{REPO}","name":"run%s","owner":"","label":"run%s","branch":"main","upstream":"origin/main","ahead":0,"behind":0,"dirty":true,"dirtyCount":1,"affected":true,"complete":true,"error":"","usesLfs":true,"trusted":%s,"identity":"1:2:3|1:2:3","syncError":""}}],"sync":{{"stale":false}}}}\\n' "$runs" "$runs" "$trusted"
 """
-    for arch in ("x86_64", "aarch64"):
-        helper = plugin / "bin" / arch / "foamy-github-helper"
-        helper.parent.mkdir(parents=True)
-        helper.write_text(script)
-        helper.chmod(0o755)
+    plugin = hostenv.fake_helper_plugin(PLUGIN, work / "plugin", "foamy-github-helper", script)
     return plugin, counter, release
 
 
@@ -159,6 +153,11 @@ for host in harness.available_hosts(what="runtime-stale-status"):
         run.ok = False
         print("\n".join(warnings))
     checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
+    # The isolated harness stubs every omarchy command; none may run.
+    if run.host_commands():
+        run.ok = False
+        print("host commands ran:", *run.host_commands(), sep="\n  ")
+
     if run.ok:
         print(f"{host}: stale status passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks, {runs} status runs)")
         run.cleanup()

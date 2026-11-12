@@ -202,6 +202,11 @@ for host in harness.available_hosts(what="runtime-panel"):
     if warnings:
         run.ok = False
         print("\n".join(warnings))
+    # The isolated harness stubs every omarchy command; none may run.
+    if run.host_commands():
+        run.ok = False
+        print("host commands ran:", *run.host_commands(), sep="\n  ")
+
     if run.ok:
         print(f"{host} ({'live monitoring' if mode == 'true' else 'polling'}): runtime passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
         run.cleanup()
