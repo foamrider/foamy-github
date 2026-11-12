@@ -399,6 +399,9 @@ Item {
     stderr: StdioCollector { id: statusError; waitForEnd: true }
     onExited: function(exitCode) {
       root.refreshing = false
+      // Stopped by the last bar's unload: nothing to show, and no error may
+      // stay on the shared Service for the next bar.
+      if (!root.active) return
       // Do not display a scan of the old folders or trust after settings change mid-scan.
       if (root.scannedFolders !== root.folderArguments || root.scannedTrust !== root.trustArguments) {
         root.refresh()
@@ -418,6 +421,10 @@ Item {
     stderr: StdioCollector { id: syncError; waitForEnd: true }
     onExited: function(exitCode) {
       root.syncing = false
+      if (!root.active) {
+        root.setActionStatus("")
+        return
+      }
       if (root.markUnavailable(exitCode)) {
         root.setActionStatus("")
         return
@@ -443,7 +450,7 @@ Item {
     stderr: StdioCollector { id: repositoryActionError; waitForEnd: true }
     onExited: function(exitCode) {
       root.repositoryActionRunning = false
-      if (root.markUnavailable(exitCode)) {
+      if (!root.active || root.markUnavailable(exitCode)) {
         root.pullAllQueue = []
         root.pullAllResult = null
         root.setActionStatus("")

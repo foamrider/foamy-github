@@ -378,6 +378,7 @@ python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foa
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
 python3 tests/runtime-stale-status.py              # a status check overtaken by a trust change is redone
+python3 tests/runtime-lifecycle.py                 # helper jobs across unload (fake helper, fake NetworkManager)
 ~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
 
