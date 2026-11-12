@@ -3,7 +3,7 @@
 Panel.qml and Service in an isolated offscreen Quickshell (foamy-kit's
 harness) with a fake helper.
 
-  python3 tests/runtime-stale-status.py [4.5|4.0|both ...]     (default: 4.5)
+  python3 tests/runtime-stale-status.py
 
 Timed polling only (no live monitoring). The fake helper's first `status`
 blocks until the test has saved trust for its one repository; every
@@ -17,8 +17,7 @@ event, not on time. Temp HOME; no network. Requires ~/GitHub/Personal/foamy-kit
 (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
-FOAMY_HOST_45. 4.0 runs only against an Omarchy 4.0 shell tree in
-FOAMY_HOST_40; without one, 4.0 and `both` print a SKIP line for it."""
+FOAMY_HOST_45."""
 import atexit
 import os
 import shlex
@@ -28,23 +27,8 @@ import tempfile
 from pathlib import Path
 
 KIT = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"))
-# The installed shell is 4.5; set before the harness reads it.
-os.environ.setdefault("FOAMY_HOST_45", "/usr/share/omarchy/shell")
 sys.path.insert(0, str(KIT / "preview"))
 import harness  # noqa: E402
-
-
-def hosts(args, name):
-    """4.5 by default; 4.0 only with FOAMY_HOST_40 (no installed 4.0 shell)."""
-    chosen = []
-    for arg in args or ["4.5"]:
-        if arg not in ("4.0", "4.5", "both"):
-            sys.exit(f"unknown host {arg!r}: use 4.5, 4.0 or both")
-        chosen += ["4.5", "4.0"] if arg == "both" else [arg]
-    if "4.0" in chosen and not os.environ.get("FOAMY_HOST_40"):
-        print(f"SKIP {name} 4.0: set FOAMY_HOST_40 to an Omarchy 4.0 shell tree")
-        chosen = [h for h in chosen if h != "4.0"]
-    return list(dict.fromkeys(chosen))
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -161,7 +145,7 @@ printf '{{"ok":true,"repoCount":1,"affectedCount":1,"totals":{{"dirtyRepos":1}},
 
 
 status = 0
-for host in hosts(sys.argv[1:], "runtime-stale-status"):
+for host in harness.available_hosts(what="runtime-stale-status"):
     work = Path(tempfile.mkdtemp(prefix="foamy-github-stale-"))
     atexit.register(shutil.rmtree, work, True)
     plugin, counter, release = fake_plugin(work)

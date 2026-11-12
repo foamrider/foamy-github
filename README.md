@@ -382,6 +382,4 @@ python3 tests/runtime-stale-status.py              # a status check overtaken by
 ```
 
 The runtime tests and the preview target Omarchy 4.5, the installed
-`/usr/share/omarchy/shell` (`FOAMY_HOST_45` selects another shell tree). Pass
-`4.0` or `both` to also run 4.0; that needs an Omarchy 4.0 shell tree in
-`FOAMY_HOST_40`, and prints a SKIP line without one.
+`/usr/share/omarchy/shell` (`FOAMY_HOST_45` selects another shell tree).
