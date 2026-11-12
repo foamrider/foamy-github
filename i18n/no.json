@@ -155,5 +155,8 @@
     "one": "Hentet %1 prosjekt",
     "other": "Hentet %1 prosjekter"
   },
-  "This plugin's helper isn't available for this CPU.": "Hjelpeprogrammet til denne utvidelsen er ikke tilgjengelig for denne prosessoren."
+  "This plugin's helper isn't available for this CPU.": "Hjelpeprogrammet til denne utvidelsen er ikke tilgjengelig for denne prosessoren.",
+  "The repository folders saved in shell.json aren't valid, so no folders are checked. Fix them in shell.json.": "Prosjektmappene som er lagret i shell.json, er ugyldige, så ingen mapper sjekkes. Rett dem i shell.json.",
+  "The trusted repositories saved in shell.json aren't valid, so no repository is trusted. Fix the list in shell.json.": "De klarerte prosjektene som er lagret i shell.json, er ugyldige, så ingen prosjekter er klarert. Rett listen i shell.json.",
+  "The saved list in shell.json isn't valid, so it wasn't replaced.": "Den lagrede listen i shell.json er ugyldig, så den ble ikke erstattet."
 }

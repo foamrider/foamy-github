@@ -177,3 +177,22 @@ test('the folder browser is the helper\'s pick-folder, under a timeout, with no 
   for (const gone of ['folder-picker.sh', 'FolderPicker.qml'])
     assert.equal(fs.existsSync(path.join(__dirname, '..', gone)), false, gone)
 })
+
+test('a trust change is a revocation only when an entry the job had is gone', () => {
+  const a = { path: '/r/a', identity: '1:1:1|2:2:2' }
+  const b = { path: '/r/b', identity: '3:3:3|4:4:4' }
+  const list = (...entries) => JSON.stringify(entries)
+  const cases = [
+    ['', list(), false],                                       // no job started yet
+    [list(), list(a), false],                                  // a grant
+    [list(a), list(a, b), false],
+    [list(a), '*', false],                                     // the old global switch trusts everything
+    [list(a), list(a), false],
+    [list(a, b), list(b), true],                               // an entry removed
+    [list(a), list({ path: a.path, identity: '9:9:9|9:9:9' }), true], // same path, other repository
+    ['*', list(a), true],                                      // the global switch turned off
+    [list(a), 'not json', true],
+  ]
+  for (const [before, now, revoked] of cases)
+    assert.equal(Model.trustRevoked(before, now), revoked, `${before} -> ${now}`)
+})

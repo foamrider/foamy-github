@@ -1,0 +1,3 @@
+# Dynamic entry points Vulture can't see (`<name>  # reason`).
+do_GET  # tests/test_trust.py: http.server.BaseHTTPRequestHandler calls it per GET
+log_message  # tests/test_trust.py: overrides BaseHTTPRequestHandler's request logging

@@ -12,9 +12,9 @@ How the lists are made:
 
 ## `foamy-github-helper`
 
-- `bin/aarch64/foamy-github-helper`: sha256 `2e82b82a9bd89ff70e32e51947486eb8513b3bf0b48a3ac76cb81c12e216b642`
-- `bin/x86_64/foamy-github-helper`: sha256 `bd35966dfb5bbbf45e8ff666100708edbe007787b7f214fb68d42004bb58ed93`
-- `native/native.pin`: source `89404f14ac78d0755955ff9db0c1701641dd0be63074999e526aa81a3833424f`, toolchain 1.99.1
+- `bin/aarch64/foamy-github-helper`: sha256 `ce377f6949f1883cb94b902dd1dd2e3aca204d183aafec3e4686d7fa01d4ad98`
+- `bin/x86_64/foamy-github-helper`: sha256 `19794d5607909edc919132380bcb5fe4514583a6f40c044cd859129261d3ac24`
+- `native/native.pin`: source `4f771768a201cd39585b840e508680a2c90ba30dbb34d88104dd0209cbeb18aa`, toolchain 1.99.1
 
 ### Crates linked into `foamy-github-helper`
 
@@ -40,7 +40,7 @@ First-party crates (not third-party code, listed for completeness):
 | Crate | Version | Source | License | Arches | Notices |
 |---|---|---|---|---|---|
 | foamy-github-helper | 0.1.0 | `native/` (this plugin) | MIT | both | `LICENSE` |
-| foamy-helper | 0.1.1 | `kit/rust/foamy-helper/` (foamy-kit, vendored) | MIT | both | [N6](#n6) |
+| foamy-helper | 0.1.2 | `kit/rust/foamy-helper/` (foamy-kit, vendored) | MIT | both | [N6](#n6) |
 
 ### Toolchain code linked into `foamy-github-helper`
 
@@ -423,7 +423,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### N6
 
-Shipped by: foamy-helper 0.1.1 (foamy-kit's LICENSE).
+Shipped by: foamy-helper 0.1.2 (foamy-kit's LICENSE).
 
 ```text
 MIT License

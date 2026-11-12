@@ -42,7 +42,9 @@ and Refresh (hovering moves the same cursor); Enter activates; `r` refreshes;
 `p` pulls all; `s` opens Settings; Esc closes (or leaves Settings); Tab and Shift+Tab move to
 the next bar panel.
 IPC: `omarchy-shell foamy.github open|close|toggle|settings|refresh|status`
-(`refresh` fetches remotes; `status` prints JSON).
+(`refresh` fetches remotes and answers `ok` when the fetch started, else
+`busy`, `offline` or `unavailable` when the helper can't run on this CPU;
+`status` prints JSON).
 
 ## Settings
 
@@ -232,6 +234,17 @@ seen.
   longer uses LFS, or that isn't found anymore, is kept as it is, not deleted;
   it just isn't listed.
 
+If `repositoryFolders` or `trustedRepositories` in `shell.json` was edited
+into a shape the widget can't read, that list counts as empty (no folders
+are checked, no repository is trusted). Settings names the list, and its
+editor stays locked, because saving from the panel would replace every entry
+you had. Fix the list in `shell.json` and the editor unlocks.
+
+Taking trust away applies at once: a status check or fetch that is still
+running with that repository trusted is stopped (its Git processes too) and
+runs again without it. Giving trust stops nothing; it applies from the next
+check or fetch.
+
 Trust is stored as the repository's real path (symlinks resolved) plus the
 identity of its Git directory: device, inode and birth time
 (`trustedRepositories`). A moved or renamed repository is untrusted again, and
@@ -363,6 +376,19 @@ kit/native/build-native.sh .          # both arches, native.pin
 kit/native/build-native.sh . --verify # byte-identical clean rebuild
 ```
 
+All checks run with one command (foamy-kit's "Tooling"; `mise install`
+first, for the pinned linters):
+
+```sh
+tests/validate.sh          # kit-check, linters, formatters, native tests, then tests/suite.sh
+tests/validate.sh --ci     # what GitHub's runner does: no Quickshell or Omarchy host
+tests/validate.sh --fast   # no native tests, no offscreen runtime tests
+```
+
+`tests/suite.sh` is this repository's part of it: the node tests and the
+unit suite (on both arches when this machine runs the other one), then,
+without `--ci` or `--fast`, every runtime test below. The individual commands:
+
 The unit tests (Python, dev only) run the helper as a process: this machine's
 binary by default, another one with `FOAMY_HELPER` (the aarch64 build runs
 through qemu binfmt; qemu-user has no Landlock, so those checks skip).
@@ -373,14 +399,15 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 FOAMY_HELPER='["bin/aarch64/foamy-github-helper"]' python3 -m unittest discover -s tests -p 'test_*.py'
 bash tests/stress.sh                               # the unit suite, 40 runs, 4 at a time
 bash tests/kit-check.sh
-python3 tests/i18n-runtime.py                     # live language switching; OMARCHY_PATH for another tree
+python3 ~/GitHub/Personal/foamy-kit/preview/i18n_runtime.py .   # live language switching (the kit's catalog check)
 python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
+python3 tests/runtime-stale-status.py              # a status check overtaken by a trust change is redone
+python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust edits and IPC refresh (fake helper, fake NetworkManager)
+python3 tests/runtime-stored.py                    # an invalid folder or trust list in shell.json is named and kept
 ~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
 
 The runtime tests and the preview target Omarchy 4.5, the installed
-`/usr/share/omarchy/shell` (`FOAMY_HOST_45` selects another shell tree). Pass
-`4.0` or `both` to also run 4.0; that needs an Omarchy 4.0 shell tree in
-`FOAMY_HOST_40`, and prints a SKIP line without one.
+`/usr/share/omarchy/shell` (`FOAMY_HOST_45` selects another shell tree).

@@ -1,4 +1,4 @@
-// foamy-kit 0.8.1 2661feae27f7fce972aaf1bd53363dfbc4297d256012cc3d051737d433f1bf76 — do not edit; change foamy-kit and run sync
+// foamy-kit 0.9.0 7098c25cb64d565c9cb175f41e3cb326cc40655eb2888f1f15997d2add20b556 — do not edit; change foamy-kit and run sync
 import QtQuick
 import qs.Commons as Commons
 import qs.Ui
@@ -45,9 +45,9 @@ Column {
   property alias refreshButton: refreshButton
   default property alias leading: leadingRow.data
 
-  signal refreshClicked()
+  signal refreshClicked
   signal refreshHovered(bool hovered)
-  signal statusClicked()
+  signal statusClicked
 
   spacing: FoamyStyle.gapLarge
   bottomPadding: spacing
@@ -109,7 +109,8 @@ Column {
         anchors.fill: parent
         hoverEnabled: root.statusClickable || root.statusTooltip !== ""
         cursorShape: root.statusClickable ? Qt.PointingHandCursor : Qt.ArrowCursor
-        onClicked: if (root.statusClickable) root.statusClicked()
+        onClicked: if (root.statusClickable)
+          root.statusClicked()
       }
       PanelToolTip {
         visible: statusMouse.containsMouse && root.statusTooltip !== ""

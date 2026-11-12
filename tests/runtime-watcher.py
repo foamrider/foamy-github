@@ -2,7 +2,7 @@
 """The watcher's stderr, end to end: the real Panel.qml and Service in an
 isolated offscreen Quickshell (foamy-kit's harness) with a fake helper.
 
-  python3 tests/runtime-watcher.py [4.5|4.0|both ...]     (default: 4.5)
+  python3 tests/runtime-watcher.py
 
 The plugin runs from a temporary copy whose bin/<arch>/foamy-github-helper
 is a script: each `watch` writes "FAKE-WATCH-HEAD run <n>" and 16 MiB to
@@ -17,8 +17,8 @@ costs several times the stderr). Temp HOME; no network. Requires
 ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
-FOAMY_HOST_45. 4.0 runs only against an Omarchy 4.0 shell tree in
-FOAMY_HOST_40; without one, 4.0 and `both` print a SKIP line for it."""
+FOAMY_HOST_45."""
+
 import atexit
 import os
 import shlex
@@ -28,23 +28,9 @@ import tempfile
 from pathlib import Path
 
 KIT = Path(os.environ.get("FOAMY_KIT", Path.home() / "GitHub/Personal/foamy-kit"))
-# The installed shell is 4.5; set before the harness reads it.
-os.environ.setdefault("FOAMY_HOST_45", "/usr/share/omarchy/shell")
 sys.path.insert(0, str(KIT / "preview"))
 import harness  # noqa: E402
-
-
-def hosts(args, name):
-    """4.5 by default; 4.0 only with FOAMY_HOST_40 (no installed 4.0 shell)."""
-    chosen = []
-    for arg in args or ["4.5"]:
-        if arg not in ("4.0", "4.5", "both"):
-            sys.exit(f"unknown host {arg!r}: use 4.5, 4.0 or both")
-        chosen += ["4.5", "4.0"] if arg == "both" else [arg]
-    if "4.0" in chosen and not os.environ.get("FOAMY_HOST_40"):
-        print(f"SKIP {name} 4.0: set FOAMY_HOST_40 to an Omarchy 4.0 shell tree")
-        chosen = [h for h in chosen if h != "4.0"]
-    return list(dict.fromkeys(chosen))
+import hostenv  # noqa: E402
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -56,7 +42,7 @@ STDERR_BYTES = 16 * 1024 * 1024
 GROWTH_LIMIT_KB = 16 * 1024
 HEAD = "FAKE-WATCH-HEAD run "
 
-SHELL = r'''
+SHELL = r"""
 import QtQuick
 import Quickshell
 import "harness"
@@ -121,14 +107,11 @@ ShellRoot {
   }
   Timer { interval: 40000; running: true; onTriggered: { check(false, "timed out"); shell.finish() } }
 }
-'''.replace("@HEAD@", HEAD)
+""".replace("@HEAD@", HEAD)
 
 
 def fake_plugin(work):
     """A copy of the plugin whose helper is a script (fake `watch`)."""
-    plugin = work / "plugin"
-    shutil.copytree(PLUGIN, plugin, ignore=shutil.ignore_patterns(
-        ".git", "bin", "tests", "native", "rust", "target", "preview", "preview.png", "__pycache__"))
     counter = work / "watch-runs"
     memory = work / "memory"
     script = f"""#!/usr/bin/env bash
@@ -143,16 +126,12 @@ if [ "${{1-}}" = watch ]; then
 fi
 exec {shlex.join(PREFIX)} "$@"
 """
-    for arch in ("x86_64", "aarch64"):
-        helper = plugin / "bin" / arch / "foamy-github-helper"
-        helper.parent.mkdir(parents=True)
-        helper.write_text(script)
-        helper.chmod(0o755)
+    plugin = hostenv.fake_helper_plugin(PLUGIN, work / "plugin", "foamy-github-helper", script)
     return plugin, counter, memory
 
 
 status = 0
-for host in hosts(sys.argv[1:], "runtime-watcher"):
+for host in harness.available_hosts(what="runtime-watcher"):
     work = Path(tempfile.mkdtemp(prefix="foamy-github-watcher-"))
     atexit.register(shutil.rmtree, work, True)
     plugin, counter, memory = fake_plugin(work)
@@ -171,18 +150,30 @@ for host in hosts(sys.argv[1:], "runtime-watcher"):
         print(f"expected peak memory samples from qs (pid {shell_pid}), got {samples}")
     else:
         growth = max(int(sample[1]) for sample in samples) - int(samples[0][1])
-        print(f"{host}: qs peak memory grew {growth} kB over {runs} watcher runs of {STDERR_BYTES >> 20} MiB stderr each")
+        print(
+            f"{host}: qs peak memory grew {growth} kB over {runs} watcher runs of {STDERR_BYTES >> 20} MiB stderr each"
+        )
         if growth >= GROWTH_LIMIT_KB:
             run.ok = False
-            print(f"the shell's peak memory grew {growth} kB (limit {GROWTH_LIMIT_KB} kB): the watcher's stderr was kept")
+            print(
+                f"the shell's peak memory grew {growth} kB (limit {GROWTH_LIMIT_KB} kB): the watcher's stderr was kept"
+            )
     # Any QML warning from the plugin's own files fails the run too (the
     # Service's own "foamy.github:" report of the failure is expected).
-    warnings = [line for line in run.log.splitlines()
-                if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line and "foamy.github:" not in line]
+    warnings = [
+        line
+        for line in run.log.splitlines()
+        if "WARN" in line and "/plugin/" in line and "/plugin/kit/" not in line and "foamy.github:" not in line
+    ]
     if warnings:
         run.ok = False
         print("\n".join(warnings))
     checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
+    # The isolated harness stubs every omarchy command; none may run.
+    if run.host_commands():
+        run.ok = False
+        print("host commands ran:", *run.host_commands(), sep="\n  ")
+
     if run.ok:
         print(f"{host}: watcher stderr passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
         run.cleanup()

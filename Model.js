@@ -140,6 +140,20 @@ function isTrusted(list, repo) {
   return !!repo && (list || []).some(function(entry) { return entry.path === repo.path && entry.identity === repo.identity })
 }
 
+// True when trust given as `now` no longer covers something `before`
+// covered: both are the Service's trustArguments ("*" for the old global
+// switch, else the JSON list the helpers get; "" for none). An entry counts
+// as gone when its path or identity is no longer listed.
+function trustRevoked(before, now) {
+  if (now === "*" || before === now || !before) return false
+  if (before === "*") return true
+  var parse = function(text) {
+    try { var list = JSON.parse(text); return Array.isArray(list) ? list : [] } catch (error) { return [] }
+  }
+  var kept = parse(now)
+  return parse(before).some(function(entry) { return !isTrusted(kept, entry) })
+}
+
 // The list a trust edit must start from: the newest queued save of
 // trustedRepositories if one waits behind an in-flight save, else the
 // effective settings (saved + in flight). Composing over anything older
@@ -303,6 +317,7 @@ if (typeof module !== "undefined") {
     trustedRepositories: trustedRepositories,
     withTrust: withTrust,
     isTrusted: isTrusted,
+    trustRevoked: trustRevoked,
     trustBase: trustBase,
     fetchOutcome: fetchOutcome,
     lfsRepos: lfsRepos,

@@ -1,0 +1,75 @@
+# qmllint findings accepted when the check was adopted. tests/validate.sh fails on any
+# finding not listed here. Regenerate with `tests/validate.sh --update-baseline qmllint`
+# only to drop fixed entries or after reviewing every added one; never to pass a check.
+GithubView.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | for (var i = 0; i < folderRows.count; i++) {
+GithubView.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | for (var i = 0; i < repos.length; i++) {
+GithubView.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var lfs = !!repos[i] && repos[i].usesLfs === true && repos[i].trusted !== true && repos[i].complete !== false
+GithubView.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var row = folderRows.get(i)
+GithubView.qml: missing-property: Member "actionStatus" not found on type "QObject" | readonly property string statusTitle: service && service.actionStatus !== "" ? service.actionStatus : healthText
+GithubView.qml: missing-property: Member "actionStatus" not found on type "QObject" | readonly property string statusTitle: service && service.actionStatus !== "" ? service.actionStatus : healthText
+GithubView.qml: missing-property: Member "affectedRepos" not found on type "QObject" | readonly property var repos: service ? service.affectedRepos : []
+GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
+GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
+GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
+GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
+GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
+GithubView.qml: missing-property: Member "busy" not found on type "QObject" | readonly property bool busy: !!service && service.busy
+GithubView.qml: missing-property: Member "caption" not found on type "QObject" | font.pixelSize: FoamyStyle.font.caption
+GithubView.qml: missing-property: Member "fetch" not found on type "QObject" | root.service.fetch()
+GithubView.qml: missing-property: Member "fetch" not found on type "QObject" | service.fetch()
+GithubView.qml: missing-property: Member "focusPath" not found on type "QQuickItem" | row.focusPath()
+GithubView.qml: missing-property: Member "focusPath" not found on type "QQuickItem" | row.focusPath()
+GithubView.qml: missing-property: Member "heading" not found on type "QObject" | font.pixelSize: FoamyStyle.font.heading
+GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | if (service.lastChecked === 0)
+GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
+GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | status: root.service ? FoamyI18n.updatedAgo(root.service.lastChecked * 1000, root.now) : ""
+GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | Accessible.role: root.service && root.service.lastError !== "" ? Accessible.AlertMessage : Accessible.StaticText
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | color: root.service && root.service.lastError !== "" ? Commons.Color.urgent : FoamyPalette.onSurface(FoamyPalette.warning)
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | if (service.lastError !== "")
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError) : root.lastSyncText + " · " + FoamyI18n.t("remote state may be st
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError) : root.lastSyncText + " · " + FoamyI18n.t("remote state may be st
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | visible: !!root.service && (root.service.lastError !== "" || root.sync.stale)
+GithubView.qml: missing-property: Member "lfsRepos" not found on type "QObject" | readonly property var lfsRepositories: service && service.lfsRepos ? service.lfsRepos : []
+GithubView.qml: missing-property: Member "lfsRepos" not found on type "QObject" | readonly property var lfsRepositories: service && service.lfsRepos ? service.lfsRepos : []
+GithubView.qml: missing-property: Member "pullAll" not found on type "QObject" | service.pullAll()
+GithubView.qml: missing-property: Member "pullRepository" not found on type "QObject" | onClicked: root.service.pullRepository(repoRow.repo)
+GithubView.qml: missing-property: Member "pullableRepos" not found on type "QObject" | readonly property int pullableCount: service && service.pullableRepos ? service.pullableRepos.length : 0
+GithubView.qml: missing-property: Member "pullableRepos" not found on type "QObject" | readonly property int pullableCount: service && service.pullableRepos ? service.pullableRepos.length : 0
+GithubView.qml: missing-property: Member "pullingAll" not found on type "QObject" | readonly property bool showPullAll: pullableCount > 0 || (!!service && service.pullingAll)
+GithubView.qml: missing-property: Member "pushRepository" not found on type "QObject" | onClicked: root.service.pushRepository(repoRow.repo)
+GithubView.qml: missing-property: Member "refreshing" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
+GithubView.qml: missing-property: Member "refreshing" not found on type "QObject" | refreshing: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
+GithubView.qml: missing-property: Member "repositoryActionRunning" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | if (service.status.affectedCount === 0 && !hasFailures)
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | if (service.status.affectedCount === 0 && !sync.stale && !hasFailures)
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | if (service.status.repoCount === 0)
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | return FoamyI18n.tn("%1 repositories need attention", Math.max(service.status.affectedCount, repos.length))
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | source: FoamyI18n.tn("%1 repositories", root.service ? root.service.status.repoCount : 0)
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 
+GithubView.qml: missing-property: Member "sync" not found on type "QObject" | readonly property var sync: service ? service.sync : Model.defaultStatus().sync
+GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | if (service.syncing)
+GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
+GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | refreshTooltip: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…") : FoamyI18n.t("Fetch remotes and refresh")
+GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | refreshing: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
+GithubView.qml: missing-property: Member "title" not found on type "QObject" | font.pixelSize: FoamyStyle.font.title
+GithubView.qml: missing-property: Member "totals" not found on type "QObject" | readonly property var totals: service ? service.totals : Model.defaultStatus().totals
+Panel.qml: id-shadows-member: Id for object FoamyPopup shadows property "popup". Rename one or the other. | readonly property var view: popup.bodyItem
+Panel.qml: id-shadows-member: Id for object FoamyPrefsQueue shadows property "prefs". Rename one or the other. | readonly property bool foldersLocked: prefs.storedProblem("repositoryFolders") !== ""
+Panel.qml: id-shadows-member: Note: Id defined here | id: popup
+Panel.qml: id-shadows-member: Note: Id defined here | id: prefs
+Panel.qml: missing-property: Member "body" not found on type "QObject" | fontSize: Style.font.body
+Panel.qml: missing-property: Member "iconCanvas" not found on type "QObject" | fixedWidth: button.vertical ? -1 : Math.max(Style.bar.iconSlot, statusRow.implicitWidth + Style.bar.iconSlot - Style.bar.iconCanvas)
+Panel.qml: missing-property: Member "iconCanvas" not found on type "QObject" | height: Style.bar.iconCanvas
+Panel.qml: missing-property: Member "iconCanvas" not found on type "QObject" | width: Style.bar.iconCanvas
+Panel.qml: missing-property: Member "iconSlot" not found on type "QObject" | fixedWidth: button.vertical ? -1 : Math.max(Style.bar.iconSlot, statusRow.implicitWidth + Style.bar.iconSlot - Style.bar.iconCanvas)
+Panel.qml: missing-property: Member "iconSlot" not found on type "QObject" | fixedWidth: button.vertical ? -1 : Math.max(Style.bar.iconSlot, statusRow.implicitWidth + Style.bar.iconSlot - Style.bar.iconCanvas)
+Service.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var repo = pullAllQueue[0]
+Service.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var step = root.pullAllResult
+Service.qml: import: Type Service not declared as singleton in qmldir but using pragma Singleton
+preview/Preview.qml: unqualified: Unqualified access | editingSettings: preview.previewState.indexOf("settings") === 0
+preview/Preview.qml: unqualified: Unqualified access | retryable: preview.previewState === "settings-error"
+preview/Preview.qml: unqualified: Unqualified access | service: mock
+preview/Preview.qml: unqualified: Unqualified access | settingsError: preview.previewState === "settings-error" ? "Couldn't save the setting." : ""
+preview/Preview.qml: unqualified: Unqualified access | trustedRepositories: preview.trusted
