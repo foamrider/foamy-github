@@ -232,6 +232,11 @@ seen.
   longer uses LFS, or that isn't found anymore, is kept as it is, not deleted;
   it just isn't listed.
 
+Taking trust away applies at once: a status check or fetch that is still
+running with that repository trusted is stopped (its Git processes too) and
+runs again without it. Giving trust stops nothing; it applies from the next
+check or fetch.
+
 Trust is stored as the repository's real path (symlinks resolved) plus the
 identity of its Git directory: device, inode and birth time
 (`trustedRepositories`). A moved or renamed repository is untrusted again, and

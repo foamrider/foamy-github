@@ -14,6 +14,10 @@ repository, trusted when its trust arguments name anything.
 Scenes, one shell, each step waiting on an event (a timeout fails the run):
 - unload: a status check, a fetch and a push still running when the last
   bar goes leave no error and no action text on the shared Service.
+- trust: revoking trust (an entry removed) stops a running status check
+  and fetch that were started with it; the check is redone and the fetch
+  runs again with the new trust, with no error. Granting trust stops
+  neither.
 
 Timed polling only (no live monitoring); temp HOME; no network. Requires
 ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
@@ -104,6 +108,8 @@ ShellRoot {
   function calls() { callsFile.reload(); return String(callsFile.text() || "").split("\n").filter(function(l) { return l !== "" }) }
   // Lines of calls.log that start with `prefix` ("start fetch", "term status"…).
   function count(prefix) { return calls().filter(function(l) { return l.indexOf(prefix + " ") === 0 }).length }
+  // Fetches started with no trusted repository.
+  function untrustedFetches() { return calls().filter(function(l) { return /^start fetch [0-9]+ \[\]$/.test(l) }).length }
   function block(names) { blockFile.setText(names.join("\n") + "\n") }
 
   // Settings as Omarchy hands them over (assigned, key order fixed).
@@ -143,7 +149,7 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps)
+  readonly property var steps: [].concat(unloadSteps, trustSteps)
 
   // unload: no error is left on the shared Service by a job the last bar's
   // unload stopped (its exit handler ran after `active` went false).
@@ -196,6 +202,89 @@ ShellRoot {
         check(service.actionStatus === "", "unload: a stopped push leaves no action text: " + service.actionStatus)
         block([])
         next()
+      })
+    }
+  ]
+
+  // trust: a revocation stops the running check and fetch that still have
+  // the revoked entry; a grant lets them run on.
+  readonly property var trustSteps: [
+    function(next) { settled(trustRepo, next) },
+    function(next) {
+      block(["status"])
+      var started = count("start status")
+      service.refresh()
+      until(function() { return service.refreshing && count("start status") > started && service.scannedTrust.indexOf("@REPO@") >= 0 },
+        "trust: a check with the trusted repository runs", next)
+    },
+    function(next) {
+      var stopped = count("term status")
+      panel.settings = settingsWith([])
+      until(function() { return count("term status") > stopped }, "trust: revoking stops the running check", function() {
+        block([])
+        until(function() { return !service.refreshing && service.repos.length === 1 && service.repos[0].trusted === false },
+          "trust: the check is redone without the trust", function() {
+            check(service.operationError === "", "trust: the stopped check leaves no error: " + service.operationError)
+            next()
+          })
+      }, 5000)
+    },
+    function(next) {
+      block(["status"])
+      var started = count("start status")
+      service.refresh()
+      until(function() { return service.refreshing && count("start status") > started && service.scannedTrust === "[]" },
+        "trust: a check without trust runs", next)
+    },
+    function(next) {
+      var stopped = count("term status")
+      panel.settings = settingsWith(trustRepo)
+      // Negative check: give a wrong stop time to arrive.
+      wait.after(1000, function() {
+        check(count("term status") === stopped, "trust: granting does not stop the running check")
+        block([])
+        until(function() { return !service.refreshing && service.repos.length === 1 && service.repos[0].trusted === true },
+          "trust: the granted trust is shown", next)
+      })
+    },
+    function(next) {
+      block(["fetch"])
+      var started = count("start fetch")
+      service.fetch()
+      until(function() { return service.syncing && count("start fetch") > started }, "trust: a fetch with the trust runs", next)
+    },
+    function(next) {
+      var stopped = count("term fetch")
+      var ends = count("end fetch")
+      var untrusted = untrustedFetches()
+      panel.settings = settingsWith([])
+      until(function() { return count("term fetch") > stopped }, "trust: revoking stops the running fetch", function() {
+        until(function() { return untrustedFetches() > untrusted }, "trust: the fetch runs again without the trust", function() {
+          block([])
+          until(function() { return !service.busy && count("end fetch") > ends }, "trust: the new fetch ends", function() {
+            check(service.operationError === "", "trust: the stopped fetch leaves no error: " + service.operationError)
+            next()
+          })
+        })
+      }, 5000)
+    },
+    function(next) {
+      block(["fetch"])
+      var started = count("start fetch")
+      service.fetch()
+      until(function() { return service.syncing && count("start fetch") > started }, "trust: a fetch without trust runs", next)
+    },
+    function(next) {
+      var stopped = count("term fetch")
+      var started = count("start fetch")
+      panel.settings = settingsWith(trustRepo)
+      wait.after(1000, function() {
+        check(count("term fetch") === stopped && count("start fetch") === started, "trust: granting does not stop or restart the fetch")
+        block([])
+        until(function() { return !service.busy }, "trust: the fetch ends", function() {
+          check(service.operationError === "", "trust: a fetch that a grant overlapped ends without error: " + service.operationError)
+          next()
+        })
       })
     }
   ]

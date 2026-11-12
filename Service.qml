@@ -86,7 +86,23 @@ Item {
   readonly property bool legacyTrustAll: preferences.trustRepositoryConfig
   readonly property var trustedRepositories: Model.trustedRepositories(preferences)
   readonly property string trustArguments: legacyTrustAll ? "*" : JSON.stringify(trustedRepositories)
-  onTrustArgumentsChanged: Qt.callLater(function() { root.restartWatcher(true) })
+  // A revocation (an entry removed) applies at once: a status check or fetch
+  // still running with that entry is stopped, as the watcher's restart stops
+  // its Git processes (the helper's SIGTERM ends every Git group). Its exit
+  // handler redoes the check, and the fetch runs again with the new trust.
+  // A grant stops nothing: the running job is merely missing the new entry.
+  onTrustArgumentsChanged: {
+    if (statusProcess.running && Model.trustRevoked(root.scannedTrust, root.trustArguments))
+      statusProcess.running = false
+    if (syncProcess.running && Model.trustRevoked(root.fetchTrust, root.trustArguments)) {
+      root.fetchRestartRequested = true
+      syncProcess.running = false
+    }
+    Qt.callLater(function() { root.restartWatcher(true) })
+  }
+  // The trust the running (or last) fetch was started with.
+  property string fetchTrust: ""
+  property bool fetchRestartRequested: false
   function helperArguments() {
     var args = ["--folders-json", folderArguments]
     if (legacyTrustAll) args.push("--trust-repository-config")
@@ -215,6 +231,7 @@ Item {
     // An earlier completion timer must not clear the new progress title.
     actionMessageTimer.stop()
     setActionStatus("Fetching repositories…")
+    fetchTrust = trustArguments
     syncProcess.command = helperCommand(["fetch"].concat(helperArguments()))
     syncProcess.running = true
   }
@@ -421,8 +438,18 @@ Item {
     stderr: StdioCollector { id: syncError; waitForEnd: true }
     onExited: function(exitCode) {
       root.syncing = false
+      var restart = root.fetchRestartRequested
+      root.fetchRestartRequested = false
       if (!root.active) {
         root.setActionStatus("")
+        return
+      }
+      if (restart) {
+        // Stopped for a trust revocation: fetch again with the new trust once
+        // the status check the trust change started has finished.
+        root.setActionStatus("")
+        root.scheduledFetchPending = true
+        root.retryScheduledFetch()
         return
       }
       if (root.markUnavailable(exitCode)) {
