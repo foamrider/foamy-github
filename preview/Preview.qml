@@ -11,7 +11,7 @@ Item {
   property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-lfs", "settings-no-lfs", "settings-error", "fetching"]
   property string previewState: "repositories"
   property int settleMs: previewState === "settings-lfs" || previewState === "settings-no-lfs" ? 1500 : 600
-  readonly property Item popup: popup
+  readonly property var popup: previewPopup
   readonly property double now: Date.now() / 1000
   readonly property var trusted: [
     {
@@ -131,7 +131,7 @@ Item {
   }
 
   FoamyPopup {
-    id: popup
+    id: previewPopup
     anchorItem: preview.anchorItem
     bar: preview.bar
     open: true
@@ -168,23 +168,23 @@ Item {
   Timer {
     id: lfsTimer
     interval: 300
-    running: !!popup.bodyItem
+    running: !!preview.popup.bodyItem
     onTriggered: {
-      popup.bodyItem.clearCursor()
+      preview.popup.bodyItem.clearCursor()
       if (preview.previewState === "lfs-untrusted")
-        popup.bodyItem.showLfsInfo(0)
+        preview.popup.bodyItem.showLfsInfo(0)
       if (preview.previewState === "fetching")
-        popup.bodyItem.showRefreshCursor()
+        preview.popup.bodyItem.showRefreshCursor()
     }
   }
   // Settings → the end of the page (Git LFS, when shown), once the card has its height.
   Timer {
     interval: 900
-    running: !!popup.bodyItem && (preview.previewState === "settings-lfs" || preview.previewState === "settings-no-lfs")
-    onTriggered: popup.bodyItem.showSettingsEnd()
+    running: !!preview.popup.bodyItem && (preview.previewState === "settings-lfs" || preview.previewState === "settings-no-lfs")
+    onTriggered: preview.popup.bodyItem.showSettingsEnd()
   }
-  onPreviewStateChanged: if (popup.bodyItem) {
-    popup.bodyItem.clearCursor()
+  onPreviewStateChanged: if (preview.popup.bodyItem) {
+    preview.popup.bodyItem.clearCursor()
     lfsTimer.restart()
   }
 }

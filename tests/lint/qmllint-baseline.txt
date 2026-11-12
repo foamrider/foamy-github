@@ -68,14 +68,6 @@ Panel.qml: missing-property: Member "iconSlot" not found on type "QObject" | fix
 Service.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var repo = pullAllQueue[0]
 Service.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var step = root.pullAllResult
 Service.qml: import: Type Service not declared as singleton in qmldir but using pragma Singleton
-preview/Preview.qml: id-shadows-member: Id for object FoamyPopup shadows property "popup". Rename one or the other. | readonly property Item popup: popup
-preview/Preview.qml: id-shadows-member: Note: Id defined here | id: popup
-preview/Preview.qml: incompatible-type: Cannot assign binding of type FoamyPopup to QQuickItem | readonly property Item popup: popup
-preview/Preview.qml: missing-property: Member "clearCursor" not found on type "QQuickItem" | popup.bodyItem.clearCursor()
-preview/Preview.qml: missing-property: Member "clearCursor" not found on type "QQuickItem" | popup.bodyItem.clearCursor()
-preview/Preview.qml: missing-property: Member "showLfsInfo" not found on type "QQuickItem" | popup.bodyItem.showLfsInfo(0)
-preview/Preview.qml: missing-property: Member "showRefreshCursor" not found on type "QQuickItem" | popup.bodyItem.showRefreshCursor()
-preview/Preview.qml: missing-property: Member "showSettingsEnd" not found on type "QQuickItem" | onTriggered: popup.bodyItem.showSettingsEnd()
 preview/Preview.qml: unqualified: Unqualified access | editingSettings: preview.previewState.indexOf("settings") === 0
 preview/Preview.qml: unqualified: Unqualified access | retryable: preview.previewState === "settings-error"
 preview/Preview.qml: unqualified: Unqualified access | service: mock
