@@ -234,6 +234,12 @@ seen.
   longer uses LFS, or that isn't found anymore, is kept as it is, not deleted;
   it just isn't listed.
 
+If `repositoryFolders` or `trustedRepositories` in `shell.json` was edited
+into a shape the widget can't read, that list counts as empty (no folders
+are checked, no repository is trusted). Settings names the list, and its
+editor stays locked, because saving from the panel would replace every entry
+you had. Fix the list in `shell.json` and the editor unlocks.
+
 Taking trust away applies at once: a status check or fetch that is still
 running with that repository trusted is stopped (its Git processes too) and
 runs again without it. Giving trust stops nothing; it applies from the next
@@ -386,6 +392,7 @@ python3 tests/runtime-pullall.py                   # Pull all over local Git rep
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
 python3 tests/runtime-stale-status.py              # a status check overtaken by a trust change is redone
 python3 tests/runtime-lifecycle.py                 # helper jobs across unload (fake helper, fake NetworkManager)
+python3 tests/runtime-stored.py                    # an invalid folder or trust list in shell.json is named and kept
 ~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
 

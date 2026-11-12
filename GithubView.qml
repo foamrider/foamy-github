@@ -24,6 +24,9 @@ PanelKeyCatcher {
   property string settingsError: ""
   property bool retryable: false
   property bool browsing: false
+  // The stored list is invalid (the Panel says why): its editor is locked.
+  property bool foldersLocked: false
+  property bool trustLocked: false
   property double now: Date.now()
 
   signal closeRequestedByView()
@@ -385,7 +388,7 @@ PanelKeyCatcher {
           function focusPath() { folderPath.forceActiveFocus() }
           width: parent.width
           spacing: FoamyStyle.gap
-          enabled: !root.browsing
+          enabled: !root.browsing && !root.foldersLocked
 
           FoamyAction {
             iconName: "folder"
@@ -440,7 +443,7 @@ PanelKeyCatcher {
         text: FoamyI18n.t("Add folder")
         focusable: true
         tooltipText: folderRows.count >= 32 ? FoamyI18n.t("You can add up to 32 folders.") : ""
-        actionEnabled: folderRows.count < 32 && !root.browsing
+        actionEnabled: folderRows.count < 32 && !root.browsing && !root.foldersLocked
         onClicked: root.addFolder()
       }
     }
@@ -502,7 +505,7 @@ PanelKeyCatcher {
           label: String(modelData.label)
           description: modelData.identity ? String(modelData.path)
             : FoamyI18n.t("Trust isn't available for this repository's filesystem.")
-          enabled: !!modelData.identity
+          enabled: !!modelData.identity && !root.trustLocked
           checked: Model.isTrusted(root.trustedList, modelData)
           onClicked: root.trustRequested(modelData, !checked)
         }

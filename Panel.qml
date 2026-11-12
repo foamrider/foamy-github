@@ -78,7 +78,15 @@ Panel {
     // which FoamyPrefs refuses to replace, so no folder or trust edit saved.
     settings: JSON.parse(JSON.stringify(root.settings || {}))
   }
-  readonly property string pageError: settingsError !== "" ? settingsError : prefs.error !== "" ? FoamyI18n.t(prefs.error) : ""
+  // A list hand-edited into an invalid shape reads as empty, and FoamyPrefs
+  // refuses to replace it (that would drop every entry): say so, and keep its
+  // editor locked until shell.json is fixed.
+  readonly property bool foldersLocked: prefs.storedProblem("repositoryFolders") !== ""
+  readonly property bool trustLocked: prefs.storedProblem("trustedRepositories") !== ""
+  readonly property string storedError: foldersLocked ? "The repository folders saved in shell.json aren't valid, so no folders are checked. Fix them in shell.json."
+    : trustLocked ? "The trusted repositories saved in shell.json aren't valid, so no repository is trusted. Fix the list in shell.json." : ""
+  readonly property string pageError: settingsError !== "" ? settingsError : prefs.error !== "" ? FoamyI18n.t(prefs.error)
+    : storedError !== "" ? FoamyI18n.t(storedError) : ""
 
   function save(key, value) {
     settingsError = ""
@@ -88,6 +96,7 @@ Panel {
   // Per-repository trust (offered for Git LFS repositories).
   function setTrusted(repo, trusted) {
     if (!repo || !repo.path || !repo.identity) return
+    if (trustLocked) { settingsError = FoamyI18n.t("The trusted repositories saved in shell.json aren't valid, so no repository is trusted. Fix the list in shell.json."); return }
     settingsError = ""
     if (!trusted) {
       prefs.save("trustedRepositories", Model.withTrust(Model.trustBase(prefs.effectiveSettings, prefs.waiting), repo, false))
@@ -122,6 +131,8 @@ Panel {
   property bool legacyMigrated: false
   function migrateLegacyTrust() {
     if (legacyMigrated || !member.isLeader || !Service.legacyTrustAll) return
+    // Clearing the switch without the list saved would drop that trust.
+    if (trustLocked) return
     if (Service.lastChecked <= 0 || Service.status.ok === false || Service.refreshing) return
     legacyMigrated = true
     var trusted = Model.trustedRepositories(prefs.effectiveSettings)
@@ -138,6 +149,7 @@ Panel {
   }
 
   function saveFolders(rows) {
+    if (foldersLocked) { settingsError = FoamyI18n.t("The repository folders saved in shell.json aren't valid, so no folders are checked. Fix them in shell.json."); return }
     var parsed = Model.parseFolderRows(rows)
     if (parsed.error) { settingsError = FoamyI18n.t(parsed.error); return }
     settingsError = ""
@@ -244,6 +256,8 @@ Panel {
         settingsError: root.pageError
         retryable: root.settingsError === "" && prefs.canRetry
         browsing: folderPicker.running
+        foldersLocked: root.foldersLocked
+        trustLocked: root.trustLocked
         onCloseRequestedByView: root.close()
         onSettingsErrorReported: function(message) { root.settingsError = message }
         onSettingsRequested: root.openSettings()
