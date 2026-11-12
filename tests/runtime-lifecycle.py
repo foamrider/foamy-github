@@ -110,7 +110,15 @@ ShellRoot {
   function count(prefix) { return calls().filter(function(l) { return l.indexOf(prefix + " ") === 0 }).length }
   // Fetches started with no trusted repository.
   function untrustedFetches() { return calls().filter(function(l) { return /^start fetch [0-9]+ \[\]$/.test(l) }).length }
-  function block(names) { blockFile.setText(names.join("\n") + "\n") }
+  // Holds `names` (the helper polls the file); with `then`, once the file
+  // says so (FileView writes asynchronously, and a job started before that
+  // would not be held).
+  FileView { id: blockRead; path: shell.state + "/block"; blockLoading: true; printErrors: false }
+  function block(names, then) {
+    var text = names.join("\n") + "\n"
+    blockFile.setText(text)
+    if (then) until(function() { blockRead.reload(); return blockRead.text() === text }, "the block file is written", then)
+  }
 
   // Settings as Omarchy hands them over (assigned, key order fixed).
   function settingsWith(trusted) {
@@ -155,11 +163,12 @@ ShellRoot {
   // unload stopped (its exit handler ran after `active` went false).
   readonly property var unloadSteps: [
     function(next) {
-      block(["status"])
-      var started = count("start status")
-      newPanel([])
-      until(function() { return service.refreshing && count("start status") > started && service.scannedFolders !== "[]" },
-        "unload: the first scan runs", next)
+      block(["status"], function() {
+        var started = count("start status")
+        newPanel([])
+        until(function() { return service.refreshing && count("start status") > started && service.scannedFolders !== "[]" },
+          "unload: the first scan runs", next)
+      })
     },
     function(next) {
       var stopped = count("term status")
@@ -174,10 +183,11 @@ ShellRoot {
     },
     function(next) { settled([], next) },
     function(next) {
-      block(["fetch"])
-      var started = count("start fetch")
-      service.fetch()
-      until(function() { return service.syncing && count("start fetch") > started }, "unload: the fetch runs", next)
+      block(["fetch"], function() {
+        var started = count("start fetch")
+        service.fetch()
+        until(function() { return service.syncing && count("start fetch") > started }, "unload: the fetch runs", next)
+      })
     },
     function(next) {
       dropPanel()
@@ -190,10 +200,11 @@ ShellRoot {
     },
     function(next) { settled([], next) },
     function(next) {
-      block(["push"])
-      var started = count("start push")
-      service.pushRepository(service.repos[0])
-      until(function() { return service.repositoryActionRunning && count("start push") > started }, "unload: the push runs", next)
+      block(["push"], function() {
+        var started = count("start push")
+        service.pushRepository(service.repos[0])
+        until(function() { return service.repositoryActionRunning && count("start push") > started }, "unload: the push runs", next)
+      })
     },
     function(next) {
       dropPanel()
@@ -211,11 +222,12 @@ ShellRoot {
   readonly property var trustSteps: [
     function(next) { settled(trustRepo, next) },
     function(next) {
-      block(["status"])
-      var started = count("start status")
-      service.refresh()
-      until(function() { return service.refreshing && count("start status") > started && service.scannedTrust.indexOf("@REPO@") >= 0 },
-        "trust: a check with the trusted repository runs", next)
+      block(["status"], function() {
+        var started = count("start status")
+        service.refresh()
+        until(function() { return service.refreshing && count("start status") > started && service.scannedTrust.indexOf("@REPO@") >= 0 },
+          "trust: a check with the trusted repository runs", next)
+      })
     },
     function(next) {
       var stopped = count("term status")
@@ -230,11 +242,12 @@ ShellRoot {
       }, 5000)
     },
     function(next) {
-      block(["status"])
-      var started = count("start status")
-      service.refresh()
-      until(function() { return service.refreshing && count("start status") > started && service.scannedTrust === "[]" },
-        "trust: a check without trust runs", next)
+      block(["status"], function() {
+        var started = count("start status")
+        service.refresh()
+        until(function() { return service.refreshing && count("start status") > started && service.scannedTrust === "[]" },
+          "trust: a check without trust runs", next)
+      })
     },
     function(next) {
       var stopped = count("term status")
@@ -248,10 +261,11 @@ ShellRoot {
       })
     },
     function(next) {
-      block(["fetch"])
-      var started = count("start fetch")
-      service.fetch()
-      until(function() { return service.syncing && count("start fetch") > started }, "trust: a fetch with the trust runs", next)
+      block(["fetch"], function() {
+        var started = count("start fetch")
+        service.fetch()
+        until(function() { return service.syncing && count("start fetch") > started }, "trust: a fetch with the trust runs", next)
+      })
     },
     function(next) {
       var stopped = count("term fetch")
@@ -269,10 +283,11 @@ ShellRoot {
       }, 5000)
     },
     function(next) {
-      block(["fetch"])
-      var started = count("start fetch")
-      service.fetch()
-      until(function() { return service.syncing && count("start fetch") > started }, "trust: a fetch without trust runs", next)
+      block(["fetch"], function() {
+        var started = count("start fetch")
+        service.fetch()
+        until(function() { return service.syncing && count("start fetch") > started }, "trust: a fetch without trust runs", next)
+      })
     },
     function(next) {
       var stopped = count("term fetch")
