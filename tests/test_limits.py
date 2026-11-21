@@ -255,6 +255,41 @@ class RealGitLimitsTest(HelperTest):
         self.repo_git("update-ref", "-d", "refs/heads/upstream")
         self.assertFalse(self.row(self.repo)["complete"])
 
+    def test_totals_count_ahead_behind_and_changed_repositories(self):
+        # The bar's counts and the IPC status totals come from these eight keys.
+        projects = self.root / "projects"
+        ahead = self.init_repo(projects / "ahead")
+        self.git("branch", "up", cwd=ahead)
+        self.git("branch", "--set-upstream-to=up", cwd=ahead)
+        self.git("commit", "--allow-empty", "-m", "one", cwd=ahead)
+        self.git("commit", "--allow-empty", "-m", "two", cwd=ahead)
+        # Only empty commits, so that moving main back leaves the work tree clean.
+        behind = self.init_repo(projects / "behind")
+        self.git("branch", "up", cwd=behind)
+        self.git("branch", "--set-upstream-to=up", cwd=behind)
+        self.git("commit", "--allow-empty", "-m", "two", cwd=behind)
+        self.git("update-ref", "refs/heads/up", "HEAD", cwd=behind)
+        self.git("update-ref", "refs/heads/main", "HEAD~1", cwd=behind)
+        dirty = self.init_repo(projects / "dirty")
+        (dirty / "file.txt").write_text("changed\n")
+        (dirty / "new.txt").write_text("new\n")
+        self.init_repo(projects / "clean")
+        payload = self.status([{"path": str(projects), "depth": 1}])
+        self.assertEqual(
+            payload["totals"],
+            {
+                "aheadRepos": 1,
+                "behindRepos": 1,
+                "dirtyRepos": 1,
+                "failedRepos": 0,
+                "aheadCommits": 2,
+                "behindCommits": 1,
+                "dirtyFiles": 2,
+                "unavailableRepos": 0,
+            },
+        )
+        self.assertEqual((payload["repoCount"], payload["affectedCount"]), (4, 3))
+
     def test_repository_and_traversal_limits_do_not_return_partial_success(self):
         many = self.root / "many"
         for index in range(257):

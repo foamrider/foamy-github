@@ -1,11 +1,13 @@
-"""Bound clipboard producers in real subprocesses and exercise the QML editor.
+"""The cases of kit/clipboard.sh and SafeTextField that foamy-kit's own
+tests do not have yet: the producer stops when the caller kills the
+clipboard.sh wrapper, and the single-line field's paste flow in QML. The
+other clipboard.sh cases (unicode, limits, refused input, the 2 s deadline)
+are foamy-kit's tests/test_clipboard.py, on the same file.
 
 The stand-in wl-paste, clipboard-fixture and timeout come from the kit's
-hostenv.clipboard_fakes(): bash builtins, and a timeout that keeps
-clipboard.sh's 2 s only for the modes whose outcome is that deadline, so a
-loaded machine can't fail a paste that works. Requires
-~/GitHub/Personal/foamy-kit (or FOAMY_KIT); the shell cases need no
-Quickshell or Omarchy host, so tests/suite.sh --ci runs them."""
+hostenv.clipboard_fakes(). Requires ~/GitHub/Personal/foamy-kit (or
+FOAMY_KIT); the shell case needs no Quickshell or Omarchy host, so
+tests/suite.sh --ci runs it."""
 
 import json
 import os
@@ -37,57 +39,6 @@ class ClipboardTests(unittest.TestCase):
         self.base = Path(self.temporary.name)
         self.env = dict(os.environ, **hostenv.clipboard_fakes(self.base / "bin"))
         self.state = Path(self.env["TEST_CLIPBOARD_STATE"])
-
-    def read(self, mode, selection="clipboard"):
-        self.state.write_text(mode)
-        started = time.monotonic()
-        # A deadline mode ends at clipboard.sh's 2 s; any other paste ends by
-        # itself, however long a loaded machine takes.
-        deadline = mode in hostenv.CLIPBOARD_DEADLINE_MODES
-        result = subprocess.run(
-            ["bash", str(HELPER), selection], env=self.env, capture_output=True, timeout=5 if deadline else 90
-        )
-        if deadline:
-            self.assertLess(time.monotonic() - started, 4)
-        self.assertLessEqual(len(result.stdout), 100000)
-        return result
-
-    def test_unicode_empty_and_limit(self):
-        for mode, expected in (("unicode", "/home/test/Blåbær 📁"), ("empty", ""), ("limit", "x" * 16384)):
-            with self.subTest(mode=mode):
-                result = self.read(mode)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(result.stdout), expected)
-
-    def test_primary_selection_and_single_line(self):
-        result = self.read("lines", "primary")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), "one  two three")
-        args = json.loads(Path(str(self.state) + ".args").read_text())
-        self.assertEqual(args, ["--no-newline", "--type", "text", "--primary"])
-
-    def test_oversized_nul_and_continuous_stream_are_rejected(self):
-        for mode in ("large", "nul", "stream"):
-            with self.subTest(mode=mode):
-                result = self.read(mode)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(result.stdout, b"")
-                self.assertEqual(result.stderr, b"")
-
-    def test_total_deadline_covers_stalled_and_slow_sources(self):
-        for mode in ("stall", "slow"):
-            with self.subTest(mode=mode):
-                result = self.read(mode)
-                self.assertEqual(result.returncode, 137)
-
-    def test_failure_and_invalid_selection(self):
-        self.assertNotEqual(self.read("failure").returncode, 0)
-        self.assertEqual(self.read("normal", "invalid").returncode, 2)
-
-    def test_producer_ignoring_term_is_killed(self):
-        result = self.read("ignore")
-        self.assertEqual(result.returncode, 137)
-        self.assert_producer_stopped()
 
     def assert_producer_stopped(self):
         pid = Path(str(self.state) + ".pid").read_text()

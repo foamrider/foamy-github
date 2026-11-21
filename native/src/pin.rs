@@ -702,14 +702,59 @@ mod tests {
     }
 
     #[test]
-    fn identity_of_a_directory_has_a_birth_time_here() {
-        let dir = std::env::temp_dir();
-        let identity = directory_identity(None, paths::bytes(&dir));
-        let fd = open_directory_at(None, paths::bytes(&dir)).unwrap();
-        // tmpfs and btrfs record birth times; the fd and the path agree.
-        if !identity.is_empty() {
-            assert_eq!(identity, directory_identity(Some(&fd), b""));
-            assert!(identity.split(':').nth(2).unwrap().parse::<u128>().unwrap() > 0);
+    fn hostile_files_read_as_nothing_and_never_block() {
+        // Untrusted repositories choose what `.gitattributes`, `.lfsconfig`,
+        // the `.git` pointer and `commondir` are: a FIFO must not stop the
+        // scan, and an endless file must not fill memory.
+        let dir = std::env::temp_dir().join(format!("foamy-github-read-{}", std::process::id()));
+        // A failed earlier run with the same pid leaves its directory.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file"), b"0123456789").unwrap();
+        std::os::unix::fs::symlink(dir.join("file"), dir.join("link")).unwrap();
+        rustix::fs::mkfifoat(CWD, dir.join("fifo"), Mode::RUSR | Mode::WUSR).unwrap();
+        let base = paths::bytes(&dir).to_vec();
+        // On its own thread: an open without O_NONBLOCK waits for a writer
+        // forever, and the test must fail, not hang.
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let at = |name: &str| [&base[..], b"/", name.as_bytes()].concat();
+            let fd = open_directory_at(None, &base).unwrap();
+            let _ = done.send((
+                [
+                    read_bounded(&at("file"), 4),
+                    read_bounded(&at("file"), 64),
+                    read_bounded(&at("link"), 64),
+                    read_bounded(&at("fifo"), 64),
+                    read_bounded(&at("missing"), 64),
+                    read_bounded(b"/dev/zero", 64),
+                ],
+                read_at(&fd, b"file", 4).unwrap(),
+                read_at(&fd, b"missing", 4).unwrap(),
+                read_at(&fd, b"link", 4).is_err(),
+                read_at(&fd, b"fifo", 4).is_err(),
+            ));
+        });
+        let (bounded, file, missing, link_refused, fifo_refused) =
+            match wait.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(results) => results,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("reading a FIFO blocked"),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the reader thread panicked (see above)")
+                }
+            };
+        assert_eq!(bounded[0], b"0123");
+        assert_eq!(bounded[1], b"0123456789");
+        for (name, data) in ["link", "fifo", "missing", "/dev/zero"]
+            .iter()
+            .zip(&bounded[2..])
+        {
+            assert!(data.is_empty(), "{name}");
         }
+        assert_eq!(file.as_deref(), Some(&b"0123"[..]));
+        assert_eq!(missing, None);
+        assert!(link_refused, "read_at followed a symlink");
+        assert!(fifo_refused, "read_at read a FIFO");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

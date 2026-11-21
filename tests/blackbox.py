@@ -10,9 +10,10 @@ The default is this machine's build, bin/<machine>/foamy-github-helper.
 
 Every test gets a temporary HOME, XDG_CACHE_HOME and XDG_RUNTIME_DIR, an
 empty global Git config (GIT_CONFIG_GLOBAL=/dev/null, no system config), no
-SSH agent, askpass or GIT_* variables of the caller, and PATH=/usr/bin plus
-the test's own fake tools. Nothing here reads or writes the user's real
-repositories, Git config or credentials.
+SSH agent, askpass or GIT_* variables of the caller, no session bus or
+display of the caller's desktop, and PATH=/usr/bin plus the test's own fake
+tools. Nothing here reads or writes the user's real repositories, Git
+config or credentials, or reaches the user's desktop session.
 
 Three tools change what the helper finds, without reaching into it:
 
@@ -304,6 +305,18 @@ class Watch:
         return code
 
 
+# The caller's desktop session: without these the helper finds no session
+# bus (pick-folder looks for $XDG_RUNTIME_DIR/bus, the test's own empty
+# directory) and no display, so no test can open a dialog on the desktop.
+DESKTOP_VARIABLES = (
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DBUS_SYSTEM_BUS_ADDRESS",
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "HYPRLAND_INSTANCE_SIGNATURE",
+)
+
+
 class HelperTest(unittest.TestCase):
     """A temporary environment for one test (see the module docstring)."""
 
@@ -318,6 +331,7 @@ class HelperTest(unittest.TestCase):
             for key, value in os.environ.items()
             if not key.startswith(("GIT_", "SSH_", "XDG_", "FOAMY_"))
             and key not in ("PATH", "HOME", "LANG", "LANGUAGE")
+            and key not in DESKTOP_VARIABLES
             and not key.startswith("LC_")
         }
         base.update(

@@ -7,4 +7,4 @@ const translators = {no: I18nText.translator(no, en), en: I18nText.translator(en
 function translator(language) { return language === 'no' || language === 'nb' ? translators.no : translators.en; }
 function text(key, language, values) { return translator(language).t(key, values); }
 function plural(key, count, language, values) { return translator(language).tn(key, count, values); }
-module.exports = {text, plural, no, en, norwegian: no, nb: no};
+module.exports = {text, plural, no, en};

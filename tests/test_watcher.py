@@ -173,11 +173,20 @@ class WatcherTest(HelperTest):
         )
 
     def test_bad_arguments_stop_with_a_message(self):
-        for args in ([], ["--folders-json", "[1]"], ["--folders-json", "[]", "--trusted-json", "{}"]):
+        # The service shows this stderr as the warning's detail, and treats any
+        # exit other than 126/127 as a monitoring failure (not a missing helper).
+        stopped = b"Filesystem monitoring stopped: "
+        for args, code, start, text in (
+            ([], 2, b"usage: ", b"--folders-json"),
+            (["--folders-json", "[1]"], 1, stopped, b"absolute path"),
+            (["--folders-json", "[]", "--trusted-json", "{}"], 1, stopped, b"Trusted repositories must be"),
+        ):
             with self.subTest(args=args):
                 result = self.run_helper("watch", *args)
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, code, result.stderr)
                 self.assertEqual(result.stdout, b"")
+                self.assertTrue(result.stderr.startswith(start), result.stderr)
+                self.assertIn(text, result.stderr)
 
 
 if __name__ == "__main__":

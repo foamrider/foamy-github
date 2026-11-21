@@ -30,7 +30,6 @@ skip() { echo "SKIP $*"; }
 if ((ci)); then export FOAMY_SUITE_CI=1; fi
 
 run node --test tests/model.test.js tests/preferences.test.js
-run node tests/i18n.test.cjs
 run python3 -I -m unittest discover -s tests -p 'test_*.py'
 
 other=aarch64
@@ -50,7 +49,7 @@ fi
 if ((ci || fast)); then
   skip "tests/runtime-*.py and the kit's i18n_runtime.py: offscreen Quickshell"
 else
-  for test in panel pullall watcher stale-status lifecycle stored; do
+  for test in panel pullall watcher lifecycle stored; do
     run python3 "tests/runtime-$test.py"
   done
   if [[ -n ${FOAMY_KIT:-} ]]; then

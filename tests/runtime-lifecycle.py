@@ -9,18 +9,27 @@ run's own system bus.
 The fake helper logs every start, SIGTERM and end to calls.log, with the
 trust it was given, and holds each subcommand named in the `block` file
 until the test removes it (at most 30 s). Its status reports one
-repository, trusted when its trust arguments name anything.
+repository using Git LFS, trusted when its trust arguments name anything
+and labelled "other" when its folders name /foamy-other; its pick-folder
+answers /foamy-picked.
 
 Scenes, one shell, each step waiting on an event (a timeout fails the run):
 - unload: a status check, a fetch and a push still running when the last
-  bar goes leave no error and no action text on the shared Service.
+  bar goes are stopped (the helper got SIGTERM) and leave no error and no
+  action text on the shared Service.
 - trust: revoking trust (an entry removed) stops a running status check
   and fetch that were started with it; the check is redone and the fetch
   runs again with the new trust, with no error. Granting trust stops
-  neither.
+  neither, and the check started before the grant is never shown.
+- folders: a check that a folder change overtook is never shown; the new
+  folders are checked instead.
+- lfs: the row's LFS button, its note and "Trust this repository", with
+  the keys: the identity is checked again and the trust saved.
+- chooser: a folder picked in the folder chooser fills the row and is saved.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
-  "unavailable" once the helper exits 127.
+  "unavailable" once the helper exits 127, which the panel then says;
+  `status` answers the keys users' scripts read.
 
 Timed polling only (no live monitoring); temp HOME; no network. Requires
 ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
@@ -62,6 +71,7 @@ echo "start $sub $$ $trust" >> "$state/calls.log"
 trap 'echo "term $sub $$" >> "$state/calls.log"; exit 143' TERM
 case "$sub" in
   identity) echo "1:2:3|1:2:3"; exit 0 ;;
+  pick-folder) printf '{"ok":true,"path":"/foamy-picked"}\n'; exit 0 ;;
   watch) printf '{"ok":true,"repoCount":0,"affectedCount":0,"repos":[]}\n'; exec cat > /dev/null ;;
 esac
 # Before the settings arrive the Service runs with no folders: never held.
@@ -77,7 +87,9 @@ case "$sub" in
     fi
     trusted=false
     [ -n "$trust" ] && [ "$trust" != "[]" ] && trusted=true
-    printf '{"ok":true,"repoCount":1,"affectedCount":1,"totals":{"dirtyRepos":1},"repos":[{"path":"@REPO@","name":"repo","owner":"","label":"repo","branch":"main","upstream":"origin/main","ahead":1,"behind":0,"dirty":true,"dirtyCount":1,"affected":true,"complete":true,"error":"","usesLfs":true,"trusted":%s,"identity":"1:2:3|1:2:3","syncError":""}],"sync":{"stale":false}}\n' "$trusted"
+    label=repo
+    case "$folders" in *foamy-other*) label=other ;; esac
+    printf '{"ok":true,"repoCount":1,"affectedCount":1,"totals":{"dirtyRepos":1},"repos":[{"path":"@REPO@","name":"%s","owner":"","label":"%s","branch":"main","upstream":"origin/main","ahead":1,"behind":0,"dirty":true,"dirtyCount":1,"affected":true,"complete":true,"error":"","usesLfs":true,"trusted":%s,"identity":"1:2:3|1:2:3","syncError":""}],"sync":{"stale":false}}\n' "$label" "$label" "$trusted"
     ;;
   fetch) printf '{"ok":true,"failures":[]}\n' ;;
   *) printf '{"ok":true,"message":"done"}\n' ;;
@@ -111,6 +123,19 @@ ShellRoot {
   function calls() { callsFile.reload(); return String(callsFile.text() || "").split("\n").filter(function(l) { return l !== "" }) }
   // Lines of calls.log that start with `prefix` ("start fetch", "term status"…).
   function count(prefix) { return calls().filter(function(l) { return l.indexOf(prefix + " ") === 0 }).length }
+  // The pid of the last calls.log line that starts with `prefix`.
+  function lastPid(prefix) {
+    var lines = calls().filter(function(l) { return l.indexOf(prefix + " ") === 0 })
+    return lines.length ? lines[lines.length - 1].split(" ")[2] : ""
+  }
+  // A status that must never be shown while staleTest is set.
+  property var staleTest: null
+  property bool staleShown: false
+  Connections {
+    target: Plugin.Service
+    function onStatusChanged() { if (shell.staleTest && shell.staleTest()) shell.staleShown = true }
+  }
+  function watchStale(test) { staleShown = false; staleTest = test }
   // Fetches started with no trusted repository.
   function untrustedFetches() { return calls().filter(function(l) { return /^start fetch [0-9]+ \[\]$/.test(l) }).length }
   // Holds `names` (the helper polls the file); with `then`, once the file
@@ -124,8 +149,8 @@ ShellRoot {
   }
 
   // Settings as Omarchy hands them over (assigned, key order fixed).
-  function settingsWith(trusted) {
-    return { repositoryFolders: [{ depth: 1, path: "/foamy-test" }], inotifyEnabled: false,
+  function settingsWith(trusted, folders) {
+    return { repositoryFolders: folders || [{ depth: 1, path: "/foamy-test" }], inotifyEnabled: false,
              refreshIntervalSec: 0, fetchIntervalSec: 86400, trustedRepositories: trusted }
   }
   readonly property var trustRepo: [{ path: "@REPO@", identity: "1:2:3|1:2:3" }]
@@ -160,7 +185,21 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps, trustSteps, ipcSteps)
+  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, ipcSteps)
+  function collect(item, test) {
+    var found = item && test(item) ? [item] : []
+    var kids = item ? item.children || [] : []
+    for (var i = 0; i < kids.length; i++) found = found.concat(collect(kids[i], test))
+    return found
+  }
+  function named(item, name) { return collect(item, function(i) { return i.objectName === name })[0] }
+  // The view's first repository row. The harness's popup has no window, so
+  // its list never runs its own layout pass: run it, as a shown window would.
+  function firstRow(view) {
+    collect(view, function(i) { return typeof i.forceLayout === "function" && i.cacheBuffer !== undefined })
+      .forEach(function(list) { list.forceLayout() })
+    return collect(view, function(i) { return i.repo !== undefined && i.rowStop !== undefined && !!i.repo })[0]
+  }
 
   // unload: no error is left on the shared Service by a job the last bar's
   // unload stopped (its exit handler ran after `active` went false).
@@ -193,8 +232,9 @@ ShellRoot {
       })
     },
     function(next) {
+      var stopped = count("term fetch")
       dropPanel()
-      until(function() { return !service.active && !service.syncing }, "unload: the fetch is stopped", function() {
+      until(function() { return !service.active && !service.syncing && count("term fetch") > stopped }, "unload: the fetch is stopped", function() {
         check(service.operationError === "", "unload: a stopped fetch leaves no error: " + service.operationError)
         check(service.actionStatus === "", "unload: a stopped fetch leaves no action text: " + service.actionStatus)
         block([])
@@ -210,8 +250,9 @@ ShellRoot {
       })
     },
     function(next) {
+      var stopped = count("term push")
       dropPanel()
-      until(function() { return !service.active && !service.repositoryActionRunning }, "unload: the push is stopped", function() {
+      until(function() { return !service.active && !service.repositoryActionRunning && count("term push") > stopped }, "unload: the push is stopped", function() {
         check(service.operationError === "", "unload: a stopped push leaves no error: " + service.operationError)
         check(service.actionStatus === "", "unload: a stopped push leaves no action text: " + service.actionStatus)
         block([])
@@ -253,15 +294,22 @@ ShellRoot {
       })
     },
     function(next) {
-      var stopped = count("term status")
+      // The running check ends on its own; its untrusted result is never
+      // shown, and the check is redone with the trust.
+      var pid = lastPid("start status")
       panel.settings = settingsWith(trustRepo)
-      // Negative check: give a wrong stop time to arrive.
-      wait.after(1000, function() {
-        check(count("term status") === stopped, "trust: granting does not stop the running check")
-        block([])
-        until(function() { return !service.refreshing && service.repos.length === 1 && service.repos[0].trusted === true },
-          "trust: the granted trust is shown", next)
-      })
+      watchStale(function() { return service.repos.length === 1 && service.repos[0].trusted === false })
+      block([])
+      // The held check ends on its own: a stopped one logs "term", never "end".
+      until(function() {
+        return !service.refreshing && service.repos.length === 1 && service.repos[0].trusted === true
+          && calls().indexOf("end status " + pid) >= 0
+      }, "trust: the granted trust is shown, and the running check ended on its own", function() {
+          check(calls().indexOf("term status " + pid) < 0, "trust: granting does not stop the running check")
+          check(!shell.staleShown, "trust: the check started before the grant is never shown")
+          watchStale(null)
+          next()
+        })
     },
     function(next) {
       block(["fetch"], function() {
@@ -293,16 +341,112 @@ ShellRoot {
       })
     },
     function(next) {
-      var stopped = count("term fetch")
+      // A revocation would stop the fetch at once, while it is still held.
+      var pid = lastPid("start fetch")
       var started = count("start fetch")
       panel.settings = settingsWith(trustRepo)
-      wait.after(1000, function() {
-        check(count("term fetch") === stopped && count("start fetch") === started, "trust: granting does not stop or restart the fetch")
-        block([])
-        until(function() { return !service.busy }, "trust: the fetch ends", function() {
-          check(service.operationError === "", "trust: a fetch that a grant overlapped ends without error: " + service.operationError)
+      block([])
+      var seen = []
+      until(function() { seen = calls(); return !service.busy && seen.indexOf("end fetch " + pid) >= 0 }, "trust: the fetch ends on its own", function() {
+        check(seen.indexOf("term fetch " + pid) < 0 && seen.filter(function(l) { return l.indexOf("start fetch ") === 0 }).length === started,
+          "trust: granting does not stop or restart the fetch")
+        check(service.operationError === "", "trust: a fetch that a grant overlapped ends without error: " + service.operationError)
+        next()
+      })
+    }
+  ]
+
+  // folders: a check that a folder change overtook is not shown.
+  readonly property var otherFolders: [{ depth: 1, path: "/foamy-other" }]
+  readonly property var folderSteps: [
+    function(next) {
+      block(["status"], function() {
+        var started = count("start status")
+        service.refresh()
+        until(function() { return service.refreshing && count("start status") > started && service.scannedFolders.indexOf("/foamy-test") >= 0 },
+          "folders: a check of the first folder runs", next)
+      })
+    },
+    function(next) {
+      var started = count("start status")
+      panel.settings = settingsWith(trustRepo, otherFolders)
+      watchStale(function() { return service.repos.length === 1 && service.repos[0].label === "repo" })
+      block([])
+      // calls.log is read as of each poll: count the redone check there.
+      var redone = 0
+      until(function() {
+        redone = count("start status") - started
+        return !service.refreshing && service.repos.length === 1 && service.repos[0].label === "other" && redone > 0
+      }, "folders: the new folders are checked", function() {
+          check(!shell.staleShown, "folders: the check a folder change overtook is never shown")
+          check(redone === 1, "folders: the check is redone once: " + redone)
+          watchStale(null)
           next()
         })
+    },
+    function(next) {
+      panel.settings = settingsWith(trustRepo)
+      until(function() { return !service.busy && service.repos.length === 1 && service.repos[0].label === "repo" }, "folders: back to the first folder", next)
+    }
+  ]
+
+  // lfs: an untrusted repository using Git LFS is trusted from its row,
+  // with the keys: LFS button, its note, "Trust this repository".
+  readonly property var lfsSteps: [
+    function(next) {
+      panel.settings = settingsWith([])
+      panel.open()
+      until(function() {
+        return panel.popup.bodyItem !== null && !service.busy && service.repos.length === 1 && service.repos[0].trusted === false
+      }, "lfs: the popup lists the untrusted repository", next)
+    },
+    function(next) {
+      var view = panel.popup.bodyItem
+      var row = firstRow(view)
+      var lfs = named(view, "githubLfsButton")
+      view.moveRequested(0, 1)
+      check(row && row.hasCursor, "lfs: Down: the row")
+      view.moveRequested(0, 1)
+      check(lfs && lfs.hasCursor, "lfs: Down: its LFS button")
+      view.activateRequested()
+      check(view.lfsNotePath === "@REPO@", "lfs: Enter opens the note: " + view.lfsNotePath)
+      view.moveRequested(0, 1)
+      var trust = named(view, "githubTrustButton")
+      check(trust && trust.hasCursor, "lfs: Down: Trust this repository")
+      var saved = panel.bar.saved.length
+      var identities = count("start identity")
+      view.activateRequested()
+      until(function() { return count("start identity") > identities && panel.bar.saved.length > saved }, "lfs: the trust is saved", function() {
+        var entry = panel.bar.saved[panel.bar.saved.length - 1]
+        var last = entry ? entry.settings.trustedRepositories : null
+        check(JSON.stringify(last) === JSON.stringify(trustRepo), "lfs: the repository is trusted with its identity: " + JSON.stringify(last))
+        check(view.lfsNotePath === "", "lfs: the note closes")
+        check(firstRow(view).hasCursor, "lfs: the cursor is back on the row")
+        panel.close()
+        panel.settings = settingsWith(trustRepo)
+        until(function() { return !panel.opened && !service.busy && service.repos[0].trusted === true }, "lfs: the popup closes", next)
+      })
+    }
+  ]
+
+  // chooser: the folder the desktop's chooser returns fills the row and is saved.
+  readonly property var chooserSteps: [
+    function(next) {
+      panel.openSettings()
+      until(function() { return panel.popup.bodyItem !== null && panel.editingSettings }, "chooser: settings open", function() {
+        var saved = panel.bar.saved.length
+        panel.popup.bodyItem.browseRequested(0)
+        check(!panel.opened, "chooser: the popup is released for the chooser")
+        until(function() { return panel.opened && panel.editingSettings && !panel.returningFromBrowser && panel.bar.saved.length > saved },
+          "chooser: the chosen folder is saved", function() {
+            var entry = panel.bar.saved[panel.bar.saved.length - 1]
+            var folders = entry ? entry.settings.repositoryFolders : null
+            check(Array.isArray(folders) && JSON.stringify(folders) === JSON.stringify([{ path: "/foamy-picked", depth: 1 }]),
+              "chooser: the picked folder replaces the row's path: " + JSON.stringify(folders) + " " + panel.settingsError)
+            panel.close()
+            panel.settings = settingsWith(trustRepo)
+            until(function() { return !panel.opened && !service.busy }, "chooser: the popup closes", next)
+          })
       })
     }
   ]
@@ -312,12 +456,14 @@ ShellRoot {
   Process {
     id: ipcCall
     property var then: null
+    property string name: "refresh"
     command: ["qs", "ipc", "-n", "-p", decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")),
-              "call", "foamy.github", "refresh"]
+              "call", "foamy.github", name]
     stdout: StdioCollector { id: ipcOutput; waitForEnd: true }
     onExited: function(exitCode) { var then = ipcCall.then; ipcCall.then = null; then(exitCode === 0 ? String(ipcOutput.text).trim() : "exit " + exitCode) }
   }
-  function refreshOverIpc(then) { ipcCall.then = then; ipcCall.running = true }
+  function refreshOverIpc(then) { callIpc("refresh", then) }
+  function callIpc(name, then) { ipcCall.name = name; ipcCall.then = then; ipcCall.running = true }
   readonly property var ipcSteps: [
     function(next) {
       until(function() { return !service.busy }, "ipc: idle", function() {
@@ -326,6 +472,17 @@ ShellRoot {
           check(answer === "ok", "ipc: refresh answers ok when a fetch starts: " + answer)
           until(function() { return count("start fetch") > started && !service.busy }, "ipc: the fetch ran", next)
         })
+      })
+    },
+    function(next) {
+      // Users' scripts read these keys.
+      callIpc("status", function(answer) {
+        var data = null
+        try { data = JSON.parse(answer) } catch (error) {}
+        check(data !== null && JSON.stringify(Object.keys(data).sort()) === JSON.stringify(["affected", "monitoring", "repositories", "syncing", "totals"])
+          && data.repositories === 1 && data.affected === 1 && data.totals.dirtyRepos === 1 && data.syncing === false && data.monitoring === false,
+          "ipc: status answers the counts: " + answer)
+        next()
       })
     },
     function(next) {
@@ -362,6 +519,8 @@ ShellRoot {
         until(function() { return service.helperUnavailable }, "ipc: the helper is unavailable", function() {
           refreshOverIpc(function(answer) {
             check(answer === "unavailable", "ipc: refresh answers unavailable without a helper: " + answer)
+            check(service.lastError === "This plugin's helper isn't available for this CPU.", "ipc: the panel says the helper is missing: " + service.lastError)
+            check(service.repos.length === 1 && service.repos[0].complete === false, "ipc: the repository is kept, as unavailable")
             next()
           })
         })

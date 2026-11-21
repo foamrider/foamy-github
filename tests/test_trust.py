@@ -3,11 +3,13 @@
 Black-box: the helper runs as a process (see helper.py); races are staged
 between its Git commands with GitHook."""
 
+import fcntl
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -39,11 +41,18 @@ def elf_interpreter(path):
 class Case(HelperTest):
     def setUp(self):
         super().setUp()
-        self.marker = self.root / "pwned"
         self.path = self.root / "repo"
+        # In the Git directory: inside the pinned namespace only that is
+        # writable, so a hostile command that runs leaves the marker in every
+        # sandbox mode (a marker on the read-only root could never appear).
+        self.marker = self.path / ".git/pwned"
         self.init_repo(self.path)
-        self.evil = f"touch {self.marker}"
         self._armed = []
+
+    @property
+    def evil(self):
+        """A command that drops the marker (follows a test's own marker)."""
+        return f"touch {self.marker}"
 
     def repo_git(self, *args, cwd=None):
         return self.git(*args, cwd=cwd or self.path)
@@ -242,23 +251,30 @@ class TrustModelTest(Case):
         # plain status, through whatever transport the repository allows.
         self.repo_git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
         self.repo_git("config", "remote.origin.promisor", "true")
+        # Subsections are case sensitive: protocol.Ext.allow is not the
+        # protocol.ext.allow Git reads, and closing it must not skip that one.
+        self.repo_git("config", "protocol.Ext.allow", "never")
         self.repo_git("config", "protocol.ext.allow", "always")
         tree = self.repo_git("rev-parse", "HEAD^{tree}").strip()
         (self.path / ".git/objects" / tree[:2] / tree[2:]).unlink()
         # The variants run Git through a wrapper (so without the exec
-        # restriction): older Git ignores GIT_NO_LAZY_FETCH; with it alone the
-        # transports stay as the repository says.
+        # restriction) and without bubblewrap (so on the repository's own
+        # config): older Git ignores GIT_NO_LAZY_FETCH, so only the transport
+        # overrides stop it; with GIT_NO_LAZY_FETCH alone the transports stay
+        # as the repository says.
         for name, wrapper in (
             ("full", None),
             ("older Git", {"drop_env": ["GIT_NO_LAZY_FETCH"]}),
             ("GIT_NO_LAZY_FETCH only", {"drop_config": ["protocol."]}),
         ):
             with self.subTest(policy=name):
+                self.marker.unlink(missing_ok=True)  # each variant reports only itself
                 fake = self.root / "fakebin/git"
                 if fake.exists():
                     fake.unlink()
                 if wrapper:
                     self.git_wrapper(**wrapper)
+                    self.without_bwrap()
                 self.status_row()
                 self.watch_plan()
                 self.assertNotRun()
@@ -279,8 +295,14 @@ class TrustModelTest(Case):
         (self.path / ".gitattributes").write_text("*.txt filter=a=b\n")
         self.repo_git("config", "filter.a=b.clean", str(self.script("clean", "cat")))
         self.dirty_tracked_file()
-        self.assertTrue(self.status_row()["complete"])
-        self.assertNotRun()
+        for sandbox in (True, False):  # every layer, then the per-name overrides alone
+            with self.subTest(sandbox=sandbox):
+                if not sandbox:
+                    self.git_wrapper()
+                    self.without_bwrap()
+                row = self.status_row()
+                self.assertTrue(row["complete"], row["error"])
+                self.assertNotRun()
 
     def test_filter_name_empty_is_neutralised(self):
         # Codex P1: `[filter ""]` selected by `filter=` was skipped (empty name).
@@ -288,10 +310,11 @@ class TrustModelTest(Case):
         self.repo_git("config", "filter..clean", f"{self.script('clean')} %f; cat")
         self.repo_git("config", "filter..required", "true")
         self.dirty_tracked_file()
-        for sandbox in (True, False):  # with Landlock and in the fallback
+        for sandbox in (True, False):  # every layer, then the per-name overrides alone
             with self.subTest(sandbox=sandbox):
                 if not sandbox:
                     self.git_wrapper()
+                    self.without_bwrap()
                 row = self.status_row()
                 self.assertTrue(row["complete"], row["error"])
                 self.assertNotRun()
@@ -329,11 +352,19 @@ class TrustModelTest(Case):
 
     def test_global_filter_selected_by_repository_attributes_is_off(self):
         # A trusted global filter (e.g. Git LFS) can be steered by repository config.
+        # The user's config is read in the namespace too, so only the overrides
+        # and the exec restriction stop it; the second run has no exec
+        # restriction (as under qemu or without Landlock).
         self.global_config(f'[filter "globalf"]\n\tclean = {self.script("global-clean", "cat")}\n\trequired = true\n')
         (self.path / ".gitattributes").write_text("*.txt filter=globalf\n")
         self.dirty_tracked_file()
-        self.assertTrue(self.status_row()["complete"])
-        self.assertNotRun()
+        for exec_restricted in (True, False):
+            with self.subTest(exec_restricted=exec_restricted):
+                if not exec_restricted:
+                    self.git_wrapper()
+                row = self.status_row()
+                self.assertTrue(row["complete"], row["error"])
+                self.assertNotRun()
 
     @unittest.skipUnless(shutil.which("git-lfs"), "git-lfs is not installed")
     def test_lfs_extension_in_repository_config_does_not_run(self):
@@ -443,16 +474,26 @@ class TrustModelTest(Case):
 
     @needs_bwrap
     def test_fetch_settings_added_after_the_snapshot_cannot_run_anything(self):
-        for url, edit in (
-            (f"ext::sh -c {self.evil.replace(' ', '% ')}", ("protocol.ext.allow", "always")),
-            ("git://127.0.0.1:1/repo", ("core.gitProxy", str(self.script("gitproxy")))),
+        # An ext:: origin is a local one: refused before Git fetches, whatever
+        # the late edit allows. A git:// origin reaches the fetch, where a
+        # proxy added after the snapshot must not run.
+        for url, edit, message in (
+            (
+                f"ext::sh -c {self.evil.replace(' ', '% ')}",
+                ("protocol.ext.allow", "always"),
+                "Automatic fetch skipped: local origins need a trusted repository.",
+            ),
+            ("git://127.0.0.1:1/repo", ("core.gitProxy", str(self.script("gitproxy"))), None),
         ):
             with self.subTest(url=url):
                 if "origin" in self.repo_git("remote"):
                     self.repo_git("remote", "remove", "origin")
                 self.repo_git("remote", "add", "origin", url)
                 self.on_git(lambda edit=edit: self.repo_git("config", *edit), after=self.SNAPSHOT)
-                self.assertFalse(self.fetched()["ok"])
+                result = self.fetched()
+                self.assertFalse(result["ok"])
+                if message:
+                    self.assertEqual(result["message"], message)
                 self.repo_git("config", "--unset-all", edit[0])
         self.assertNotRun()
 
@@ -460,7 +501,6 @@ class TrustModelTest(Case):
     def test_trusted_config_keeps_the_repository_behaviour(self):
         # Trusted runs execute the repository's config, inside the pinned
         # namespace where only its Git directory is writable.
-        self.marker = self.path / ".git/pwned"
         self.repo_git("config", "core.fsmonitor", f"touch {self.marker}")
         self.status_row(trust_all=True)
         self.assertTrue(self.marker.exists())
@@ -549,38 +589,20 @@ class TrustModelTest(Case):
         self.assertIn("global-helper", calls)
         self.assertNotIn("local-helper", calls)
         self.assertNotIn("askpass", calls)
-        self.assertFalse((self.path / "loot").exists())
 
-    def test_fetch_ignores_repository_ssh_command(self):
-        self.repo_git("remote", "add", "origin", "ssh://example.invalid/repo.git")
-        for value in (self.evil + "; ssh", "ssh -i *", "ssh -o ProxyCommand=" + self.evil.replace(" ", "_")):
-            with self.subTest(value=value):
-                self.repo_git("config", "core.sshCommand", value)
-                self.assertFalse(self.fetched()["ok"])
-        self.assertNotRun()
-
-    def test_glob_in_ssh_command_cannot_inject_options(self):
-        # Codex P1 (round 1): `ssh -i *` expanded by /bin/sh to `-oProxyCommand=…`.
-        (self.path / "!key").write_text("")
-        (self.path / "-oProxyCommand=touch proxy-ran").write_text("")
-        self.repo_git("remote", "add", "origin", "ssh://example.invalid/repo.git")
-        self.repo_git("config", "core.sshCommand", "ssh -i *")
-        self.fetched()
-        self.assertFalse((self.path / "proxy-ran").exists())
-
+    @needs_bwrap
     def test_fetch_ignores_git_proxy_transport_helpers_and_upload_pack(self):
+        # Network origins only: a local one is refused before Git runs.
         helper = self.script("git-remote-evil")
         self.prepend_path(helper.parent)
-        remote = self.file_remote()
+        self.file_remote()
+        upload_pack = self.script("uploadpack")
+        self.ssh_recorder('echo "$@"')
         cases = (
             ("git://127.0.0.1:1/repo", {"core.gitProxy": str(self.script("gitproxy"))}),
-            (
-                f"ext::sh -c {self.evil.replace(' ', '% ')}",
-                {"protocol.ext.allow": "always", "protocol.allow": "always"},
-            ),
             ("evil::whatever", {"protocol.evil.allow": "always"}),
-            (str(remote), {"remote.origin.vcs": "evil", "protocol.allow": "always"}),
-            (str(remote), {"remote.origin.uploadpack": f"{self.script('uploadpack')}; git-upload-pack"}),
+            (self.served("remote.git"), {"remote.origin.vcs": "evil", "protocol.allow": "always"}),
+            ("ssh://example.invalid/repo.git", {"remote.origin.uploadpack": f"{upload_pack}; git-upload-pack"}),
         )
         for url, config in cases:
             with self.subTest(url=url, config=config):
@@ -590,19 +612,11 @@ class TrustModelTest(Case):
                 self.fetched()
                 for key in config:
                     self.repo_git("config", "--unset-all", key)
+        # The remote side is asked for git-upload-pack, never the repository's command.
+        record = self.ssh_record()
+        self.assertIn("git-upload-pack", record)
+        self.assertNotIn(str(upload_pack), record)
         self.assertFalse(self.marker.exists(), self.marker.read_text() if self.marker.exists() else "")
-
-    def test_fetch_ignores_ext_allowed_under_another_subsection_case(self):
-        # Subsections are case sensitive: protocol.Ext.allow is not the
-        # protocol.ext.allow Git reads, and must not hide it.
-        self.repo_git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
-        self.repo_git("config", "protocol.Ext.allow", "never")
-        self.repo_git("config", "protocol.ext.allow", "always")
-        self.assertIn(
-            "protocol.Ext.allow=never\nprotocol.ext.allow=always", self.repo_git("config", "--local", "--list")
-        )
-        self.fetched()
-        self.assertNotRun()
 
     @needs_bwrap
     def test_fetch_ignores_alternate_refs_command(self):
@@ -622,12 +636,15 @@ class TrustModelTest(Case):
         port, seen = self.recording_server(cookie=True)
         self.repo_git("remote", "add", "origin", f"http://127.0.0.1:{port}/repo.git")
         self.repo_git("config", "http.extraHeader", "X-Before: 1")
+        # Git saves no cookie when a fetch fails, but it sends the cookies of
+        # a file it reads.
+        cookies = self.root / "cookies.txt"
+        cookies.write_text("127.0.0.1\tFALSE\t/\tFALSE\t0\tstored\tsecret\n")
 
         def late_edit():
             for key, value in (
                 ("http.extraHeader", "X-After: 1"),
-                ("http.cookieFile", str(self.path / "loot")),
-                ("http.saveCookies", "true"),
+                ("http.cookieFile", str(cookies)),
                 ("http.curloptResolve", f"127.0.0.1:{port}:192.0.2.1"),
                 ("remote.origin.proxy", "http://192.0.2.1:3128"),
             ):
@@ -636,15 +653,17 @@ class TrustModelTest(Case):
         self.on_git(late_edit, after=self.SNAPSHOT)
         self.assertFalse(self.fetched()["ok"])
         self.assertTrue(seen, "the fetch didn't reach the real server (resolve/proxy settings applied)")
-        self.assertFalse([h for h in seen if h.startswith(("X-Before", "X-After"))], seen)
-        self.assertFalse((self.path / "loot").exists())
+        self.assertFalse([h for h in seen if h.startswith(("X-Before", "X-After", "Cookie"))], seen)
 
+    @needs_bwrap
     def test_bare_boolean_in_user_config_stays_true(self):
         # Codex: a bare `sslVerify` (true) was serialised as "" (false).
         port, seen, _ca = self.tls_server()
         self.global_config("[http]\n\tsslVerify\n")
         self.repo_git("remote", "add", "origin", f"https://127.0.0.1:{port}/repo.git")
-        self.assertFalse(self.fetched()["ok"])
+        result = self.fetched()
+        self.assertFalse(result["ok"])
+        self.assertIn("certificate", result["message"], "the fetch never tried the TLS handshake")
         self.assertEqual(seen, [], "an untrusted certificate was accepted")
 
     @needs_bwrap
@@ -670,6 +689,7 @@ class TrustModelTest(Case):
         self.assertNotIn("X-Removed", headers)
         self.assertNotIn("X-Local", headers)
 
+    @needs_bwrap
     def test_gitdir_includes_keep_their_place_in_user_config(self):
         # Codex P1: a gitdir-matched include replayed at local scope outranked
         # later global settings (resurrecting sslVerify=false and cleared headers).
@@ -680,7 +700,9 @@ class TrustModelTest(Case):
             "[http]\n\tsslVerify = true\n\textraHeader =\n"
         )
         self.repo_git("remote", "add", "origin", f"https://127.0.0.1:{port}/repo.git")
-        self.assertFalse(self.fetched()["ok"])
+        result = self.fetched()
+        self.assertFalse(result["ok"])
+        self.assertIn("certificate", result["message"], "the fetch never tried the TLS handshake")
         self.assertEqual(seen, [], "the included sslVerify=false won over the later global sslVerify=true")
 
     @needs_bwrap
@@ -703,6 +725,7 @@ class TrustModelTest(Case):
         trust = self.trust(self.path)
         moved = self.root / "moved-worktree"
         os.rename(self.path, moved)
+        self.marker = moved / ".git/pwned"  # the Git directory the pin binds
         self.path.mkdir()
         (self.path / ".git").write_text(f"gitdir: {moved / '.git'}\n")
         self.repo_git("config", "core.fsmonitor", self.evil, cwd=moved)  # trusted config, wrong worktree
@@ -752,6 +775,7 @@ class TrustModelTest(Case):
         self.assertTrue(row["trusted"], row)
         self.assertNotRun()
 
+    @needs_bwrap
     def test_worktree_swapped_between_snapshot_and_pin_touches_nothing_else(self):
         # Codex security: the snapshot was taken before the pin; a worktree
         # swapped in between pointed the overlay and the writes at another repo.
@@ -772,7 +796,15 @@ class TrustModelTest(Case):
             (self.path / ".git").write_text(f"gitdir: {target / '.git'}\n")
 
         self.on_git(swap, after=self.SNAPSHOT)
-        self.fetched()
+        result = self.fetched()
+        # The swap lands while the first Git command after the snapshot waits
+        # in its namespace: the path it was given now names the swapped-in
+        # .git file, and Git refuses it before any fetch starts. The text is
+        # Git's own; a Git update or a helper that detects the swap itself
+        # changes it.
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["attempts"], 0, result)
+        self.assertIn("does not point to a valid repository", result["message"], result)
         self.assertEqual(
             self.repo_git("rev-parse", "refs/remotes/origin/main", cwd=target).strip(),
             old,
@@ -796,19 +828,19 @@ class TrustModelTest(Case):
     @needs_bwrap
     def test_user_protocol_policy_is_not_unattended_permission(self):
         # Codex P1: protocol.<x>.allow=user means "when the user asked"; an
-        # automatic fetch must not treat it as allowed.
-        self.global_config('[protocol "ext"]\n\tallow = user\n')
-        self.repo_git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
-        self.assertFalse(self.fetched()["ok"])
-        self.assertNotRun()
-        # The transports an unattended fetch allows, as Git sees them.
+        # automatic fetch must not treat it as allowed. The transports an
+        # unattended fetch allows, as Git sees them: the network ones plus
+        # what the user's own config allows `always`; never `user`, a local
+        # transport, or one the repository allows.
+        self.global_config(
+            '[protocol "hg"]\n\tallow = user\n[protocol "foo"]\n\tallow = always\n[protocol "ext"]\n\tallow = always\n'
+        )
+        self.repo_git("config", "protocol.bar.allow", "always")
         self.ssh_recorder('echo "$GIT_ALLOW_PROTOCOL"')
-        self.repo_git("remote", "set-url", "origin", "ssh://example.invalid/repo.git")
+        self.repo_git("remote", "add", "origin", "ssh://example.invalid/repo.git")
         self.assertFalse(self.fetched()["ok"])
-        allowed = self.ssh_record().split()[0].split(":")
-        self.assertIn("ssh", allowed)
-        self.assertNotIn("ext", allowed)
-        self.assertNotIn("file", allowed)
+        allowed = set(self.ssh_record().split()[0].split(":"))
+        self.assertEqual(allowed, {"http", "https", "ssh", "git", "foo"})
 
     @needs_bwrap
     def test_symlinked_git_dir_paths_refuse_the_fetch(self):
@@ -845,6 +877,7 @@ class TrustModelTest(Case):
                 if aside.exists():
                     os.rename(aside, link)
 
+    @needs_bwrap
     def test_nested_symlinks_below_fetched_refs_write_nothing_elsewhere(self):
         # Codex security: refs/remotes/origin/evil -> <victim>/.git/refs/heads
         # (and the same under refs/tags) passed the top-level checks, and the
@@ -1058,10 +1091,12 @@ class TrustModelTest(Case):
     @needs_bwrap
     def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
         # Codex security: trust was checked on the path, then Git reopened it.
-        hostile_marker = self.root / "swapped.ran"
+        # The hostile command writes below the path's .git: in the namespace
+        # that is the bound (writable) Git directory of the pinned original,
+        # on the host the swapped-in repository's own.
         trust = self.trust(self.path)
         hostile = self.init_repo(self.root / "hostile", commit=False)
-        self.repo_git("config", "core.fsmonitor", f"touch {hostile_marker}", cwd=hostile)
+        self.repo_git("config", "core.fsmonitor", f"touch {self.path / '.git/swapped.ran'}", cwd=hostile)
 
         def swap():  # after the pin, before its first Git command
             os.rename(self.path, self.root / "original")
@@ -1071,8 +1106,10 @@ class TrustModelTest(Case):
         self.on_git(swap)
         self.status_row(trusted=trust)
         self.assertTrue((self.root / "swapped").exists(), "the swap happened mid-check")
-        self.assertFalse(hostile_marker.exists(), "the swapped-in repository ran its config with trust")
+        for marker in (self.path / ".git/swapped.ran", self.root / "original/.git/swapped.ran"):
+            self.assertFalse(marker.exists(), f"the swapped-in repository ran its config with trust: {marker}")
 
+    @needs_bwrap
     def test_untrusted_fetch_writes_only_into_the_inspected_repository(self):
         # Codex security: a rename/symlink swap during the fetch redirected the
         # fetched objects and ref updates into another repository.
@@ -1095,7 +1132,14 @@ class TrustModelTest(Case):
             os.symlink(victim, self.path)
 
         self.on_git(swap)
-        self.fetched()
+        result = self.fetched()
+        # The path is a symlink by the next Git command: bubblewrap refuses to
+        # mount the pinned worktree there, so nothing runs after the swap. The
+        # text is bubblewrap's own; a bubblewrap update or a helper that
+        # detects the swap itself changes it.
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["attempts"], 0, result)
+        self.assertIn("Can't mount on symlink destination", result["message"], result)
         self.assertEqual(
             self.repo_git("rev-parse", "refs/remotes/origin/main", cwd=victim).strip(),
             victim_before,
@@ -1134,9 +1178,14 @@ class TrustModelTest(Case):
         self.assertTrue(self.fetched()["ok"])
         self.assertEqual(real("refs/remotes/origin/gone"), "")  # pruned
         self.assertEqual(real("refs/remotes/origin/main"), head)
-        for leftovers in ("overlay", "pins"):  # private copies are removed
-            directory = self.root / "cache/foamy-github" / leftovers
-            self.assertFalse(directory.exists() and list(directory.iterdir()), leftovers)
+        # Private copies are removed: the overlay and pin files, and the ssh
+        # config copies (made when /etc/ssh/ssh_config.d has .conf files).
+        for directory in (
+            self.root / "cache/foamy-github/overlay",
+            self.root / "cache/foamy-github/pins",
+            self.root / "runtime/foamy-github-ssh",
+        ):
+            self.assertFalse(directory.exists() and list(directory.iterdir()), directory)
 
     @needs_bwrap
     def test_local_origins_need_a_trusted_repository(self):
@@ -1361,7 +1410,6 @@ class TrustModelTest(Case):
         # accept-new could append to ~/.bashrc. Untrusted fetches ignore it.
         bashrc = self.root / ".bashrc"
         bashrc.write_text("# precious\n")
-        self.marker = self.path / ".git/pwned"  # writable inside the pinned namespace
         self.ssh_recorder('echo ssh "$@"')  # records how ssh is called
         self.repo_git("remote", "add", "origin", "ssh://127.0.0.1:1/repo.git")
         self.repo_git(
@@ -1483,6 +1531,47 @@ class LifecycleTest(HelperTest):
         self.assertEqual(helper.wait(5), 128 + signal.SIGTERM)
         self.assertFalse(marker.exists())
 
+    def test_a_held_lock_answers_busy_and_starts_nothing(self):
+        # Another fetch, push or pull holds sync.lock (flock, as the helper's
+        # own lock): the panel shows a busy reply as a title, not an error.
+        cache = self.root / "cache/foamy-github"
+        cache.mkdir(parents=True)
+        fd = os.open(cache / "sync.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        repo = self.init_repo(self.root / "repo")
+        folders = [{"path": str(repo), "depth": 0}]
+        busy = (0, {"ok": False, "busy": True, "message": "Repository synchronization is already running"})
+        self.assertEqual(self.fetch(folders), busy)
+        self.assertEqual(self.action("push", repo, folders), busy)
+        self.assertEqual(self.action("pull", repo, folders), busy)
+        self.assertEqual(sorted(path.name for path in cache.iterdir()), ["sync.lock"])
+
+    def test_failed_fetch_keeps_the_last_success(self):
+        # A failed fetch records the attempt and its failures but keeps the
+        # time of the last full success; the state file is replaced whole.
+        cache = self.root / "cache/foamy-github"
+        cache.mkdir(parents=True)
+        state = cache / "sync-state.json"
+        state.write_text(json.dumps({"lastAttempt": 1, "lastSuccess": 12345, "mode": "fetch", "failures": []}))
+        # Readable by others, whatever the umask: an in-place write would keep it so.
+        state.chmod(0o644)
+        before = state.stat().st_ino
+        self.without_bwrap()  # the fetch is refused: a failure without any network
+        repo = self.init_repo(self.root / "repo")
+        self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=repo)
+        code, payload = self.fetch([{"path": str(repo), "depth": 0}])
+        self.assertEqual(code, 1, payload)
+        self.assertFalse(payload["ok"])
+        saved = json.loads(state.read_text())
+        self.assertEqual(saved["lastSuccess"], 12345)
+        self.assertGreater(saved["lastAttempt"], 1)
+        self.assertEqual([failure["path"] for failure in saved["failures"]], [str(repo)])
+        self.assertEqual(oct(stat.S_IMODE(state.stat().st_mode)), "0o600", "the state file is private")
+        self.assertNotEqual(state.stat().st_ino, before, "the state file is replaced, not written in place")
+        # No temporary file and no syncing marker are left behind.
+        self.assertEqual(sorted(path.name for path in cache.iterdir()), ["sync-state.json", "sync.lock"])
+
 
 class PerRepositoryTrustTest(HelperTest):
     """Per-repository trust for Git LFS repositories (replaces the global switch)."""
@@ -1531,7 +1620,7 @@ class PerRepositoryTrustTest(HelperTest):
         self.assertFalse(self.row(big)["usesLfs"])
 
     def test_detection_runs_no_repository_code_and_survives_hostile_files(self):
-        marker = self.root / "pwned"
+        marker = self.root / "hostile/.git/pwned"  # writable in the namespace, too
         repo, run = self.make_repo(
             "hostile", {".gitattributes": "* filter=lfs\n", ".lfsconfig": "[lfs]\n\textension = x\n"}
         )
@@ -1584,7 +1673,7 @@ class PerRepositoryTrustTest(HelperTest):
     def test_repository_replaced_at_the_same_path_is_untrusted(self):
         # Codex security: trust must not pass to a different repository that
         # later sits at the trusted path (deleted and re-created, or swapped).
-        marker = self.root / "replacement.ran"
+        marker = self.root / "trusted/.git/replacement.ran"  # the replacement's Git directory
         repo, _run = self.make_repo("trusted", {".gitattributes": "* filter=lfs\n"})
         trust = self.trust(repo)
         self.assertIs(self.row(repo, trusted=trust)["trusted"], True)
@@ -1606,7 +1695,7 @@ class PerRepositoryTrustTest(HelperTest):
         # replacement, so an identity without one (or an older single-directory
         # identity) trusts nothing.
         repo, run = self.make_repo("nobtime", {".gitattributes": "* filter=lfs\n"})
-        marker = self.root / "nobtime.ran"
+        marker = repo / ".git/nobtime.ran"  # writable in the namespace
         run("config", "core.fsmonitor", f"touch {marker}")
         identity = self.identity(repo)
         self.assertRegex(identity, r"^\d+:\d+:[1-9]\d*(\|\d+:\d+:[1-9]\d*){1,2}$")

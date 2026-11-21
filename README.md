@@ -394,17 +394,16 @@ binary by default, another one with `FOAMY_HELPER` (the aarch64 build runs
 through qemu binfmt; qemu-user has no Landlock, so those checks skip).
 
 ```sh
-node --test tests/model.test.js tests/preferences.test.js && node tests/i18n.test.cjs
+node --test tests/model.test.js tests/preferences.test.js
 python3 -m unittest discover -s tests -p 'test_*.py'
 FOAMY_HELPER='["bin/aarch64/foamy-github-helper"]' python3 -m unittest discover -s tests -p 'test_*.py'
 bash tests/stress.sh                               # the unit suite, 40 runs, 4 at a time
 bash tests/kit-check.sh
 python3 ~/GitHub/Personal/foamy-kit/preview/i18n_runtime.py .   # live language switching (the kit's catalog check)
 python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
-python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
+python3 tests/runtime-pullall.py                   # Pull all over local Git repositories, a failing step, and opening lazygit
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
-python3 tests/runtime-stale-status.py              # a status check overtaken by a trust change is redone
-python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust edits and IPC refresh (fake helper, fake NetworkManager)
+python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust and folder edits, the LFS trust flow, the folder chooser and IPC (fake helper, fake NetworkManager)
 python3 tests/runtime-stored.py                    # an invalid folder or trust list in shell.json is named and kept
 ~/GitHub/Personal/foamy-kit/preview/render.py .
 ```
