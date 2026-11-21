@@ -472,16 +472,26 @@ class TrustModelTest(Case):
 
     @needs_bwrap
     def test_fetch_settings_added_after_the_snapshot_cannot_run_anything(self):
-        for url, edit in (
-            (f"ext::sh -c {self.evil.replace(' ', '% ')}", ("protocol.ext.allow", "always")),
-            ("git://127.0.0.1:1/repo", ("core.gitProxy", str(self.script("gitproxy")))),
+        # An ext:: origin is a local one: refused before Git fetches, whatever
+        # the late edit allows. A git:// origin reaches the fetch, where a
+        # proxy added after the snapshot must not run.
+        for url, edit, message in (
+            (
+                f"ext::sh -c {self.evil.replace(' ', '% ')}",
+                ("protocol.ext.allow", "always"),
+                "Automatic fetch skipped: local origins need a trusted repository.",
+            ),
+            ("git://127.0.0.1:1/repo", ("core.gitProxy", str(self.script("gitproxy"))), None),
         ):
             with self.subTest(url=url):
                 if "origin" in self.repo_git("remote"):
                     self.repo_git("remote", "remove", "origin")
                 self.repo_git("remote", "add", "origin", url)
                 self.on_git(lambda edit=edit: self.repo_git("config", *edit), after=self.SNAPSHOT)
-                self.assertFalse(self.fetched()["ok"])
+                result = self.fetched()
+                self.assertFalse(result["ok"])
+                if message:
+                    self.assertEqual(result["message"], message)
                 self.repo_git("config", "--unset-all", edit[0])
         self.assertNotRun()
 
@@ -580,19 +590,19 @@ class TrustModelTest(Case):
         self.assertNotIn("askpass", calls)
         self.assertFalse((self.path / "loot").exists())
 
+    @needs_bwrap
     def test_fetch_ignores_git_proxy_transport_helpers_and_upload_pack(self):
+        # Network origins only: a local one is refused before Git runs.
         helper = self.script("git-remote-evil")
         self.prepend_path(helper.parent)
-        remote = self.file_remote()
+        self.file_remote()
+        upload_pack = self.script("uploadpack")
+        self.ssh_recorder('echo "$@"')
         cases = (
             ("git://127.0.0.1:1/repo", {"core.gitProxy": str(self.script("gitproxy"))}),
-            (
-                f"ext::sh -c {self.evil.replace(' ', '% ')}",
-                {"protocol.ext.allow": "always", "protocol.allow": "always"},
-            ),
             ("evil::whatever", {"protocol.evil.allow": "always"}),
-            (str(remote), {"remote.origin.vcs": "evil", "protocol.allow": "always"}),
-            (str(remote), {"remote.origin.uploadpack": f"{self.script('uploadpack')}; git-upload-pack"}),
+            (self.served("remote.git"), {"remote.origin.vcs": "evil", "protocol.allow": "always"}),
+            ("ssh://example.invalid/repo.git", {"remote.origin.uploadpack": f"{upload_pack}; git-upload-pack"}),
         )
         for url, config in cases:
             with self.subTest(url=url, config=config):
@@ -602,6 +612,10 @@ class TrustModelTest(Case):
                 self.fetched()
                 for key in config:
                     self.repo_git("config", "--unset-all", key)
+        # The remote side is asked for git-upload-pack, never the repository's command.
+        record = self.ssh_record()
+        self.assertIn("git-upload-pack", record)
+        self.assertNotIn(str(upload_pack), record)
         self.assertFalse(self.marker.exists(), self.marker.read_text() if self.marker.exists() else "")
 
     @needs_bwrap
@@ -639,12 +653,15 @@ class TrustModelTest(Case):
         self.assertFalse([h for h in seen if h.startswith(("X-Before", "X-After"))], seen)
         self.assertFalse((self.path / "loot").exists())
 
+    @needs_bwrap
     def test_bare_boolean_in_user_config_stays_true(self):
         # Codex: a bare `sslVerify` (true) was serialised as "" (false).
         port, seen, _ca = self.tls_server()
         self.global_config("[http]\n\tsslVerify\n")
         self.repo_git("remote", "add", "origin", f"https://127.0.0.1:{port}/repo.git")
-        self.assertFalse(self.fetched()["ok"])
+        result = self.fetched()
+        self.assertFalse(result["ok"])
+        self.assertIn("certificate", result["message"], "the fetch never tried the TLS handshake")
         self.assertEqual(seen, [], "an untrusted certificate was accepted")
 
     @needs_bwrap
@@ -670,6 +687,7 @@ class TrustModelTest(Case):
         self.assertNotIn("X-Removed", headers)
         self.assertNotIn("X-Local", headers)
 
+    @needs_bwrap
     def test_gitdir_includes_keep_their_place_in_user_config(self):
         # Codex P1: a gitdir-matched include replayed at local scope outranked
         # later global settings (resurrecting sslVerify=false and cleared headers).
@@ -680,7 +698,9 @@ class TrustModelTest(Case):
             "[http]\n\tsslVerify = true\n\textraHeader =\n"
         )
         self.repo_git("remote", "add", "origin", f"https://127.0.0.1:{port}/repo.git")
-        self.assertFalse(self.fetched()["ok"])
+        result = self.fetched()
+        self.assertFalse(result["ok"])
+        self.assertIn("certificate", result["message"], "the fetch never tried the TLS handshake")
         self.assertEqual(seen, [], "the included sslVerify=false won over the later global sslVerify=true")
 
     @needs_bwrap
@@ -753,6 +773,7 @@ class TrustModelTest(Case):
         self.assertTrue(row["trusted"], row)
         self.assertNotRun()
 
+    @needs_bwrap
     def test_worktree_swapped_between_snapshot_and_pin_touches_nothing_else(self):
         # Codex security: the snapshot was taken before the pin; a worktree
         # swapped in between pointed the overlay and the writes at another repo.
@@ -773,7 +794,13 @@ class TrustModelTest(Case):
             (self.path / ".git").write_text(f"gitdir: {target / '.git'}\n")
 
         self.on_git(swap, after=self.SNAPSHOT)
-        self.fetched()
+        result = self.fetched()
+        # The swap lands while the first Git command after the snapshot waits
+        # in its namespace: the path it was given now names the swapped-in
+        # .git file, and Git refuses it before any fetch starts.
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["attempts"], 0, result)
+        self.assertIn("does not point to a valid repository", result["message"], result)
         self.assertEqual(
             self.repo_git("rev-parse", "refs/remotes/origin/main", cwd=target).strip(),
             old,
@@ -797,19 +824,19 @@ class TrustModelTest(Case):
     @needs_bwrap
     def test_user_protocol_policy_is_not_unattended_permission(self):
         # Codex P1: protocol.<x>.allow=user means "when the user asked"; an
-        # automatic fetch must not treat it as allowed.
-        self.global_config('[protocol "ext"]\n\tallow = user\n')
-        self.repo_git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
-        self.assertFalse(self.fetched()["ok"])
-        self.assertNotRun()
-        # The transports an unattended fetch allows, as Git sees them.
+        # automatic fetch must not treat it as allowed. The transports an
+        # unattended fetch allows, as Git sees them: the network ones plus
+        # what the user's own config allows `always`; never `user`, a local
+        # transport, or one the repository allows.
+        self.global_config(
+            '[protocol "hg"]\n\tallow = user\n[protocol "foo"]\n\tallow = always\n[protocol "ext"]\n\tallow = always\n'
+        )
+        self.repo_git("config", "protocol.bar.allow", "always")
         self.ssh_recorder('echo "$GIT_ALLOW_PROTOCOL"')
-        self.repo_git("remote", "set-url", "origin", "ssh://example.invalid/repo.git")
+        self.repo_git("remote", "add", "origin", "ssh://example.invalid/repo.git")
         self.assertFalse(self.fetched()["ok"])
-        allowed = self.ssh_record().split()[0].split(":")
-        self.assertIn("ssh", allowed)
-        self.assertNotIn("ext", allowed)
-        self.assertNotIn("file", allowed)
+        allowed = set(self.ssh_record().split()[0].split(":"))
+        self.assertEqual(allowed, {"http", "https", "ssh", "git", "foo"})
 
     @needs_bwrap
     def test_symlinked_git_dir_paths_refuse_the_fetch(self):
@@ -846,6 +873,7 @@ class TrustModelTest(Case):
                 if aside.exists():
                     os.rename(aside, link)
 
+    @needs_bwrap
     def test_nested_symlinks_below_fetched_refs_write_nothing_elsewhere(self):
         # Codex security: refs/remotes/origin/evil -> <victim>/.git/refs/heads
         # (and the same under refs/tags) passed the top-level checks, and the
@@ -1077,6 +1105,7 @@ class TrustModelTest(Case):
         for marker in (self.path / ".git/swapped.ran", self.root / "original/.git/swapped.ran"):
             self.assertFalse(marker.exists(), f"the swapped-in repository ran its config with trust: {marker}")
 
+    @needs_bwrap
     def test_untrusted_fetch_writes_only_into_the_inspected_repository(self):
         # Codex security: a rename/symlink swap during the fetch redirected the
         # fetched objects and ref updates into another repository.
@@ -1099,7 +1128,12 @@ class TrustModelTest(Case):
             os.symlink(victim, self.path)
 
         self.on_git(swap)
-        self.fetched()
+        result = self.fetched()
+        # The path is a symlink by the next Git command: bubblewrap refuses to
+        # mount the pinned worktree there, so nothing runs after the swap.
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["attempts"], 0, result)
+        self.assertIn("Can't mount on symlink destination", result["message"], result)
         self.assertEqual(
             self.repo_git("rev-parse", "refs/remotes/origin/main", cwd=victim).strip(),
             victim_before,
