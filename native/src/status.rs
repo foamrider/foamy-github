@@ -997,6 +997,10 @@ mod tests {
             "each item is mapped exactly once"
         );
         // README "Limits": at most four commands at once.
-        assert_eq!(peak.load(SeqCst), 4, "calls that ran at the same time");
+        assert_eq!(
+            peak.load(SeqCst),
+            4,
+            "parallel() must run four calls at once, never more"
+        );
     }
 }

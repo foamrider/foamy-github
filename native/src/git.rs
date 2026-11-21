@@ -667,7 +667,8 @@ mod tests {
         let mut child = Command::new("sh")
             .args([
                 "-c",
-                "printf 'fatal: first' >&2; head -c 1048576 /dev/zero >&2; printf out",
+                // `&&`: a writer killed by a closed pipe fails the command.
+                "printf 'fatal: first' >&2; head -c 1048576 /dev/zero >&2 && printf out",
             ])
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -690,7 +691,10 @@ mod tests {
             None,
         )
         .expect("the command did not finish: its stderr was not drained");
-        assert!(child.wait().unwrap().success());
+        assert!(
+            child.wait().unwrap().success(),
+            "the command was killed: its stderr was closed before it ended"
+        );
         assert_eq!(kept.len(), MAX_DIAGNOSTIC_BYTES);
         // The first lines hold the cause that concise_error shows.
         assert!(kept.starts_with(b"fatal: first"), "the head was not kept");

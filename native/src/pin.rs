@@ -707,6 +707,8 @@ mod tests {
         // the `.git` pointer and `commondir` are: a FIFO must not stop the
         // scan, and an endless file must not fill memory.
         let dir = std::env::temp_dir().join(format!("foamy-github-read-{}", std::process::id()));
+        // A failed earlier run with the same pid leaves its directory.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("file"), b"0123456789").unwrap();
         std::os::unix::fs::symlink(dir.join("file"), dir.join("link")).unwrap();
@@ -733,9 +735,14 @@ mod tests {
                 read_at(&fd, b"fifo", 4).is_err(),
             ));
         });
-        let (bounded, file, missing, link_refused, fifo_refused) = wait
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("reading a FIFO blocked");
+        let (bounded, file, missing, link_refused, fifo_refused) =
+            match wait.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(results) => results,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("reading a FIFO blocked"),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the reader thread panicked (see above)")
+                }
+            };
         assert_eq!(bounded[0], b"0123");
         assert_eq!(bounded[1], b"0123456789");
         for (name, data) in ["link", "fifo", "missing", "/dev/zero"]
