@@ -3,11 +3,13 @@
 Black-box: the helper runs as a process (see helper.py); races are staged
 between its Git commands with GitHook."""
 
+import fcntl
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -1172,9 +1174,14 @@ class TrustModelTest(Case):
         self.assertTrue(self.fetched()["ok"])
         self.assertEqual(real("refs/remotes/origin/gone"), "")  # pruned
         self.assertEqual(real("refs/remotes/origin/main"), head)
-        for leftovers in ("overlay", "pins"):  # private copies are removed
-            directory = self.root / "cache/foamy-github" / leftovers
-            self.assertFalse(directory.exists() and list(directory.iterdir()), leftovers)
+        # Private copies are removed: the overlay and pin files, and the ssh
+        # config copies (made when /etc/ssh/ssh_config.d has .conf files).
+        for directory in (
+            self.root / "cache/foamy-github/overlay",
+            self.root / "cache/foamy-github/pins",
+            self.root / "runtime/foamy-github-ssh",
+        ):
+            self.assertFalse(directory.exists() and list(directory.iterdir()), directory)
 
     @needs_bwrap
     def test_local_origins_need_a_trusted_repository(self):
@@ -1520,6 +1527,43 @@ class LifecycleTest(HelperTest):
         helper.send_signal(signal.SIGTERM)
         self.assertEqual(helper.wait(5), 128 + signal.SIGTERM)
         self.assertFalse(marker.exists())
+
+    def test_a_held_lock_answers_busy_and_starts_nothing(self):
+        # Another fetch, push or pull holds sync.lock (flock, as the helper's
+        # own lock): the panel shows a busy reply as a title, not an error.
+        cache = self.root / "cache/foamy-github"
+        cache.mkdir(parents=True)
+        fd = os.open(cache / "sync.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        repo = self.init_repo(self.root / "repo")
+        folders = [{"path": str(repo), "depth": 0}]
+        busy = (0, {"ok": False, "busy": True, "message": "Repository synchronization is already running"})
+        self.assertEqual(self.fetch(folders), busy)
+        self.assertEqual(self.action("push", repo, folders), busy)
+        self.assertEqual(self.action("pull", repo, folders), busy)
+        self.assertEqual(sorted(path.name for path in cache.iterdir()), ["sync.lock"])
+
+    def test_failed_fetch_keeps_the_last_success(self):
+        # A failed fetch records the attempt and its failures but keeps the
+        # time of the last full success; the state file is replaced whole.
+        cache = self.root / "cache/foamy-github"
+        cache.mkdir(parents=True)
+        state = cache / "sync-state.json"
+        state.write_text(json.dumps({"lastAttempt": 1, "lastSuccess": 12345, "mode": "fetch", "failures": []}))
+        self.without_bwrap()  # the fetch is refused: a failure without any network
+        repo = self.init_repo(self.root / "repo")
+        self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=repo)
+        code, payload = self.fetch([{"path": str(repo), "depth": 0}])
+        self.assertEqual(code, 1, payload)
+        self.assertFalse(payload["ok"])
+        saved = json.loads(state.read_text())
+        self.assertEqual(saved["lastSuccess"], 12345)
+        self.assertGreater(saved["lastAttempt"], 1)
+        self.assertEqual([failure["path"] for failure in saved["failures"]], [str(repo)])
+        self.assertEqual(oct(stat.S_IMODE(state.stat().st_mode)), "0o600", "the state file is private")
+        # No temporary file and no syncing marker are left behind.
+        self.assertEqual(sorted(path.name for path in cache.iterdir()), ["sync-state.json", "sync.lock"])
 
 
 class PerRepositoryTrustTest(HelperTest):
