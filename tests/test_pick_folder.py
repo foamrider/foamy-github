@@ -4,7 +4,14 @@ reads (Model.folderPickReply), on a bus the test owns or on none.
 Black-box (see blackbox.py). The helper never sees the caller's session bus:
 every call sets or removes DBUS_SESSION_BUS_ADDRESS itself and runs with the
 test's own XDG_RUNTIME_DIR. The private dbus-daemon has no service
-directory, so nothing can be started on it, and no portal answers."""
+directory, so nothing can be started on it, and no portal answers.
+
+Without an address and without XDG_RUNTIME_DIR the helper falls back to
+/run/user/<uid>/bus, the desktop's bus. So that a slip in the helper's
+lookup cannot open a real file chooser, every call runs under bubblewrap
+with an empty /run/user when bubblewrap works. Without bubblewrap (the CI
+runner, which has no desktop session) that fallback is the one path left
+to a real bus."""
 
 import json
 import os
@@ -15,11 +22,13 @@ import tempfile
 import time
 import unittest
 
-from blackbox import SYSTEM_PATH, HelperTest
+from blackbox import BWRAP, SYSTEM_PATH, HelperTest, command
 
 DBUS_DAEMON = shutil.which("dbus-daemon", path=SYSTEM_PATH)
 # A unix socket path must fit in sun_path (108 bytes with its terminator).
 SOCKET_PATH_MAX = 100
+# Hides the desktop's bus at /run/user/<uid>/bus from the helper.
+HIDE_USER_RUNTIME = ["bwrap", "--dev-bind", "/", "/", "--tmpfs", "/run/user", "--"] if BWRAP else []
 
 
 class PickFolderTest(HelperTest):
@@ -38,7 +47,13 @@ class PickFolderTest(HelperTest):
             env["XDG_RUNTIME_DIR"].startswith(self.owned),
             f"pick-folder would look for the bus in {env['XDG_RUNTIME_DIR']}",
         )
-        result = self.run_helper("pick-folder", *args, env=env, timeout=30)
+        # The test's own bus must stay visible under the empty /run/user.
+        self.assertFalse(
+            HIDE_USER_RUNTIME and self.owned.startswith("/run/user/"), f"{self.owned} is under the hidden /run/user"
+        )
+        result = subprocess.run(
+            [*HIDE_USER_RUNTIME, *command("pick-folder", *args)], capture_output=True, env=env, timeout=30
+        )
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 1, result)
         return result.returncode, json.loads(lines[0])
