@@ -96,9 +96,7 @@ class RepositoryFoldersTest(HelperTest):
         )
         self.assertEqual(payload["folders"], [{"path": "/tmp/foamy-github-absent", "depth": 3}])
         # The panel checks the trimmed path but passes the stored text; the helper strips it.
-        _code, payload = self.fetch(
-            '[" /tmp/foamy-github-absent ", {"path": "/tmp/foamy-github-absent", "depth": 4}]'
-        )
+        _code, payload = self.fetch('[" /tmp/foamy-github-absent ", {"path": "/tmp/foamy-github-absent", "depth": 4}]')
         self.assertEqual(payload["folders"], [{"path": "/tmp/foamy-github-absent", "depth": 4}])
 
     def test_actions_reject_repository_outside_configured_folders(self):

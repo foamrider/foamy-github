@@ -271,16 +271,18 @@ else:
 
 for host in harness.available_hosts(what="runtime-panel"):
     for mode in ("true", "false"):  # inotifyEnabled: live monitoring, then timed polling
-        run = harness.Run(
-            host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-"
-        )
+        run = harness.Run(host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-")
         # The folder chooser must never reach the desktop's bus.
         dead = f"unix:path={run.base}/no-session-bus"
         if run.env["DBUS_SESSION_BUS_ADDRESS"] != dead:
-            sys.exit(f"runtime-panel: the run's session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']}, not the harness's")
+            sys.exit(
+                f"runtime-panel: the run's session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']}, not the harness's"
+            )
         run.start_buses()
         expected = f"unix:path={run.sockets / 'bus'}" if DBUS_DAEMON else dead
-        if run.env["DBUS_SESSION_BUS_ADDRESS"] != expected or not run.env["XDG_RUNTIME_DIR"].startswith(str(run.sockets)):
+        if run.env["DBUS_SESSION_BUS_ADDRESS"] != expected or not run.env["XDG_RUNTIME_DIR"].startswith(
+            str(run.sockets)
+        ):
             run.stop()
             sys.exit(
                 f"runtime-panel: the session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']} with XDG_RUNTIME_DIR "
