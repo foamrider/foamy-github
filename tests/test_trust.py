@@ -39,11 +39,18 @@ def elf_interpreter(path):
 class Case(HelperTest):
     def setUp(self):
         super().setUp()
-        self.marker = self.root / "pwned"
         self.path = self.root / "repo"
+        # In the Git directory: inside the pinned namespace only that is
+        # writable, so a hostile command that runs leaves the marker in every
+        # sandbox mode (a marker on the read-only root could never appear).
+        self.marker = self.path / ".git/pwned"
         self.init_repo(self.path)
-        self.evil = f"touch {self.marker}"
         self._armed = []
+
+    @property
+    def evil(self):
+        """A command that drops the marker (follows a test's own marker)."""
+        return f"touch {self.marker}"
 
     def repo_git(self, *args, cwd=None):
         return self.git(*args, cwd=cwd or self.path)
@@ -686,6 +693,7 @@ class TrustModelTest(Case):
         trust = self.trust(self.path)
         moved = self.root / "moved-worktree"
         os.rename(self.path, moved)
+        self.marker = moved / ".git/pwned"  # the Git directory the pin binds
         self.path.mkdir()
         (self.path / ".git").write_text(f"gitdir: {moved / '.git'}\n")
         self.repo_git("config", "core.fsmonitor", self.evil, cwd=moved)  # trusted config, wrong worktree
@@ -1041,10 +1049,12 @@ class TrustModelTest(Case):
     @needs_bwrap
     def test_trusted_repository_swapped_after_the_check_runs_nothing(self):
         # Codex security: trust was checked on the path, then Git reopened it.
-        hostile_marker = self.root / "swapped.ran"
+        # The hostile command writes below the path's .git: in the namespace
+        # that is the bound (writable) Git directory of the pinned original,
+        # on the host the swapped-in repository's own.
         trust = self.trust(self.path)
         hostile = self.init_repo(self.root / "hostile", commit=False)
-        self.repo_git("config", "core.fsmonitor", f"touch {hostile_marker}", cwd=hostile)
+        self.repo_git("config", "core.fsmonitor", f"touch {self.path / '.git/swapped.ran'}", cwd=hostile)
 
         def swap():  # after the pin, before its first Git command
             os.rename(self.path, self.root / "original")
@@ -1054,7 +1064,8 @@ class TrustModelTest(Case):
         self.on_git(swap)
         self.status_row(trusted=trust)
         self.assertTrue((self.root / "swapped").exists(), "the swap happened mid-check")
-        self.assertFalse(hostile_marker.exists(), "the swapped-in repository ran its config with trust")
+        for marker in (self.path / ".git/swapped.ran", self.root / "original/.git/swapped.ran"):
+            self.assertFalse(marker.exists(), f"the swapped-in repository ran its config with trust: {marker}")
 
     def test_untrusted_fetch_writes_only_into_the_inspected_repository(self):
         # Codex security: a rename/symlink swap during the fetch redirected the
@@ -1514,7 +1525,7 @@ class PerRepositoryTrustTest(HelperTest):
         self.assertFalse(self.row(big)["usesLfs"])
 
     def test_detection_runs_no_repository_code_and_survives_hostile_files(self):
-        marker = self.root / "pwned"
+        marker = self.root / "hostile/.git/pwned"  # writable in the namespace, too
         repo, run = self.make_repo(
             "hostile", {".gitattributes": "* filter=lfs\n", ".lfsconfig": "[lfs]\n\textension = x\n"}
         )
@@ -1567,7 +1578,7 @@ class PerRepositoryTrustTest(HelperTest):
     def test_repository_replaced_at_the_same_path_is_untrusted(self):
         # Codex security: trust must not pass to a different repository that
         # later sits at the trusted path (deleted and re-created, or swapped).
-        marker = self.root / "replacement.ran"
+        marker = self.root / "trusted/.git/replacement.ran"  # the replacement's Git directory
         repo, _run = self.make_repo("trusted", {".gitattributes": "* filter=lfs\n"})
         trust = self.trust(repo)
         self.assertIs(self.row(repo, trusted=trust)["trusted"], True)
@@ -1589,7 +1600,7 @@ class PerRepositoryTrustTest(HelperTest):
         # replacement, so an identity without one (or an older single-directory
         # identity) trusts nothing.
         repo, run = self.make_repo("nobtime", {".gitattributes": "* filter=lfs\n"})
-        marker = self.root / "nobtime.ran"
+        marker = repo / ".git/nobtime.ran"  # writable in the namespace
         run("config", "core.fsmonitor", f"touch {marker}")
         identity = self.identity(repo)
         self.assertRegex(identity, r"^\d+:\d+:[1-9]\d*(\|\d+:\d+:[1-9]\d*){1,2}$")
