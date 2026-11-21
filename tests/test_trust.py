@@ -249,23 +249,30 @@ class TrustModelTest(Case):
         # plain status, through whatever transport the repository allows.
         self.repo_git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
         self.repo_git("config", "remote.origin.promisor", "true")
+        # Subsections are case sensitive: protocol.Ext.allow is not the
+        # protocol.ext.allow Git reads, and closing it must not skip that one.
+        self.repo_git("config", "protocol.Ext.allow", "never")
         self.repo_git("config", "protocol.ext.allow", "always")
         tree = self.repo_git("rev-parse", "HEAD^{tree}").strip()
         (self.path / ".git/objects" / tree[:2] / tree[2:]).unlink()
         # The variants run Git through a wrapper (so without the exec
-        # restriction): older Git ignores GIT_NO_LAZY_FETCH; with it alone the
-        # transports stay as the repository says.
+        # restriction) and without bubblewrap (so on the repository's own
+        # config): older Git ignores GIT_NO_LAZY_FETCH, so only the transport
+        # overrides stop it; with GIT_NO_LAZY_FETCH alone the transports stay
+        # as the repository says.
         for name, wrapper in (
             ("full", None),
             ("older Git", {"drop_env": ["GIT_NO_LAZY_FETCH"]}),
             ("GIT_NO_LAZY_FETCH only", {"drop_config": ["protocol."]}),
         ):
             with self.subTest(policy=name):
+                self.marker.unlink(missing_ok=True)  # each variant reports only itself
                 fake = self.root / "fakebin/git"
                 if fake.exists():
                     fake.unlink()
                 if wrapper:
                     self.git_wrapper(**wrapper)
+                    self.without_bwrap()
                 self.status_row()
                 self.watch_plan()
                 self.assertNotRun()
@@ -286,8 +293,14 @@ class TrustModelTest(Case):
         (self.path / ".gitattributes").write_text("*.txt filter=a=b\n")
         self.repo_git("config", "filter.a=b.clean", str(self.script("clean", "cat")))
         self.dirty_tracked_file()
-        self.assertTrue(self.status_row()["complete"])
-        self.assertNotRun()
+        for sandbox in (True, False):  # every layer, then the per-name overrides alone
+            with self.subTest(sandbox=sandbox):
+                if not sandbox:
+                    self.git_wrapper()
+                    self.without_bwrap()
+                row = self.status_row()
+                self.assertTrue(row["complete"], row["error"])
+                self.assertNotRun()
 
     def test_filter_name_empty_is_neutralised(self):
         # Codex P1: `[filter ""]` selected by `filter=` was skipped (empty name).
@@ -295,10 +308,11 @@ class TrustModelTest(Case):
         self.repo_git("config", "filter..clean", f"{self.script('clean')} %f; cat")
         self.repo_git("config", "filter..required", "true")
         self.dirty_tracked_file()
-        for sandbox in (True, False):  # with Landlock and in the fallback
+        for sandbox in (True, False):  # every layer, then the per-name overrides alone
             with self.subTest(sandbox=sandbox):
                 if not sandbox:
                     self.git_wrapper()
+                    self.without_bwrap()
                 row = self.status_row()
                 self.assertTrue(row["complete"], row["error"])
                 self.assertNotRun()
@@ -336,11 +350,19 @@ class TrustModelTest(Case):
 
     def test_global_filter_selected_by_repository_attributes_is_off(self):
         # A trusted global filter (e.g. Git LFS) can be steered by repository config.
+        # The user's config is read in the namespace too, so only the overrides
+        # and the exec restriction stop it; the second run has no exec
+        # restriction (as under qemu or without Landlock).
         self.global_config(f'[filter "globalf"]\n\tclean = {self.script("global-clean", "cat")}\n\trequired = true\n')
         (self.path / ".gitattributes").write_text("*.txt filter=globalf\n")
         self.dirty_tracked_file()
-        self.assertTrue(self.status_row()["complete"])
-        self.assertNotRun()
+        for exec_restricted in (True, False):
+            with self.subTest(exec_restricted=exec_restricted):
+                if not exec_restricted:
+                    self.git_wrapper()
+                row = self.status_row()
+                self.assertTrue(row["complete"], row["error"])
+                self.assertNotRun()
 
     @unittest.skipUnless(shutil.which("git-lfs"), "git-lfs is not installed")
     def test_lfs_extension_in_repository_config_does_not_run(self):
@@ -581,18 +603,6 @@ class TrustModelTest(Case):
                 for key in config:
                     self.repo_git("config", "--unset-all", key)
         self.assertFalse(self.marker.exists(), self.marker.read_text() if self.marker.exists() else "")
-
-    def test_fetch_ignores_ext_allowed_under_another_subsection_case(self):
-        # Subsections are case sensitive: protocol.Ext.allow is not the
-        # protocol.ext.allow Git reads, and must not hide it.
-        self.repo_git("remote", "add", "origin", f"ext::sh -c {self.evil.replace(' ', '% ')}")
-        self.repo_git("config", "protocol.Ext.allow", "never")
-        self.repo_git("config", "protocol.ext.allow", "always")
-        self.assertIn(
-            "protocol.Ext.allow=never\nprotocol.ext.allow=always", self.repo_git("config", "--local", "--list")
-        )
-        self.fetched()
-        self.assertNotRun()
 
     @needs_bwrap
     def test_fetch_ignores_alternate_refs_command(self):
