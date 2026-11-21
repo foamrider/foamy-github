@@ -41,6 +41,8 @@ STDERR_BYTES = 16 * 1024 * 1024
 # Peak memory growth allowed while the watchers' stderr is consumed (kB).
 GROWTH_LIMIT_KB = 16 * 1024
 HEAD = "FAKE-WATCH-HEAD run "
+# The warning line's text with refreshIntervalSec 0, before the detail.
+WARNING = "Live monitoring unavailable; automatic local refresh is disabled. "
 
 SHELL = r"""
 import QtQuick
@@ -52,6 +54,7 @@ ShellRoot {
   id: shell
   property var panel: null
   property int checks: 0
+  readonly property string warning: "@WARNING@"
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
   function finish() { console.log("FOAMY CHECKS " + checks); console.log("FOAMY DONE"); Qt.quit() }
 
@@ -83,15 +86,16 @@ ShellRoot {
       // Wait for the status the failure starts too (one more helper start,
       // so the shell's peak memory is recorded after the stderr was read).
       if (!service.watchFailed || service.refreshing) return
-      var kept = service.watchStderr
-      var detail = service.watchDetail
       check(!service.helperUnavailable, "exit 3 is a failure, not an unavailable helper")
-      check(typeof kept === "string" && kept.length > 0 && kept.length <= service.watchStderrLimit
-        && service.watchStderrLimit === 4096, "only the first 4096 characters kept: " + (typeof kept === "string" ? kept.length : typeof kept))
-      var head = /^@HEAD@([0-9]+)\n/.exec(typeof kept === "string" ? kept : "")
-      check(head !== null, "kept from the watcher's first bytes: " + JSON.stringify(String(kept).slice(0, 40)))
+      // What the panel's warning line shows: the failure, then the head of
+      // the watcher's stderr.
+      var shown = service.lastError
+      var warned = shown.indexOf(shell.warning) === 0
+      check(warned, "the warning names the failure: " + JSON.stringify(shown.slice(0, 80)))
+      var detail = warned ? shown.slice(shell.warning.length) : ""
       check(detail.length > 0 && detail.length <= 240, "detail shown, at most 240 characters: " + detail.length)
-      check(head !== null && detail.indexOf(head[0]) === 0, "detail starts with the watcher's first bytes: " + JSON.stringify(detail.slice(0, 40)))
+      var head = /^@HEAD@([0-9]+)\n/.exec(detail)
+      check(head !== null, "detail starts with the watcher's first bytes: " + JSON.stringify(detail.slice(0, 40)))
       var run = head ? Number(head[1]) : -1
       if (phase === 0) {
         firstRun = run
@@ -107,7 +111,7 @@ ShellRoot {
   }
   Timer { interval: 40000; running: true; onTriggered: { check(false, "timed out"); shell.finish() } }
 }
-""".replace("@HEAD@", HEAD)
+""".replace("@HEAD@", HEAD).replace("@WARNING@", WARNING)
 
 
 def fake_plugin(work):
