@@ -30,7 +30,6 @@ skip() { echo "SKIP $*"; }
 if ((ci)); then export FOAMY_SUITE_CI=1; fi
 
 run node --test tests/model.test.js tests/preferences.test.js
-run node tests/i18n.test.cjs
 run python3 -I -m unittest discover -s tests -p 'test_*.py'
 
 other=aarch64

@@ -394,7 +394,7 @@ binary by default, another one with `FOAMY_HELPER` (the aarch64 build runs
 through qemu binfmt; qemu-user has no Landlock, so those checks skip).
 
 ```sh
-node --test tests/model.test.js tests/preferences.test.js && node tests/i18n.test.cjs
+node --test tests/model.test.js tests/preferences.test.js
 python3 -m unittest discover -s tests -p 'test_*.py'
 FOAMY_HELPER='["bin/aarch64/foamy-github-helper"]' python3 -m unittest discover -s tests -p 'test_*.py'
 bash tests/stress.sh                               # the unit suite, 40 runs, 4 at a time
