@@ -501,7 +501,6 @@ class TrustModelTest(Case):
     def test_trusted_config_keeps_the_repository_behaviour(self):
         # Trusted runs execute the repository's config, inside the pinned
         # namespace where only its Git directory is writable.
-        self.marker = self.path / ".git/pwned"
         self.repo_git("config", "core.fsmonitor", f"touch {self.marker}")
         self.status_row(trust_all=True)
         self.assertTrue(self.marker.exists())
@@ -590,7 +589,6 @@ class TrustModelTest(Case):
         self.assertIn("global-helper", calls)
         self.assertNotIn("local-helper", calls)
         self.assertNotIn("askpass", calls)
-        self.assertFalse((self.path / "loot").exists())
 
     @needs_bwrap
     def test_fetch_ignores_git_proxy_transport_helpers_and_upload_pack(self):
@@ -638,12 +636,15 @@ class TrustModelTest(Case):
         port, seen = self.recording_server(cookie=True)
         self.repo_git("remote", "add", "origin", f"http://127.0.0.1:{port}/repo.git")
         self.repo_git("config", "http.extraHeader", "X-Before: 1")
+        # Git saves no cookie when a fetch fails, but it sends the cookies of
+        # a file it reads.
+        cookies = self.root / "cookies.txt"
+        cookies.write_text("127.0.0.1\tFALSE\t/\tFALSE\t0\tstored\tsecret\n")
 
         def late_edit():
             for key, value in (
                 ("http.extraHeader", "X-After: 1"),
-                ("http.cookieFile", str(self.path / "loot")),
-                ("http.saveCookies", "true"),
+                ("http.cookieFile", str(cookies)),
                 ("http.curloptResolve", f"127.0.0.1:{port}:192.0.2.1"),
                 ("remote.origin.proxy", "http://192.0.2.1:3128"),
             ):
@@ -652,8 +653,7 @@ class TrustModelTest(Case):
         self.on_git(late_edit, after=self.SNAPSHOT)
         self.assertFalse(self.fetched()["ok"])
         self.assertTrue(seen, "the fetch didn't reach the real server (resolve/proxy settings applied)")
-        self.assertFalse([h for h in seen if h.startswith(("X-Before", "X-After"))], seen)
-        self.assertFalse((self.path / "loot").exists())
+        self.assertFalse([h for h in seen if h.startswith(("X-Before", "X-After", "Cookie"))], seen)
 
     @needs_bwrap
     def test_bare_boolean_in_user_config_stays_true(self):
@@ -799,7 +799,9 @@ class TrustModelTest(Case):
         result = self.fetched()
         # The swap lands while the first Git command after the snapshot waits
         # in its namespace: the path it was given now names the swapped-in
-        # .git file, and Git refuses it before any fetch starts.
+        # .git file, and Git refuses it before any fetch starts. The text is
+        # Git's own; a Git update or a helper that detects the swap itself
+        # changes it.
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["attempts"], 0, result)
         self.assertIn("does not point to a valid repository", result["message"], result)
@@ -1132,7 +1134,9 @@ class TrustModelTest(Case):
         self.on_git(swap)
         result = self.fetched()
         # The path is a symlink by the next Git command: bubblewrap refuses to
-        # mount the pinned worktree there, so nothing runs after the swap.
+        # mount the pinned worktree there, so nothing runs after the swap. The
+        # text is bubblewrap's own; a bubblewrap update or a helper that
+        # detects the swap itself changes it.
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["attempts"], 0, result)
         self.assertIn("Can't mount on symlink destination", result["message"], result)
@@ -1406,7 +1410,6 @@ class TrustModelTest(Case):
         # accept-new could append to ~/.bashrc. Untrusted fetches ignore it.
         bashrc = self.root / ".bashrc"
         bashrc.write_text("# precious\n")
-        self.marker = self.path / ".git/pwned"  # writable inside the pinned namespace
         self.ssh_recorder('echo ssh "$@"')  # records how ssh is called
         self.repo_git("remote", "add", "origin", "ssh://127.0.0.1:1/repo.git")
         self.repo_git(
@@ -1551,6 +1554,9 @@ class LifecycleTest(HelperTest):
         cache.mkdir(parents=True)
         state = cache / "sync-state.json"
         state.write_text(json.dumps({"lastAttempt": 1, "lastSuccess": 12345, "mode": "fetch", "failures": []}))
+        # Readable by others, whatever the umask: an in-place write would keep it so.
+        state.chmod(0o644)
+        before = state.stat().st_ino
         self.without_bwrap()  # the fetch is refused: a failure without any network
         repo = self.init_repo(self.root / "repo")
         self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=repo)
@@ -1562,6 +1568,7 @@ class LifecycleTest(HelperTest):
         self.assertGreater(saved["lastAttempt"], 1)
         self.assertEqual([failure["path"] for failure in saved["failures"]], [str(repo)])
         self.assertEqual(oct(stat.S_IMODE(state.stat().st_mode)), "0o600", "the state file is private")
+        self.assertNotEqual(state.stat().st_ino, before, "the state file is replaced, not written in place")
         # No temporary file and no syncing marker are left behind.
         self.assertEqual(sorted(path.name for path in cache.iterdir()), ["sync-state.json", "sync.lock"])
 
