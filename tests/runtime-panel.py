@@ -269,24 +269,36 @@ else:
         "@PICK_ERROR@", "The folder browser needs a session bus, and there is none. Enter a path instead."
     )
 
+
+def private_bus(run):
+    """Whether the run's session bus and runtime directory are its own (not
+    the caller's), and the bus socket's path."""
+    address = run.env["DBUS_SESSION_BUS_ADDRESS"]
+    runtime = Path(run.env["XDG_RUNTIME_DIR"])
+    path = Path(address.removeprefix("unix:path=")) if address.startswith("unix:path=") else None
+    return (
+        address != os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+        and path is not None
+        and any(path.is_relative_to(root) for root in (run.base, run.sockets))
+        and runtime.is_relative_to(run.sockets)
+    ), path
+
+
 for host in harness.available_hosts(what="runtime-panel"):
     for mode in ("true", "false"):  # inotifyEnabled: live monitoring, then timed polling
         run = harness.Run(host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-")
-        # The folder chooser must never reach the desktop's bus.
-        dead = f"unix:path={run.base}/no-session-bus"
-        if run.env["DBUS_SESSION_BUS_ADDRESS"] != dead:
-            sys.exit(
-                f"runtime-panel: the run's session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']}, not the harness's"
-            )
+        # The folder chooser must never reach the desktop's bus: the address
+        # and the runtime directory are the run's own, before and after its
+        # bus starts.
+        if not private_bus(run)[0]:
+            sys.exit(f"runtime-panel: the run's session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']}, not its own")
         run.start_buses()
-        expected = f"unix:path={run.sockets / 'bus'}" if DBUS_DAEMON else dead
-        if run.env["DBUS_SESSION_BUS_ADDRESS"] != expected or not run.env["XDG_RUNTIME_DIR"].startswith(
-            str(run.sockets)
-        ):
+        private, socket = private_bus(run)
+        if not private or (DBUS_DAEMON and not socket.is_socket()):
             run.stop()
             sys.exit(
                 f"runtime-panel: the session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']} with XDG_RUNTIME_DIR "
-                f"{run.env['XDG_RUNTIME_DIR']}, not the run's private bus {expected}"
+                f"{run.env['XDG_RUNTIME_DIR']}, not a running bus of the run's own"
             )
         try:
             run.start()
