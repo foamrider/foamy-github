@@ -79,12 +79,16 @@ ShellRoot {
     wait.waitFor(function() { return service.lastChecked > 0 && !service.refreshing }, 15000, stepFolders, "the first scan")
   }
 
+  property double checkedAtStepFolders: 0
+  function legacyKept() {
+    return savedKeys().trustRepositoryConfig === undefined && savedKeys().trustedRepositories === undefined
+  }
   function stepFolders() {
+    checkedAtStepFolders = service.lastChecked
     check(panel.pageError === foldersText, "the invalid folder list is named: " + panel.pageError)
     check(service.folderArguments === "[]", "an invalid folder list checks no folders")
     // A first complete scan arrived, so the legacy switch would migrate now.
-    check(savedKeys().trustRepositoryConfig === undefined && savedKeys().trustedRepositories === undefined,
-      "the legacy trust switch is kept while the trusted list is invalid")
+    check(legacyKept(), "the legacy trust switch is kept while the trusted list is invalid")
     panel.openSettings()
     wait.waitFor(function() { return panel.popup.bodyItem !== null && panel.editingSettings }, 10000, function() {
       var add = collect(panel.popup.bodyItem, function(item) { return item.iconName === "plus" && item.actionEnabled !== undefined })
@@ -95,7 +99,12 @@ ShellRoot {
       check(panel.pageError === foldersText, "a folder edit says why it wasn't saved: " + panel.pageError)
       panel.settingsError = ""
       panel.settings = settingsWith([], [{ path: "relative", identity: "x" }])
-      wait.waitFor(function() { return panel.pageError === trustText }, 10000, stepTrust, "the invalid trusted list is named")
+      // A complete scan while the trusted list is invalid, after the first
+      // one: the migration it would start must still keep the switch.
+      service.refresh()
+      wait.waitFor(function() {
+        return panel.pageError === trustText && service.lastChecked > checkedAtStepFolders && !service.refreshing
+      }, 10000, stepTrust, "the invalid trusted list is named after a new scan")
     }, "settings open")
   }
 
@@ -107,6 +116,7 @@ ShellRoot {
       "no trusted list is saved over the invalid one")
     check(panel.settingsError === trustText, "a trust edit says why it wasn't saved: " + panel.settingsError)
     panel.settingsError = ""
+    check(legacyKept(), "the legacy trust switch is still kept after a later scan")
     panel.settings = settingsWith([], [])
     // Fixed: no message, and the legacy switch migrates after the next scan.
     service.refresh()
