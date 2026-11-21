@@ -4,9 +4,10 @@ offscreen Quickshell (foamy-kit's harness) over local Git repositories.
 
   python3 tests/runtime-pullall.py
 
-Four clones of one local remote are behind it: alpha, beta, delta and
-gamma, which also has local changes; beta's origin points at a path that
-does not exist. The bar shows the counts the helper reports. The keys walk
+Four clones of one local remote are two commits behind it: alpha, beta,
+delta and gamma, which also has two changed files; beta's origin points at
+a path that does not exist. The bar shows how many repositories are behind
+and changed, which differs from the commit and file counts. The keys walk
 the rows, Pull all, Settings and Refresh, and Enter on Pull all pulls the
 three clean clones one after the other: beta fails, the queue goes on, the
 count and beta's error are reported, and gamma is left alone. Enter on
@@ -123,7 +124,8 @@ ShellRoot {
       if (phase === 0) {
         if (service.repos.length < 4 || service.busy || view === null) return
         check(service.pullableRepos.length === 3, "three clean clones can pull: " + service.pullableRepos.length)
-        // Four behind, one changed, and the remote state unknown: nothing was fetched.
+        // Four repositories behind (eight commits), one changed (two files),
+        // and the remote state unknown: nothing was fetched.
         check(JSON.stringify(barCounts()) === JSON.stringify(["4↓", "1*", "?"]), "the bar's counts: " + JSON.stringify(barCounts()))
         var unknown = unknownIcons(view).concat(unknownIcons(panel))
         check(unknown.length === 0, "every icon is one the kit draws: " + JSON.stringify(unknown))
@@ -138,8 +140,8 @@ ShellRoot {
         if (shell.order.length < 7) { view.moveRequested(0, 1); return }
         check(JSON.stringify(shell.order) === JSON.stringify(["alpha", "beta", "delta", "gamma", "pull all", "settings", "refresh"]),
           "the cursor order: " + JSON.stringify(shell.order))
-        check(JSON.stringify(shell.metas) === JSON.stringify({ alpha: "main · ↓1 commit", beta: "main · ↓1 commit",
-          delta: "main · ↓1 commit", gamma: "main · ↓1 commit · 1 changed" }), "each row's status line: " + JSON.stringify(shell.metas))
+        check(JSON.stringify(shell.metas) === JSON.stringify({ alpha: "main · ↓2 commits", beta: "main · ↓2 commits",
+          delta: "main · ↓2 commits", gamma: "main · ↓2 commits · 2 changed" }), "each row's status line: " + JSON.stringify(shell.metas))
         view.moveRequested(0, -1)
         view.moveRequested(0, -1)
         phase = 2
@@ -157,6 +159,7 @@ ShellRoot {
           "only beta's failure is reported: " + shell.pullErrors)
         check(service.pullableRepos.length === 1 && service.pullableRepos[0].label === "beta", "beta is left to pull")
         check(JSON.stringify(Object.keys(rows(view)).sort()) === JSON.stringify(["beta", "gamma"]), "the clean clones leave the list: " + Object.keys(rows(view)))
+        // Two repositories behind, four commits.
         check(barCounts().indexOf("2↓") >= 0, "the bar counts two behind: " + JSON.stringify(barCounts()))
         for (var up = 0; up < 8; up++) view.moveRequested(0, -1)
         view.moveRequested(0, 1)
@@ -219,14 +222,17 @@ git(seed, "push", "-q", "-u", "origin", "main")
 clones = [ROOT / name for name in ("alpha", "beta", "delta", "gamma")]
 for clone in clones:
     git(ROOT, "clone", "-q", str(REMOTE), str(clone))
-(seed / "a.txt").write_text("two\n")
-git(seed, "commit", "-q", "-am", "two")
+# Two commits, so the commit counts differ from the repository counts.
+for text in ("two", "three"):
+    (seed / "a.txt").write_text(text + "\n")
+    git(seed, "commit", "-q", "-am", text)
 git(seed, "push", "-q")
 for clone in clones:
     git(clone, "fetch", "-q")
 # beta's pull fails: its origin is gone.
 git(clones[1], "remote", "set-url", "origin", str(ROOT.parent / (ROOT.name + "-missing-origin.git")))
 (clones[3] / "local.txt").write_text("uncommitted\n")
+(clones[3] / "other.txt").write_text("uncommitted\n")
 remote_head = head(seed)
 # Stands in for uwsm-app, so opening a repository never starts a terminal.
 FAKE_UWSM = """#!/bin/sh
@@ -237,7 +243,7 @@ status = 0
 for host in harness.available_hosts(what="runtime-pullall"):
     for clone in clones:  # each host starts behind again
         if head(clone) == remote_head:
-            git(clone, "reset", "-q", "--hard", "HEAD~1")
+            git(clone, "reset", "-q", "--hard", "HEAD~2")
     run = harness.Run(
         host,
         SHELL.replace("@ROOT@", str(ROOT)),

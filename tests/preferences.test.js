@@ -45,6 +45,7 @@ test('repository metadata and timestamps use the selected language and keep Engl
   const ago = seconds => Model.relativeTime(now / 1000 - seconds, now)
   assert.equal(Model.relativeTime(0, now), 'Never')
   assert.equal(ago(44), 'Just now')
+  assert.notEqual(ago(45), 'Just now')
   assert.equal(ago(60), '1m ago')
   assert.equal(ago(59 * 60 + 59), '59m ago')
   assert.equal(ago(60 * 60), '1h ago')
