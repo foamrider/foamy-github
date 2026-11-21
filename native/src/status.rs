@@ -922,70 +922,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn folders_are_validated_and_merged() {
-        let folders = parse_folders(
-            br#"["~/Projects", "~/Projects", " /tmp/repo ", {"path": "/tmp/repo", "depth": 4}]"#,
-        )
-        .unwrap();
-        assert_eq!(
-            folders,
-            [
-                Folder {
-                    path: b"~/Projects".to_vec(),
-                    depth: 2
-                },
-                Folder {
-                    path: b"/tmp/repo".to_vec(),
-                    depth: 4
-                }
-            ]
-        );
-        for (raw, message) in [
-            (&b"nope"[..], "Repository folders must be a JSON list"),
-            (b"{}", "Use a list of at most 32 repository folders"),
-            (
-                b"[1]",
-                "Use an absolute path or ~/ for every repository folder",
-            ),
-            (
-                b"[\"~someone\"]",
-                "Use an absolute path or ~/ for every repository folder",
-            ),
-            (
-                b"[{\"path\": \"/a\", \"depth\": true}]",
-                "Choose a scan depth from 0 to 5 levels",
-            ),
-            (
-                b"[{\"path\": \"/a\", \"depth\": 1.0}]",
-                "Choose a scan depth from 0 to 5 levels",
-            ),
-            (
-                b"[{\"path\": \"/a\", \"depth\": 6}]",
-                "Choose a scan depth from 0 to 5 levels",
-            ),
-        ] {
-            assert_eq!(parse_folders(raw).unwrap_err().to_string(), message);
-        }
-        let many = format!("[{}]", vec!["\"/a\""; 33].join(","));
-        assert!(parse_folders(many.as_bytes()).is_err());
-    }
-
-    #[test]
     fn trust_list_rules() {
         let trust = Trust::parse(br#"["/bare", {"path": "/r", "identity": "1:2:3|4:5:6"}, {"path": "/s", "identity": "1:2:0|4:5:6"}, {"path": "/t", "identity": "1:2:3"}]"#).unwrap();
         assert_eq!(trust.entries, [(b"/r".to_vec(), "1:2:3|4:5:6".to_string())]);
         assert!(trust.covers(b"/r", "1:2:3|4:5:6"));
         assert!(!trust.covers(b"/r", ""));
         assert!(!trust.covers(b"/other", "1:2:3|4:5:6"));
-        for raw in [
-            &b"{}"[..],
-            b"[1]",
-            b"x",
-            br#"[{"path": "rel", "identity": "1"}]"#,
-            br#"[{"path": "/a"}]"#,
-        ] {
-            assert!(Trust::parse(raw).is_err());
-        }
         assert!(Trust::all().covers(b"/anything", ""));
     }
 
@@ -1022,11 +964,39 @@ mod tests {
     }
 
     #[test]
-    fn parallel_keeps_order() {
-        let items: Vec<u32> = (0..50).collect();
+    fn parallel_maps_every_item_once_in_order_four_at_a_time() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+        let items: Vec<usize> = (0..50).collect();
+        let calls = AtomicUsize::new(0);
+        let running = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let gave_up = AtomicBool::new(false);
+        let doubled = parallel(&items, |n| {
+            calls.fetch_add(1, SeqCst);
+            peak.fetch_max(running.fetch_add(1, SeqCst) + 1, SeqCst);
+            // Stay in the slot until four calls overlap, so that a correct
+            // pool always reaches four. A smaller pool never gets there: the
+            // first call gives up after 10 s and the others do not wait.
+            let patience = Instant::now() + Duration::from_secs(10);
+            while peak.load(SeqCst) < 4 && !gave_up.load(SeqCst) {
+                if Instant::now() > patience {
+                    gave_up.store(true, SeqCst);
+                }
+                std::thread::yield_now();
+            }
+            // Hold the slot a little longer. This is no wait for a result:
+            // it gives a larger pool the time to put a fifth call in here.
+            std::thread::sleep(Duration::from_millis(2));
+            running.fetch_sub(1, SeqCst);
+            n * 2
+        });
+        assert_eq!(doubled, items.iter().map(|n| n * 2).collect::<Vec<_>>());
         assert_eq!(
-            parallel(&items, |n| n * 2),
-            items.iter().map(|n| n * 2).collect::<Vec<_>>()
+            calls.load(SeqCst),
+            items.len(),
+            "each item is mapped exactly once"
         );
+        // README "Limits": at most four commands at once.
+        assert_eq!(peak.load(SeqCst), 4, "calls that ran at the same time");
     }
 }

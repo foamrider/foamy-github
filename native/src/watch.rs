@@ -676,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_errors_name_the_directory() {
+    fn a_vanished_directory_is_skipped_and_too_many_watches_is_an_error() {
         let mut notify = Inotify::new().unwrap();
         let missing = BTreeSet::from([b"/nonexistent/foamy-github".to_vec()]);
         notify.reconcile(&missing).unwrap(); // ENOENT is skipped

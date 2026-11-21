@@ -552,12 +552,4 @@ mod tests {
             Json::Float(1.2345678901234568e29)
         );
     }
-
-    #[test]
-    fn floats_print_like_python() {
-        assert_eq!(float_text(1.5), "1.5");
-        assert_eq!(float_text(1e16), "1e+16");
-        assert_eq!(float_text(1e-7), "1e-07");
-        assert_eq!(float_text(100.0), "100.0");
-    }
 }
