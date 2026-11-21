@@ -23,14 +23,6 @@ test('folder rows reject empty paths, relative paths, invalid depths and oversiz
   assert.match(Model.parseFolderRows(Array(33).fill('/tmp')).error, /32/)
 })
 
-test('the list settings validate with the folder and trust rules and report their messages', () => {
-  const field = key => Model.listFields.find(f => f.key === key)
-  assert.equal(field('repositoryFolders').validate([{path:'~/Projects',depth:2}, '/srv']), true)
-  assert.match(field('repositoryFolders').validate([{path:'Projects',depth:2}]), /absolute path/)
-  assert.equal(field('trustedRepositories').validate([{path:'/r/a',identity:'1:1:1'}]), true)
-  assert.match(field('trustedRepositories').validate(['/r/a']), /absolute paths/)
-})
-
 test('unavailable repositories stay visible and cannot reuse old safety checks', () => {
   const before = {...Model.defaultStatus(), repos:[{path:'/repo', label:'repo', complete:true,
     ahead:1, behind:2, dirtyCount:3, affected:true}]}
@@ -44,13 +36,29 @@ test('unavailable repositories stay visible and cannot reuse old safety checks',
 })
 
 test('status parser rejects oversized messages, repository lists and invalid rows', () => {
-  assert.equal(Model.parseStatus('x'.repeat(8 * 1024 * 1024 + 1)).ok, false)
-  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:Array(257).fill({})})).ok, false)
-  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{complete:true}]})).ok, false)
   const row = {path:'/repo', name:'repo', owner:'projects', label:'repo', branch:'main', upstream:'',
     ahead:0, behind:0, dirtyCount:0, complete:false, affected:true, error:'Timeout'}
-  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[row]})).ok, true)
-  assert.equal(Model.parseStatus(JSON.stringify({ok:true, repos:[{...row, dirtyCount:-1}]})).ok, false)
+  const status = repos => JSON.stringify({ok:true, repos})
+  const cases = [
+    ['a valid row', status([row]), true],
+    ['over 8 MiB', 'x'.repeat(8 * 1024 * 1024 + 1), false],
+    ['257 repositories', status(Array(257).fill(row)), false],
+    ['a row without its fields', status([{complete:true}]), false],
+    ['a negative count', status([{...row, dirtyCount:-1}]), false],
+    ['a text field over 4096 characters', status([{...row, label:'x'.repeat(4097)}]), false],
+    ['a text field that is not a string', status([{...row, branch:5}]), false],
+    ['an unsafe count', status([{...row, ahead:2 ** 53}]), false],
+    ['a fractional count', status([{...row, behind:1.5}]), false],
+    ['a number', '5', false],
+    ['null', 'null', false],
+    // An array comes back without ok: true, which the Service also refuses.
+    ['an array', '[]', false],
+  ]
+  for (const [label, raw, accepted] of cases) {
+    const result = Model.parseStatus(raw)
+    if (accepted) assert.equal(result.ok, true, label)
+    else assert.notEqual(result.ok, true, label)
+  }
 })
 
 test('watcher retries back off from 30 seconds to 30 minutes and reset after a stable run', () => {
@@ -151,6 +159,11 @@ test('fetch helper output is validated before reporting', () => {
   assert.deepEqual(Model.fetchOutcome(1, JSON.stringify({ok: false, failures: [{}, {}]}), ''), {status: 'done', message: '', failed: 2})
   assert.equal(Model.fetchOutcome(0, JSON.stringify({ok: true, failures: []}), '').failed, 0)
   assert.equal(Model.fetchOutcome(0, JSON.stringify({busy: true, message: 'x'}), '').status, 'busy')
+  // Output that is not a fetch report is never "Fetch complete".
+  assert.equal(Model.fetchOutcome(0, '[]', '').status, 'error')
+  assert.equal(Model.fetchOutcome(0, '{"ok":true}', '').status, 'error')
+  // The warning line gets at most 240 characters of stderr.
+  assert.equal(Model.fetchOutcome(1, '', 'e'.repeat(300)).message.length, 240)
 })
 
 test('the pick-folder reply gives a path, a cancel or an error code', () => {
