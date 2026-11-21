@@ -70,10 +70,10 @@ class PickFolderTest(HelperTest):
                 code, reply = self.pick(bus=bus)
                 self.assertEqual((code, reply["ok"], reply["code"]), (1, False, "NO_SESSION_BUS"))
 
-    @unittest.skipUnless(DBUS_DAEMON, "needs dbus-daemon")
     def test_a_real_bus_without_a_portal_is_unavailable(self):
         # A real daemon accepts the client's authentication, Hello, AddMatch
         # and OpenFile; with no portal on the bus the reply is "unavailable".
+        self.assertIsNotNone(DBUS_DAEMON, "dbus-daemon is not in /usr/bin: install dbus, the test starts its own bus")
         runtime = Path(self.env["XDG_RUNTIME_DIR"])
         if len(os.fsencode(runtime / "bus")) > SOCKET_PATH_MAX:
             runtime = Path(tempfile.mkdtemp(prefix="foamy-github-bus-", dir="/tmp"))
