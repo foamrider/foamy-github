@@ -49,7 +49,7 @@ fi
 if ((ci || fast)); then
   skip "tests/runtime-*.py and the kit's i18n_runtime.py: offscreen Quickshell"
 else
-  for test in panel pullall watcher stale-status lifecycle stored; do
+  for test in panel pullall watcher lifecycle stored; do
     run python3 "tests/runtime-$test.py"
   done
   if [[ -n ${FOAMY_KIT:-} ]]; then

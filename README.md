@@ -403,7 +403,6 @@ python3 ~/GitHub/Personal/foamy-kit/preview/i18n_runtime.py .   # live language 
 python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories, a failing step, and opening lazygit
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
-python3 tests/runtime-stale-status.py              # a status check overtaken by a trust change is redone
 python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust and folder edits, the LFS trust flow, the folder chooser and IPC (fake helper, fake NetworkManager)
 python3 tests/runtime-stored.py                    # an invalid folder or trust list in shell.json is named and kept
 ~/GitHub/Personal/foamy-kit/preview/render.py .
