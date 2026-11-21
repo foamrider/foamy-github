@@ -401,7 +401,7 @@ bash tests/stress.sh                               # the unit suite, 40 runs, 4 
 bash tests/kit-check.sh
 python3 ~/GitHub/Personal/foamy-kit/preview/i18n_runtime.py .   # live language switching (the kit's catalog check)
 python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
-python3 tests/runtime-pullall.py                   # Pull all over local Git repositories
+python3 tests/runtime-pullall.py                   # Pull all over local Git repositories, a failing step, and opening lazygit
 python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
 python3 tests/runtime-stale-status.py              # a status check overtaken by a trust change is redone
 python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust edits and IPC refresh (fake helper, fake NetworkManager)
