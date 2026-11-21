@@ -180,17 +180,6 @@ test('the pick-folder reply gives a path, a cancel or an error code', () => {
   assert.deepEqual(Model.folderPickReply(1, '{"ok":true,"path":"/a"}'), {error: 'FAILED'})
 })
 
-test('the folder browser is the helper\'s pick-folder, under a timeout, with no picker script', () => {
-  const fs = require('node:fs')
-  const path = require('node:path')
-  const panel = fs.readFileSync(path.join(__dirname, '../Panel.qml'), 'utf8')
-  assert.match(panel, /\["timeout", "--kill-after=5s", "1830s"\]\.concat\(Service\.helperCommand\(\["pick-folder",/)
-  assert.match(panel, /Model\.folderPickReply\(exitCode, folderPickerOutput\.text\)/)
-  assert.doesNotMatch(panel, /folder-picker\.sh|FolderPicker\.qml|GITHUB_FOLDER|"bash"/)
-  for (const gone of ['folder-picker.sh', 'FolderPicker.qml'])
-    assert.equal(fs.existsSync(path.join(__dirname, '..', gone)), false, gone)
-})
-
 test('a trust change is a revocation only when an entry the job had is gone', () => {
   const a = { path: '/r/a', identity: '1:1:1|2:2:2' }
   const b = { path: '/r/b', identity: '3:3:3|4:4:4' }

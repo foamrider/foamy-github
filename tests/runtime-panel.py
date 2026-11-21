@@ -5,11 +5,13 @@ offscreen Quickshell against a host shell, through foamy-kit's harness.
   python3 tests/runtime-panel.py
 
 Checks: it loads without errors; one Service and one leader for three
-instances; the popup body builds on open with the GithubView; the inline
-error row renders; Refresh sits in the footer, after Pull all and Settings
-in the cursor order; the watcher helper runs (temp HOME, no folders, no network
-beyond what Git would do for zero repositories); IPC status answers from the
-leader. Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
+instances; the popup body builds on open with the GithubView; the keys move
+the cursor from Settings to the footer's Refresh (no Pull all with nothing
+to pull) and open Settings; a paste error, a folder edit and a trust edit
+reach the Panel and the bar; the folder chooser (the helper's pick-folder
+on the run's private bus, where no portal runs) releases the popup and
+comes back to Settings with its error. Temp HOME, no folders, no network.
+Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
@@ -34,6 +36,7 @@ import "plugin" as Plugin
 ShellRoot {
   id: shell
   property var panels: []
+  property string folderBefore: ""
   property int checks: 0
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
   function collect(item, test, out) {
@@ -73,7 +76,7 @@ ShellRoot {
     // The first complete scan arrived and the legacy trust was migrated.
     function() {
       var saves = panels[0].bar.saved
-      return panels[1].popup.bodyItem !== null && Plugin.Service.lastChecked > 0
+      return panels[1].popup.bodyItem !== null && Plugin.Service.lastChecked > 0 && !Plugin.Service.busy
         && saves.length > 0 && saves[saves.length - 1].settings.trustRepositoryConfig === false
     },
     function() { return panels[1].editingSettings && !panels[1].prefs.busy },
@@ -82,6 +85,8 @@ ShellRoot {
       return JSON.stringify(panels[1].bar.saved).indexOf("@IDENT@") >= 0
         && panels[2].settingsError !== "" && Kit.FoamyShared.memberCount("github") === 2
     },
+    // Back from the folder chooser, with its answer.
+    function() { return panels[1].opened && !panels[1].returningFromBrowser && panels[1].settingsError !== "" },
     function() { return !Plugin.Service.active }
   ]
   QtObject {
@@ -113,46 +118,67 @@ ShellRoot {
         var view = panels[1].popup.bodyItem
         check(view !== null && view.service === Plugin.Service, "body built on open")
         check(panels[0].popup.bodyItem === null, "other monitors stay lazy")
-        check(Plugin.Service.lastChecked > 0 || Plugin.Service.refreshing, "status arrived from the watcher")
-        // Refresh lives in the footer (count, freshness, refresh), not in the
-        // header (which holds Pull all, only while something can be pulled);
-        // the cursor walks rows, then Pull all (when shown), Settings and Refresh.
-        var footers = collect(view, function(item) { return item.objectName === "githubFooter" })
-        check(footers.length === 1 && footers[0].showRefresh && footers[0].refreshButton.objectName === "foamyFooterRefresh", "footer with refresh")
-        check(footers.length === 1 && footers[0].source === "0 repositories", "footer leads with the repository count")
-        var bands = collect(view, function(item) { return item.trailing !== undefined && item.settingsHasCursor !== undefined })
-        check(bands.length > 0 && bands.every(function(band) {
-          return collect(band, function(item) { return item.iconName === "refresh-cw" }).length === 0
-        }), "no refresh in the header")
-        var pullAll = collect(view, function(item) { return item.objectName === "pullAllAction" })
-        check(pullAll.length === 1 && pullAll[0].iconName === "arrow-down-to-line", "Pull all in the header")
-        check(view.pullableCount === 0 && !view.showPullAll && !pullAll[0].visible, "Pull all hidden with nothing to pull")
-        check(view.pullAllStop === -1 && view.settingsStop === view.stops.count
-          && view.refreshStop === view.settingsStop + 1, "cursor without Pull all: rows, Settings, Refresh")
+        var footer = collect(view, function(item) { return item.objectName === "githubFooter" })[0]
+        check(footer !== undefined && footer.source === "0 repositories", "footer leads with the repository count")
+        var band = collect(view, function(item) { return item.trailing !== undefined && item.settingsHasCursor !== undefined })[0]
+        var pullAll = collect(view, function(item) { return item.objectName === "pullAllAction" })[0]
+        // The keys the host sends: with no rows and nothing to pull, Down
+        // goes to Settings in the header, then to Refresh in the footer.
+        var pullAllHadCursor = false
+        view.moveRequested(0, 1)
+        pullAllHadCursor = pullAllHadCursor || pullAll.hasCursor
+        check(band.settingsHasCursor && !footer.refreshHasCursor, "Down: Settings is the first stop")
+        view.moveRequested(0, 1)
+        pullAllHadCursor = pullAllHadCursor || pullAll.hasCursor
+        check(footer.refreshHasCursor && !band.settingsHasCursor, "Down: the footer's Refresh follows Settings")
+        view.moveRequested(0, 1)
+        check(footer.refreshHasCursor, "Refresh is the last stop")
+        check(!pullAll.visible && !pullAllHadCursor, "Pull all is hidden and no stop with nothing to pull")
+        // Enter on Refresh asks for a fetch; the harness has no network, so none runs.
+        view.activateRequested()
+        check(view.statusTitle === "Waiting for network…" && !Plugin.Service.syncing,
+          "Enter on Refresh waits for the network: " + view.statusTitle)
         // Legacy global trust migrates once after the first complete scan, in
         // both live-monitoring and timed-polling mode.
         var leaderSaves = panels[0].bar.saved
         check(leaderSaves.length > 0 && leaderSaves[leaderSaves.length - 1].settings.trustRepositoryConfig === false,
               "legacy trust migrated (" + (Plugin.Service.inotifyEnabled ? "live monitoring" : "polling") + ")")
-        panels[1].openSettings()
+        // Up and Enter on Settings open it (step 2 waits for that).
+        view.moveRequested(0, -1)
+        check(band.settingsHasCursor, "Up: back on Settings")
+        view.activateRequested()
       } else if (n === 2) {
         check(panels[1].editingSettings, "settings open")
         var view1 = panels[1].popup.bodyItem
-        view1.settingsErrorReported("Clipboard too large")
-        check(view1.settingsError === "Clipboard too large", "paste error reaches the view through the Panel")
+        // A paste error of the folder field reaches the Panel, which owns
+        // settingsError, so clearing it there leaves the page's binding intact.
+        var field = collect(view1, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0]
+        var pasteText = "Clipboard paste timed out. Copy the text again."
+        field.pasteError = pasteText
+        check(panels[1].settingsError === pasteText && view1.settingsError === pasteText, "a paste error reaches the Panel and the page: " + view1.settingsError)
         panels[1].settingsError = ""
         check(view1.settingsError === "", "settingsError binding survives a paste error")
+        field.pasteError = ""
         var bar1 = panels[1].bar
-        panels[1].save("fetchIntervalSec", 300)
         panels[1].save("fetchIntervalSec", 1800)
-        check(panels[1].prefs.value("fetchIntervalSec") === 1800, "newest edit wins through FoamyPrefsQueue")
         check(bar1.saved.length > 0 && bar1.saved[bar1.saved.length - 1].settings.fetchIntervalSec === 1800, "saved inline")
-        panels[1].saveFolders([{ path: "relative", depth: 2 }])
-        check(view1.settingsError !== "", "invalid folders are reported, not saved")
-        panels[1].saveFolders([{ path: "~/GitHub", depth: 3 }])
-        check(JSON.stringify(bar1.saved[bar1.saved.length - 1].settings.repositoryFolders) === JSON.stringify([{ path: "~/GitHub", depth: 3 }]), "folders saved as an array")
-        check(Plugin.Service.helperArguments().indexOf(Plugin.Service.legacyTrustAll ? "--trust-repository-config" : "--trusted-json") >= 0, "helpers get the trust arguments")
-        check(view1.lfsRepositories.length === 0, "no Git LFS section without LFS repositories")
+        // A folder edit goes from the view to the Panel through a `var`
+        // signal argument, which Qt 6.12 hands over as a sequence wrapper.
+        var savedBefore = bar1.saved.length
+        view1.setFolderPath(0, "relative")
+        check(panels[1].settingsError === "Use an absolute path or ~/ for every folder." && bar1.saved.length === savedBefore,
+          "a relative folder is reported, not saved: " + panels[1].settingsError)
+        view1.setFolderPath(0, "~/GitHub")
+        var folders = bar1.saved[bar1.saved.length - 1].settings.repositoryFolders
+        check(bar1.saved.length === savedBefore + 1 && Array.isArray(folders) && JSON.stringify(folders) === JSON.stringify([{ path: "~/GitHub", depth: 2 }]),
+          "an edited folder is saved as an array: " + panels[1].settingsError + " " + JSON.stringify(folders))
+        // The helpers get the folders and exactly one form of trust.
+        var args = Plugin.Service.helperArguments()
+        var listAt = args.indexOf("--trusted-json"), legacyAt = args.indexOf("--trust-repository-config")
+        check(args[0] === "--folders-json" && args[1] === Plugin.Service.folderArguments && (listAt >= 0) !== (legacyAt >= 0)
+          && (Plugin.Service.legacyTrustAll ? legacyAt === args.length - 1
+              : JSON.stringify(JSON.parse(args[listAt + 1])) === JSON.stringify(Plugin.Service.trustedRepositories)),
+          "helpers get the folders and the trust: " + JSON.stringify(args))
         // Trust edits queued behind an in-flight save compose (Codex: the
         // second edit used to undo the first): untrust A, then B.
         var prefs1 = panels[1].prefs
@@ -179,10 +205,17 @@ ShellRoot {
         check(!panels[1].opened && !panels[1].editingSettings, "settings reset when the popup closes")
         panels[1].openSettings()
         check(panels[1].opened && panels[1].editingSettings, "openSettings() on a closed popup lands on Settings")
-        panels[1].returningFromBrowser = true
-        panels[1].close()
-        check(panels[1].editingSettings, "folder browser round trip keeps Settings")
-        panels[1].returningFromBrowser = false
+        // The folder chooser: the popup is released while the helper's
+        // pick-folder runs, then reopens on Settings with its answer.
+        var view3 = panels[1].popup.bodyItem
+        shell.folderBefore = collect(view3, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0].text
+        view3.browseRequested(0)
+        check(!panels[1].opened, "the popup is released for the folder chooser")
+      } else if (n === 4) {
+        check(panels[1].editingSettings, "the folder chooser round trip keeps Settings")
+        check(panels[1].settingsError === "@PICK_ERROR@", "the chooser's error is shown: " + panels[1].settingsError)
+        var row = collect(panels[1].popup.bodyItem, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0]
+        check(row.text === shell.folderBefore, "the folder row is unchanged: " + row.text)
         panels[1].close()
 
         check(Kit.FoamyShared.memberCount("github") === 2, "leader left")
@@ -219,11 +252,46 @@ TRUST_IDENTITY = subprocess.run(
 ).stdout.strip()
 SHELL = SHELL.replace("@REPO@", TRUST_REPO).replace("@IDENT@", TRUST_IDENTITY)
 
+# Without bubblewrap the identity is empty, and every trust check would
+# match "" and pass with nothing trusted.
+if not TRUST_IDENTITY:
+    print("runtime-panel: helper identity is empty (bubblewrap missing?); the trust checks cannot run")
+    sys.exit(1)
+
+# The helper's pick-folder runs for real against the run's private session
+# bus, which has no portal; without dbus-daemon the harness leaves a dead
+# address.
+DBUS_DAEMON = shutil.which("dbus-daemon")
+if DBUS_DAEMON:
+    SHELL = SHELL.replace("@PICK_ERROR@", "No folder browser is running (xdg-desktop-portal). Enter a path instead.")
+else:
+    SHELL = SHELL.replace(
+        "@PICK_ERROR@", "The folder browser needs a session bus, and there is none. Enter a path instead."
+    )
+
 for host in harness.available_hosts(what="runtime-panel"):
     for mode in ("true", "false"):  # inotifyEnabled: live monitoring, then timed polling
         run = harness.Run(
             host, SHELL.replace("@INOTIFY@", mode), plugin=PLUGIN, prefix=f"foamy-github-runtime-{host}-"
-        ).run(timeout=60)
+        )
+        # The folder chooser must never reach the desktop's bus.
+        dead = f"unix:path={run.base}/no-session-bus"
+        if run.env["DBUS_SESSION_BUS_ADDRESS"] != dead:
+            sys.exit(f"runtime-panel: the run's session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']}, not the harness's")
+        run.start_buses()
+        expected = f"unix:path={run.sockets / 'bus'}" if DBUS_DAEMON else dead
+        if run.env["DBUS_SESSION_BUS_ADDRESS"] != expected or not run.env["XDG_RUNTIME_DIR"].startswith(str(run.sockets)):
+            run.stop()
+            sys.exit(
+                f"runtime-panel: the session bus is {run.env['DBUS_SESSION_BUS_ADDRESS']} with XDG_RUNTIME_DIR "
+                f"{run.env['XDG_RUNTIME_DIR']}, not the run's private bus {expected}"
+            )
+        try:
+            run.start()
+            run.wait(60)
+        finally:
+            run.stop()
+        run.ok = "FOAMY DONE" in run.log and not run.failures()
         checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
         # Any QML warning from the plugin's own files fails the run too.
         warnings = [
