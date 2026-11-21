@@ -133,7 +133,7 @@ ShellRoot {
         check(footer.refreshHasCursor && !band.settingsHasCursor, "Down: the footer's Refresh follows Settings")
         view.moveRequested(0, 1)
         check(footer.refreshHasCursor, "Refresh is the last stop")
-        check(!pullAll.visible && !pullAllHadCursor, "Pull all is hidden and no stop with nothing to pull")
+        check(!pullAll.actionEnabled && !pullAllHadCursor, "Pull all is off and no stop with nothing to pull")
         // Enter on Refresh asks for a fetch; the harness has no network, so none runs.
         view.activateRequested()
         check(view.statusTitle === "Waiting for network…" && !Plugin.Service.syncing,
