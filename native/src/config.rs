@@ -742,12 +742,18 @@ mod tests {
     }
 
     #[test]
-    fn filter_names_round_trip_byte_exact() {
-        use std::os::unix::ffi::OsStrExt;
-        let env = config_environment(&[(b"filter.x\xff.clean".to_vec(), Vec::new())]);
-        assert!(
-            env.iter()
-                .any(|(_, value)| value.as_bytes() == b"filter.x\xff.clean")
+    fn hostile_remote_names_and_urls_stay_one_value() {
+        // A repository chooses its remote names and URLs, and both go into
+        // the frozen configs: a quote, a backslash or a line break must not
+        // end the value or start a new section.
+        let entries = [entry(
+            "local",
+            b"remote.o\"x\\y.url",
+            Some(b"a\"b\\c\n[core]\n\tfsmonitor = evil"),
+        )];
+        assert_eq!(
+            config_text(&overlay_config(&entries, false)),
+            b"[remote \"o\\\"x\\\\y\"]\n\turl = \"a\\\"b\\\\c\\n[core]\\n\\tfsmonitor = evil\"\n"
         );
     }
 
