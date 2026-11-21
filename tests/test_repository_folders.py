@@ -84,7 +84,8 @@ class RepositoryFoldersTest(HelperTest):
                 self.assertEqual(set(actual), expected | {str(direct)})
 
     def test_rejects_invalid_depth_and_merges_duplicate_depths(self):
-        for depth in [None, True, -1, 6, 1.5, "2"]:
+        # A whole-number float is still not an integer depth.
+        for depth in [None, True, -1, 6, 1.5, 1.0, "2"]:
             with self.subTest(depth=depth):
                 result = self.run_helper("status", "--folders-json", json.dumps([{"path": "/tmp", "depth": depth}]))
                 self.assertEqual(
@@ -94,6 +95,11 @@ class RepositoryFoldersTest(HelperTest):
             '[{"path":"/tmp/foamy-github-absent","depth":1},{"path":"/tmp/foamy-github-absent","depth":3}]'
         )
         self.assertEqual(payload["folders"], [{"path": "/tmp/foamy-github-absent", "depth": 3}])
+        # The panel checks the trimmed path but passes the stored text; the helper strips it.
+        _code, payload = self.fetch(
+            '[" /tmp/foamy-github-absent ", {"path": "/tmp/foamy-github-absent", "depth": 4}]'
+        )
+        self.assertEqual(payload["folders"], [{"path": "/tmp/foamy-github-absent", "depth": 4}])
 
     def test_actions_reject_repository_outside_configured_folders(self):
         selected = self.repository("selected")
