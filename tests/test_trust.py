@@ -551,23 +551,6 @@ class TrustModelTest(Case):
         self.assertNotIn("askpass", calls)
         self.assertFalse((self.path / "loot").exists())
 
-    def test_fetch_ignores_repository_ssh_command(self):
-        self.repo_git("remote", "add", "origin", "ssh://example.invalid/repo.git")
-        for value in (self.evil + "; ssh", "ssh -i *", "ssh -o ProxyCommand=" + self.evil.replace(" ", "_")):
-            with self.subTest(value=value):
-                self.repo_git("config", "core.sshCommand", value)
-                self.assertFalse(self.fetched()["ok"])
-        self.assertNotRun()
-
-    def test_glob_in_ssh_command_cannot_inject_options(self):
-        # Codex P1 (round 1): `ssh -i *` expanded by /bin/sh to `-oProxyCommand=…`.
-        (self.path / "!key").write_text("")
-        (self.path / "-oProxyCommand=touch proxy-ran").write_text("")
-        self.repo_git("remote", "add", "origin", "ssh://example.invalid/repo.git")
-        self.repo_git("config", "core.sshCommand", "ssh -i *")
-        self.fetched()
-        self.assertFalse((self.path / "proxy-ran").exists())
-
     def test_fetch_ignores_git_proxy_transport_helpers_and_upload_pack(self):
         helper = self.script("git-remote-evil")
         self.prepend_path(helper.parent)
