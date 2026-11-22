@@ -9,7 +9,7 @@ run's own system bus.
 The fake helper logs every start, SIGTERM and end to calls.log, with the
 trust it was given, and holds each subcommand named in the `block` file
 until the test removes it (at most 30 s), and fails each subcommand named
-in the `fail` file (push with a JSON reply, fetch with only stderr). Its
+in the `fail` file (fetch with only stderr, any other with a JSON reply). Its
 status reports one
 repository using Git LFS, trusted when its trust arguments name anything
 and labelled "other" when its folders name /foamy-other; its pick-folder
@@ -30,7 +30,8 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
 - chooser: a folder picked in the folder chooser fills the row and is saved.
 - errors: a failed push and a failed fetch stay on the warning line through
   the status refresh that follows them; the next fetch clears the failure,
-  and so does the last bar's unload.
+  and so does the last bar's unload. A failed status check shows its own
+  failure, also over a kept push failure, until a status check works.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
   "unavailable" once the helper exits 127, which the panel then says;
@@ -478,6 +479,16 @@ ShellRoot {
   }
   readonly property string pushFailure: "@PUSH_FAILURE@"
   readonly property string fetchFailure: "@FETCH_FAILURE@"
+  // The fake helper's failed status has no stderr: the Service's own text.
+  readonly property string statusFailure: "Repository status failed"
+  // A status check with `names` failing, then `then` once it has ended.
+  function refreshFailing(names, label, then) {
+    failing(names, function() {
+      var statuses = count("end status")
+      service.refresh()
+      until(function() { return !service.busy && count("end status") > statuses }, label, then)
+    })
+  }
   readonly property var errorSteps: [
     function(next) { failing(["push", "fetch"], function() { until(function() { return !service.busy }, "errors: idle", next) }) },
     function(next) {
@@ -489,6 +500,18 @@ ShellRoot {
         check(service.lastError === shell.pushFailure, "errors: the warning line still shows the failed push: " + service.lastError)
         check(service.status.ok === true && service.repos.length === 1, "errors: the refresh after the push was shown")
         next()
+      })
+    },
+    function(next) {
+      refreshFailing(["push", "fetch", "status"], "errors: the failed status check ends", function() {
+        check(service.status.ok === false && service.lastError === shell.statusFailure,
+          "errors: a newer failed status check shows over the kept push failure: " + service.lastError)
+        check(service.operationError === shell.pushFailure, "errors: the push failure is still kept: " + service.operationError)
+        refreshFailing(["push", "fetch"], "errors: the status check works again", function() {
+          check(service.status.ok === true && service.lastError === shell.pushFailure,
+            "errors: the kept push failure shows again once a status check works: " + service.lastError)
+          next()
+        })
       })
     },
     function(next) {
@@ -506,6 +529,16 @@ ShellRoot {
         check(service.fetch() === "ok", "errors: a second fetch starts")
         until(function() { return !service.busy && count("end fetch") > ends }, "errors: the second fetch ends", function() {
           check(service.operationError === "" && service.lastError === "", "errors: a fetch that works leaves no failure: " + service.lastError)
+          next()
+        })
+      })
+    },
+    function(next) {
+      refreshFailing(["push", "status"], "errors: a status check fails with no other failure", function() {
+        check(service.status.ok === false && service.lastError === shell.statusFailure,
+          "errors: the warning line shows the failed status check: " + service.lastError)
+        refreshFailing(["push"], "errors: the status check works after its failure", function() {
+          check(service.status.ok === true && service.lastError === "", "errors: a status check that works removes its failure: " + service.lastError)
           next()
         })
       })

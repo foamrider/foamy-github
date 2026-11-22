@@ -50,16 +50,19 @@ Item {
       }
     ] : []
   }
-  // The last push, pull, Pull all or fetch failure. It outlives the status
-  // refresh that follows it and goes when the next one starts; a failed
-  // status check is the status's own error.
+  // The last push, pull, Pull all or fetch failure, or the missing helper.
+  // It outlives the status refresh that follows it and goes when the next
+  // push, pull or fetch starts; a failed status check is the status's own
+  // error.
   property string operationError: ""
   property bool watchFailed: false
   readonly property string watchError: !inotifyEnabled || !watchFailed ? "" : refreshIntervalSec > 0 ? "Live monitoring unavailable; using timed refresh." : "Live monitoring unavailable; automatic local refresh is disabled."
   property string watchDetail: ""
   // The panel translates lastError as one catalog key, so the watcher's
   // failure is translated here, before its detail (stderr) is joined to it.
-  readonly property string lastError: operationError || (status.ok === false ? String(status.error || "") : "") || (watchError ? root.tr(watchError) + (watchDetail ? " " + watchDetail : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
+  // A failed status check shows first, since no row is current while it
+  // lasts; a kept action failure shows again once a status check works.
+  readonly property string lastError: (status.ok === false ? String(status.error || "") : "") || operationError || (watchError ? root.tr(watchError) + (watchDetail ? " " + watchDetail : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
   property bool monitoring: false
   property bool watchRestartRequested: false
   property string watchedFolders: ""
