@@ -26,7 +26,8 @@ test('Model\'s messages to the panel have catalog entries; diagnostics pass thro
     Model.fetchOutcome(1, '', '').message,
     Model.parseStatus('').error,
     Model.parseStatus('x').error,
-    Model.parseStatus('{"repos":[{}]}').error,
+    Model.parseStatus('{"ok":true,"repos":[{}]}').error,
+    Model.parseStatus('[]').error,
   ]
   for (const message of messages) {
     assert.equal(typeof message, 'string', String(message))

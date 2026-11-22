@@ -33,7 +33,8 @@ function parseStatus(raw) {
   if (text === "") return failedStatus("No repository status received")
   try {
     var parsed = JSON.parse(text)
-    if (!parsed || typeof parsed !== "object") return failedStatus("Invalid repository status")
+    // The helper's status is always an object with ok: true; anything else is not one.
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || parsed.ok !== true) return failedStatus("Invalid repository status")
     var fallback = defaultStatus()
     parsed.totals = Object.assign({}, fallback.totals, parsed.totals || {})
     parsed.repos = Array.isArray(parsed.repos) ? parsed.repos : []
