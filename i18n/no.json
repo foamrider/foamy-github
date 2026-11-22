@@ -82,6 +82,12 @@
   "No repository status received": "Ingen prosjektstatus mottatt",
   "Invalid repository status": "Ugyldig prosjektstatus",
   "Failed to parse repository status": "Kunne ikke tolke prosjektstatus",
+  "Repository summary is too large. Select fewer repository folders.": "Prosjektoversikten er for stor. Velg færre prosjektmapper.",
+  "Too many repositories. Select fewer repository folders.": "For mange prosjekter. Velg færre prosjektmapper.",
+  "Repository limit (256) reached. Select fewer folders or a lower scan depth.": "Prosjektgrensen (256) er nådd. Velg færre mapper eller en lavere søkedybde.",
+  "Folder scan limit reached. Select narrower repository folders or a lower scan depth.": "Grensen for mappesøk er nådd. Velg mer avgrensede prosjektmapper eller en lavere søkedybde.",
+  "Cached synchronization status is too large. Remove sync-state.json from the plugin cache and refresh.": "Den lagrede synkroniseringsstatusen er for stor. Fjern sync-state.json fra utvidelsens hurtigbuffer, og oppdater.",
+  "Cached synchronization status contains too many repositories. Remove sync-state.json from the plugin cache and refresh.": "Den lagrede synkroniseringsstatusen inneholder for mange prosjekter. Fjern sync-state.json fra utvidelsens hurtigbuffer, og oppdater.",
   "Choose a repository folder": "Velg en prosjektmappe",
   "Choose": "Velg",
   "%1 repositories failed to fetch": {

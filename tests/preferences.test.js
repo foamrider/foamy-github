@@ -28,6 +28,8 @@ test('Model\'s messages to the panel have catalog entries; diagnostics pass thro
     Model.parseStatus('x').error,
     Model.parseStatus('{"ok":true,"repos":[{}]}').error,
     Model.parseStatus('[]').error,
+    Model.parseStatus('x'.repeat(8 * 1024 * 1024 + 1)).error,
+    Model.parseStatus(JSON.stringify({ok:true, repos:Array(257).fill({})})).error,
   ]
   for (const message of messages) {
     assert.equal(typeof message, 'string', String(message))

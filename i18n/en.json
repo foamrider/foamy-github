@@ -82,6 +82,12 @@
   "No repository status received": "No repository status received",
   "Invalid repository status": "Invalid repository status",
   "Failed to parse repository status": "Failed to parse repository status",
+  "Repository summary is too large. Select fewer repository folders.": "Repository summary is too large. Select fewer repository folders.",
+  "Too many repositories. Select fewer repository folders.": "Too many repositories. Select fewer repository folders.",
+  "Repository limit (256) reached. Select fewer folders or a lower scan depth.": "Repository limit (256) reached. Select fewer folders or a lower scan depth.",
+  "Folder scan limit reached. Select narrower repository folders or a lower scan depth.": "Folder scan limit reached. Select narrower repository folders or a lower scan depth.",
+  "Cached synchronization status is too large. Remove sync-state.json from the plugin cache and refresh.": "Cached synchronization status is too large. Remove sync-state.json from the plugin cache and refresh.",
+  "Cached synchronization status contains too many repositories. Remove sync-state.json from the plugin cache and refresh.": "Cached synchronization status contains too many repositories. Remove sync-state.json from the plugin cache and refresh.",
   "Choose a repository folder": "Choose a repository folder",
   "Choose": "Choose",
   "%1 repositories failed to fetch": {
