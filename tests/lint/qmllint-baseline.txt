@@ -8,18 +8,11 @@ GithubView.qml: block-scope-var-declaration: var declaration in block scope is h
 GithubView.qml: missing-property: Member "actionStatus" not found on type "QObject" | readonly property string statusTitle: service && service.actionStatus !== "" ? service.actionStatus : healthText
 GithubView.qml: missing-property: Member "actionStatus" not found on type "QObject" | readonly property string statusTitle: service && service.actionStatus !== "" ? service.actionStatus : healthText
 GithubView.qml: missing-property: Member "affectedRepos" not found on type "QObject" | readonly property var repos: service ? service.affectedRepos : []
-GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
-GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
-GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
-GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
-GithubView.qml: missing-property: Member "bodySmall" not found on type "QObject" | font.pixelSize: FoamyStyle.font.bodySmall
 GithubView.qml: missing-property: Member "busy" not found on type "QObject" | readonly property bool busy: !!service && service.busy
-GithubView.qml: missing-property: Member "caption" not found on type "QObject" | font.pixelSize: FoamyStyle.font.caption
 GithubView.qml: missing-property: Member "fetch" not found on type "QObject" | root.service.fetch()
 GithubView.qml: missing-property: Member "fetch" not found on type "QObject" | service.fetch()
 GithubView.qml: missing-property: Member "focusPath" not found on type "QQuickItem" | row.focusPath()
 GithubView.qml: missing-property: Member "focusPath" not found on type "QQuickItem" | row.focusPath()
-GithubView.qml: missing-property: Member "heading" not found on type "QObject" | font.pixelSize: FoamyStyle.font.heading
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | if (service.lastChecked === 0)
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | status: root.service ? FoamyI18n.updatedAgo(root.service.lastChecked * 1000, root.now) : ""
@@ -53,7 +46,6 @@ GithubView.qml: missing-property: Member "syncing" not found on type "QObject" |
 GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
 GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | refreshTooltip: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…") : FoamyI18n.t("Fetch remotes and refresh")
 GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | refreshing: root.opened && !!root.service && (root.service.syncing || root.service.refreshing)
-GithubView.qml: missing-property: Member "title" not found on type "QObject" | font.pixelSize: FoamyStyle.font.title
 GithubView.qml: missing-property: Member "totals" not found on type "QObject" | readonly property var totals: service ? service.totals : Model.defaultStatus().totals
 Panel.qml: id-shadows-member: Id for object FoamyPopup shadows property "popup". Rename one or the other. | readonly property var view: popup.bodyItem
 Panel.qml: id-shadows-member: Id for object FoamyPrefsQueue shadows property "prefs". Rename one or the other. | readonly property bool foldersLocked: prefs.storedProblem("repositoryFolders") !== ""
