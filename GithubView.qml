@@ -425,12 +425,13 @@ PanelKeyCatcher {
       bottomPadding: 0
       spacing: FoamyStyle.gapLarge
       Text {
+        objectName: "githubEmptyList"
         visible: root.repos.length === 0
         x: FoamyStyle.padding
         width: parent.width - FoamyStyle.padding * 2
         topPadding: FoamyStyle.gapLarge
         bottomPadding: FoamyStyle.gapLarge
-        text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 ? FoamyI18n.t("Checking local repositories…") : root.service.status.repoCount === 0 ? FoamyI18n.t("No repositories yet. Add a folder in Settings.") : FoamyI18n.t("All repositories are clean and match their upstream")
+        text: !root.service ? "" : root.service.status.ok === false ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 ? FoamyI18n.t("Checking local repositories…") : root.service.status.repoCount === 0 ? FoamyI18n.t("No repositories yet. Add a folder in Settings.") : FoamyI18n.t("All repositories are clean and match their upstream")
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignLeft

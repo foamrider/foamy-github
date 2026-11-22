@@ -37,6 +37,9 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
   repository, and a push whose text names its commit count, show in the
   panel's language (Norwegian, switched live); the kept failure follows a
   switch back to English.
+- footer: with no folders, the text under the empty list stays "No
+  repositories yet" while a failed fetch is kept on the warning line, and
+  says the status is unavailable only when the status check fails.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
   "unavailable" once the helper exits 127, which the panel then says;
@@ -249,7 +252,7 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, languageSteps, ipcSteps)
+  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, languageSteps, footerSteps, ipcSteps)
   function collect(item, test) {
     var found = item && test(item) ? [item] : []
     var kids = item ? item.children || [] : []
@@ -644,6 +647,42 @@ ShellRoot {
               "language: the push's commit count and repository in Norwegian: " + service.actionStatus + " | " + service.lastError)
             replying("", function() { speaking("en", function() { until(function() { return !service.busy }, "language: idle", next) }) })
           })
+        })
+      })
+    }
+  ]
+
+  // footer: the text under an empty list (no folders: the status check
+  // works and finds no repository).
+  function emptyListText() { var text = named(panel.popup.bodyItem, "githubEmptyList"); return text ? text.text : "(none)" }
+  readonly property string noRepositories: "No repositories yet. Add a folder in Settings."
+  readonly property var footerSteps: [
+    function(next) {
+      panel.settings = settingsWith(trustRepo, [])
+      panel.open()
+      until(function() {
+        return panel.popup.bodyItem !== null && !service.busy && service.scannedFolders === "[]" && service.status.repoCount === 0
+      }, "footer: no repository is found", function() {
+        check(emptyListText() === shell.noRepositories, "footer: no repository yet: " + emptyListText())
+        failing(["fetch"], function() {
+          var statuses = count("end status")
+          check(service.fetch() === "ok", "footer: a fetch starts")
+          until(function() { return !service.busy && count("end status") > statuses }, "footer: the failed fetch and the status refresh after it end", function() {
+            check(service.status.ok === true && service.lastError === shell.fetchFailure, "footer: the failed fetch is kept: " + service.lastError)
+            check(emptyListText() === shell.noRepositories, "footer: a kept fetch failure is no failed status check: " + emptyListText())
+            next()
+          })
+        })
+      })
+    },
+    function(next) {
+      refreshFailing(["fetch", "status"], "footer: the status check fails", function() {
+        check(service.status.ok === false && emptyListText() === "Repository status is unavailable. Try Refresh again.",
+          "footer: a failed status check says so: " + emptyListText())
+        failing([], function() {
+          panel.close()
+          panel.settings = settingsWith(trustRepo)
+          until(function() { return !panel.opened && !service.busy && service.repos.length === 1 }, "footer: the repository is back", next)
         })
       })
     }
