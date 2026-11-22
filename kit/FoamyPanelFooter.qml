@@ -1,7 +1,8 @@
-// foamy-kit 0.9.0 7098c25cb64d565c9cb175f41e3cb326cc40655eb2888f1f15997d2add20b556 — do not edit; change foamy-kit and run sync
+// foamy-kit 0.13.1 2bf04951d2e8f9b8db9dc873cfe976414781934e68a84bdd31e615774255b201 — do not edit; change foamy-kit and run sync
 import QtQuick
 import qs.Commons as Commons
 import qs.Ui
+import "FoamyText.js" as FoamyText
 
 // The popup footer: a hairline, then the source or a leading action on the
 // reading start and, on the end, the freshness line and the refresh button
@@ -113,9 +114,25 @@ Column {
           root.statusClicked()
       }
       PanelToolTip {
+        id: statusTip
         visible: statusMouse.containsMouse && root.statusTooltip !== ""
-        text: root.statusTooltip
+        // The host's tooltip is as wide as its text and wraps only under a cap,
+        // so a long label or path would cover the whole popup. Capped through
+        // implicitWidth, which the tooltip centers itself by (as the host does).
+        implicitWidth: Math.min(implicitContentWidth + leftPadding + rightPadding, Commons.Style.space(320))
+        // The caller's text may be app text with no length bound (a path, an
+        // error's detail): 3 lines of 200 characters keep an ordinary path whole
+        // and the wrapped tooltip a few lines high, with a visible "…" beyond.
+        text: FoamyText.cap(root.statusTooltip, 3, 200)
         fontFamily: FoamyStyle.fontFamily
+
+        // The host's text wraps at word boundaries only, so a name typed
+        // without spaces would run past the capped width.
+        Binding {
+          target: statusTip.contentItem
+          property: "wrapMode"
+          value: Text.Wrap
+        }
       }
     }
     FoamyAction {
