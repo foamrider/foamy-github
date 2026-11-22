@@ -8,17 +8,21 @@ Four clones of one local remote are two commits behind it: alpha, beta,
 delta and gamma, which also has two changed files; beta's origin points at
 a path that does not exist. The bar shows how many repositories are behind
 and changed, which differs from the commit and file counts. The keys walk
-the rows, Pull all, Settings and Refresh, and Enter on Pull all pulls the
-three clean clones one after the other: beta fails, the queue goes on, the
-count and beta's error are reported, and gamma is left alone. Enter on
-gamma's row opens lazygit through uwsm-app (a stand-in that records its
-argv) with the path as its own argument. Requires ~/GitHub/Personal/foamy-kit
-(or FOAMY_KIT).
+the rows, Pull all, Settings and Refresh. Then delta loses its upstream
+(after the status the panel shows), and Enter on Pull all pulls the three
+clean clones one after the other: beta fails with Git's error, the helper
+refuses delta with a text that names it, the queue goes on, the count and
+both failures are reported, and gamma is left alone. After a live switch
+to Norwegian, delta's refusal is in Norwegian and Git's error as it is.
+Enter on gamma's row opens lazygit through uwsm-app (a stand-in that
+records its argv) with the path as its own argument. Requires
+~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
 
 import atexit
+import json
 import os
 import shutil
 import subprocess
@@ -35,13 +39,29 @@ PLUGIN = Path(__file__).resolve().parents[1]
 SHELL = r"""
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import "harness"
 import "plugin" as Plugin
+import "plugin/kit" as Kit
 
 ShellRoot {
   id: shell
   property var panel: null
   property int checks: 0
+  // beta's failure (Git's own text) once Pull all has reported it.
+  property string betaFailure: ""
+  FileView { id: language; path: Quickshell.env("OMARCHY_LANGUAGE_FILE") }
+  // delta loses its upstream after the status the panel shows, so the
+  // helper's own check before pulling refuses it.
+  Process {
+    id: unsetUpstream
+    property bool done: false
+    command: ["git", "-C", "@DELTA@", "branch", "--unset-upstream"]
+    onExited: function(exitCode) {
+      shell.check(exitCode === 0, "delta's upstream is unset: exit " + exitCode)
+      done = true
+    }
+  }
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
   function collect(item, test) {
     var found = test(item) ? [item] : []
@@ -137,8 +157,10 @@ ShellRoot {
           delta: "main · ↓2 commits", gamma: "main · ↓2 commits · 2 changed" }), "each row's status line: " + JSON.stringify(shell.metas))
         view.moveRequested(0, -1)
         view.moveRequested(0, -1)
+        unsetUpstream.running = true
         phase = 2
       } else if (phase === 2) {
+        if (!unsetUpstream.done) return
         check(cursorAt(view) === "pull all" && named(view, "pullAllAction").actionEnabled, "Up twice: back on Pull all, which can run")
         view.activateRequested()
         check(service.pullingAll && service.repositoryActionRunning, "Enter on Pull all starts it")
@@ -147,11 +169,13 @@ ShellRoot {
         phase = 3
       } else if (phase === 3) {
         if (service.pullingAll || service.busy) return
-        check(service.actionStatus === "Pulled 2 repositories", "count reported: " + JSON.stringify(service.actionStatus))
-        // After the status refresh that followed Pull all.
-        check(service.operationError.indexOf("missing-origin") >= 0 && service.operationError.indexOf(" · ") < 0,
-          "only beta's failure is reported: " + service.operationError)
-        check(service.lastError === service.operationError, "the warning line shows it: " + service.lastError)
+        check(service.actionStatus === "Pulled 1 repository", "count reported: " + JSON.stringify(service.actionStatus))
+        // After the status refresh that followed Pull all: beta's, then delta's.
+        var failures = service.operationError.split(" · ")
+        check(failures.length === 2 && failures[0].indexOf("missing-origin") >= 0 && failures[1] === "delta has no upstream branch",
+          "beta's and delta's failures are reported: " + service.operationError)
+        check(service.lastError === service.operationError, "the warning line shows them: " + service.lastError)
+        shell.betaFailure = failures[0]
         check(service.pullableRepos.length === 1 && service.pullableRepos[0].label === "beta", "beta is left to pull")
         check(JSON.stringify(Object.keys(rows(view)).sort()) === JSON.stringify(["beta", "gamma"]), "the clean clones leave the list: " + Object.keys(rows(view)))
         // Two repositories behind, four commits.
@@ -159,8 +183,13 @@ ShellRoot {
         for (var up = 0; up < 8; up++) view.moveRequested(0, -1)
         view.moveRequested(0, 1)
         view.moveRequested(0, 1)
+        language.setText("no\n")
         phase = 4
       } else if (phase === 4) {
+        // The kept failures follow the switch: delta's refusal in
+        // Norwegian, Git's error as it is.
+        if (Kit.FoamyI18n.language !== "no") return
+        check(service.operationError === shell.betaFailure + " · @DELTA_NO@", "the failures in Norwegian: " + service.operationError)
         check(cursorAt(view) === "pull all", "Pull all stays while beta can pull: " + cursorAt(view))
         view.moveRequested(0, -1)
         phase = 5
@@ -229,6 +258,8 @@ git(clones[1], "remote", "set-url", "origin", str(ROOT.parent / (ROOT.name + "-m
 (clones[3] / "local.txt").write_text("uncommitted\n")
 (clones[3] / "other.txt").write_text("uncommitted\n")
 remote_head = head(seed)
+# What the panel shows in Norwegian when the helper refuses delta's pull.
+NO_UPSTREAM = json.loads((PLUGIN / "i18n" / "no.json").read_text())["%1 has no upstream branch"].replace("%1", "delta")
 # Stands in for uwsm-app, so opening a repository never starts a terminal.
 FAKE_UWSM = """#!/bin/sh
 printf '%s\\0' "$@" > "$FOAMY_OUT/uwsm-args.tmp" && mv "$FOAMY_OUT/uwsm-args.tmp" "$FOAMY_OUT/uwsm-args"
@@ -236,12 +267,15 @@ printf '%s\\0' "$@" > "$FOAMY_OUT/uwsm-args.tmp" && mv "$FOAMY_OUT/uwsm-args.tmp
 
 status = 0
 for host in harness.available_hosts(what="runtime-pullall"):
-    for clone in clones:  # each host starts behind again
+    for clone in clones:  # each host starts behind again, delta with its upstream
         if head(clone) == remote_head:
             git(clone, "reset", "-q", "--hard", "HEAD~2")
+    git(clones[2], "branch", "-q", "--set-upstream-to=origin/main")
     run = harness.Run(
         host,
-        SHELL.replace("@ROOT@", str(ROOT)),
+        SHELL.replace("@ROOT@", str(ROOT))
+        .replace("@DELTA@", str(clones[2]))
+        .replace("@DELTA_NO@", json.dumps(NO_UPSTREAM)[1:-1]),
         plugin=PLUGIN,
         prefix=f"foamy-github-pullall-{host}-",
         fakebin={"uwsm-app": FAKE_UWSM},
@@ -251,9 +285,9 @@ for host in harness.available_hosts(what="runtime-pullall"):
         sys.exit(f"runtime-pullall: uwsm-app resolves to {stand_in}, not the stand-in")
     run.run(timeout=60)
     pulled = [head(clone) == remote_head for clone in clones]
-    if pulled != [True, False, True, False]:
+    if pulled != [True, False, False, False]:
         run.ok = False
-        print(f"pulled clones {pulled}, expected [True, False, True, False]")
+        print(f"pulled clones {pulled}, expected [True, False, False, False]")
     # Quickshell starts uwsm-app detached: it may write after qs quit.
     args_file = run.out / "uwsm-args"
     harness.wait_for(args_file.exists, timeout=10)
