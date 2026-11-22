@@ -3,7 +3,8 @@
 A status check that fails as a whole prints one message on stderr and exits
 1. The panel shows it on its warning line through FoamyI18n, with the
 English text as the catalog key, so each such message needs an entry in
-every catalog. The messages come from the real helper, so a changed text
+every catalog. So does a repository's refused automatic fetch, which its
+row shows. The messages come from the real helper, so a changed text
 fails here until the catalogs follow it. ("Repository summary is too large.
 Select fewer repository folders." needs an 8 MiB status; Model.parseStatus
 returns the same text, which tests/preferences.test.js covers.)
@@ -14,7 +15,7 @@ import os
 import unittest
 from pathlib import Path
 
-from blackbox import HelperTest
+from blackbox import HelperTest, needs_bwrap
 
 CATALOGS = {
     language: json.loads((Path(__file__).resolve().parents[1] / "i18n" / f"{language}.json").read_text())
@@ -52,6 +53,41 @@ class WarningLineMessagesTest(HelperTest):
             with self.subTest(label):
                 state.write_bytes(content)
                 self.assert_translated(self.run_helper("status", *self.options([])))
+
+
+class RowFetchMessagesTest(HelperTest):
+    """An automatic fetch the helper refuses for one repository shows on that
+    repository's row (its syncError), which the panel also translates with the
+    English text as the key. The origin is a local bare repository: each
+    refusal comes before Git would fetch it."""
+
+    def setUp(self):
+        super().setUp()
+        self.path = self.root / "repo"
+        self.init_repo(self.path)
+        remote = self.root / "remote.git"
+        self.git("init", "-q", "--bare", str(remote), cwd=self.root)
+        self.git("remote", "add", "origin", str(remote), cwd=self.path)
+        self.remote = remote
+
+    def assert_translated(self, failure):
+        self.assertIs(failure.get("ok"), False, failure)
+        for language, catalog in CATALOGS.items():
+            self.assertTrue(catalog.get(failure["message"]), f"no {language} entry: {failure['message']!r}")
+
+    @needs_bwrap
+    def test_local_origin(self):
+        self.assert_translated(self.fetched(self.path))
+
+    @needs_bwrap
+    def test_borrowed_objects(self):
+        (self.path / ".git/objects/info").mkdir(exist_ok=True)
+        (self.path / ".git/objects/info/alternates").write_text(f"{self.remote}/objects\n")
+        self.assert_translated(self.fetched(self.path))
+
+    def test_without_bubblewrap(self):
+        self.without_bwrap()
+        self.assert_translated(self.fetched(self.path))
 
 
 if __name__ == "__main__":
