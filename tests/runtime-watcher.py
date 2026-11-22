@@ -10,16 +10,20 @@ stderr and exits 3 (a failure, not 126/127); every other subcommand runs the
 real helper (FOAMY_HELPER, see tests/blackbox.py) over zero folders. The
 Service keeps only the first 4096 characters of the watcher's stderr, shows
 240 of them, and starts afresh when the watcher starts again (the detail of
-a restarted watcher names its own run). Every helper start also records the
-shell's peak resident memory (VmHWM of its parent, qs): reading that stderr
-must not raise it by 16 MiB (keeping it whole, as a StdioCollector did,
-costs several times the stderr). Temp HOME; no network. Requires
+a restarted watcher names its own run). The warning says the failure in
+the panel's language (one run in English, one in Norwegian) and then the
+detail as it is. Every helper start also records the shell's peak resident
+memory (VmHWM of its parent, qs): reading that stderr must not raise it by
+16 MiB (keeping it whole, as a StdioCollector did, costs several times the
+stderr). Temp HOME; no network. Requires
 ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
 
 import atexit
+import itertools
+import json
 import os
 import shlex
 import shutil
@@ -41,8 +45,8 @@ STDERR_BYTES = 16 * 1024 * 1024
 # Peak memory growth allowed while the watchers' stderr is consumed (kB).
 GROWTH_LIMIT_KB = 16 * 1024
 HEAD = "FAKE-WATCH-HEAD run "
-# The warning line's text with refreshIntervalSec 0, before the detail.
-WARNING = "Live monitoring unavailable; automatic local refresh is disabled. "
+# The warning line's failure with refreshIntervalSec 0, before the detail.
+WARNING = "Live monitoring unavailable; automatic local refresh is disabled."
 
 SHELL = r"""
 import QtQuick
@@ -87,8 +91,8 @@ ShellRoot {
       // so the shell's peak memory is recorded after the stderr was read).
       if (!service.watchFailed || service.refreshing) return
       check(!service.helperUnavailable, "exit 3 is a failure, not an unavailable helper")
-      // What the panel's warning line shows: the failure, then the head of
-      // the watcher's stderr.
+      // What the panel's warning line shows: the failure in the panel's
+      // language, then the head of the watcher's stderr as it is.
       var shown = service.lastError
       var warned = shown.indexOf(shell.warning) === 0
       check(warned, "the warning names the failure: " + JSON.stringify(shown.slice(0, 80)))
@@ -111,7 +115,7 @@ ShellRoot {
   }
   Timer { interval: 40000; running: true; onTriggered: { check(false, "timed out"); shell.finish() } }
 }
-""".replace("@HEAD@", HEAD).replace("@WARNING@", WARNING)
+""".replace("@HEAD@", HEAD)
 
 
 def fake_plugin(work):
@@ -135,11 +139,13 @@ exec {shlex.join(PREFIX)} "$@"
 
 
 status = 0
-for host in harness.available_hosts(what="runtime-watcher"):
+for host, language in itertools.product(harness.available_hosts(what="runtime-watcher"), ("en", "no")):
     work = Path(tempfile.mkdtemp(prefix="foamy-github-watcher-"))
     atexit.register(shutil.rmtree, work, True)
     plugin, counter, memory = fake_plugin(work)
-    run = harness.Run(host, SHELL, plugin=plugin, prefix=f"foamy-github-watcher-{host}-").start()
+    warning = json.loads((PLUGIN / "i18n" / f"{language}.json").read_text())[WARNING] + " "
+    shell_qml = SHELL.replace("@WARNING@", json.dumps(warning)[1:-1])
+    run = harness.Run(host, shell_qml, plugin=plugin, language=language, prefix=f"foamy-github-watcher-{host}-").start()
     shell_pid = run.process.pid
     run.wait(60)
     run.stop()
@@ -179,10 +185,12 @@ for host in harness.available_hosts(what="runtime-watcher"):
         print("host commands ran:", *run.host_commands(), sep="\n  ")
 
     if run.ok:
-        print(f"{host}: watcher stderr passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
+        print(
+            f"{host} ({language}): watcher stderr passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)"
+        )
         run.cleanup()
     else:
         status = 1
-        print(f"{host}: watcher stderr FAILED; log at {run.base}/qs.log")
+        print(f"{host} ({language}): watcher stderr FAILED; log at {run.base}/qs.log")
         print("\n".join(run.failures() or run.log.splitlines()[-30:]))
 sys.exit(status)
