@@ -16,6 +16,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use foamy_helper::sandbox::{Bwrap, ExecOnly};
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, StatxFlags};
@@ -97,6 +98,86 @@ pub fn remove_all_private_files() {
     for name in files {
         let _ = std::fs::remove_file(paths::os(&name));
     }
+}
+
+/// How old a private copy must be before a fetch removes it as left over:
+/// one hour of running time. A copy lives only while the check that made
+/// it runs. A fetch's pin lives longest: two 8 s lookups, then three
+/// attempts of up to 46 s (8 + 8 + 30 s) with 2 s and 5 s between them,
+/// under three minutes; a status check or a watch plan takes under a
+/// minute. The hour leaves a wide margin for a slow or loaded machine.
+const LEFTOVER_AGE: Duration = Duration::from_secs(3600);
+
+/// Removes the private copies (`overlay/config-*`, `pins/frozen-*`) that a
+/// helper left when it never reached its cleanup: killed with SIGKILL,
+/// crashed or panicked, or an older build. Only regular files older than
+/// [`LEFTOVER_AGE`] go, never through a link, so a check that runs now, in
+/// this or another helper, keeps its copies. Run at the start of a fetch,
+/// under sync.lock. Best effort, like the removals after each check: a
+/// copy that can't be removed now is tried again at the next fetch.
+pub fn remove_leftover_private_files() {
+    // A copy's age by the wall clock, less all the time the machine was
+    // suspended since it booted: Git's deadlines run on the monotonic
+    // clock, which stops while the machine is suspended, so a check that
+    // ran when it was suspended can still run after the resume. Without
+    // these clocks no age is certain, and nothing is removed.
+    let Some(asleep) = suspended_since_boot() else {
+        return;
+    };
+    let Ok(cache) = cache_dir() else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for (folder, prefix) in [(&b"overlay"[..], &b"config-"[..]), (b"pins", b"frozen-")] {
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let path = paths::join(&cache, folder);
+        let Ok(directory) = rustix::fs::open(paths::os(&path), flags, Mode::empty()) else {
+            continue;
+        };
+        let Ok(entries) = rustix::fs::Dir::read_from(&directory) else {
+            continue;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                break;
+            };
+            let name = entry.file_name();
+            if !name.to_bytes().starts_with(prefix) {
+                continue;
+            }
+            let wanted = StatxFlags::TYPE | StatxFlags::MTIME;
+            let Ok(stat) = rustix::fs::statx(&directory, name, AtFlags::SYMLINK_NOFOLLOW, wanted)
+            else {
+                continue;
+            };
+            if stat.stx_mask & wanted.bits() != wanted.bits()
+                || FileType::from_raw_mode(stat.stx_mode.into()) != FileType::RegularFile
+            {
+                continue;
+            }
+            let written = std::time::UNIX_EPOCH
+                + Duration::new(stat.stx_mtime.tv_sec.max(0) as u64, stat.stx_mtime.tv_nsec);
+            let age = now.duration_since(written).unwrap_or_default();
+            if age.saturating_sub(asleep) > LEFTOVER_AGE {
+                let _ = rustix::fs::unlinkat(&directory, name, AtFlags::empty());
+            }
+        }
+    }
+}
+
+/// How long the machine has been suspended since it booted: the time that
+/// CLOCK_BOOTTIME counts and CLOCK_MONOTONIC does not.
+fn suspended_since_boot() -> Option<Duration> {
+    let read = |clock| {
+        // SAFETY: an all-zero timespec is valid, and clock_gettime only
+        // writes the one it is given.
+        unsafe {
+            let mut time: libc::timespec = std::mem::zeroed();
+            (libc::clock_gettime(clock, &mut time) == 0)
+                .then(|| Duration::new(time.tv_sec as u64, time.tv_nsec as u32))
+        }
+    };
+    Some(read(libc::CLOCK_BOOTTIME)?.saturating_sub(read(libc::CLOCK_MONOTONIC)?))
 }
 
 /// `tempfile.mkstemp(prefix=…, dir=…)` with `data` written: 0600, `O_EXCL`.

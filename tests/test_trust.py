@@ -1670,6 +1670,66 @@ class LifecycleTest(HelperTest):
                 self.assertEqual(copies(), before, "private copies outlived the helper")
 
     @needs_bwrap
+    def test_a_fetch_removes_the_old_copies_that_a_killed_helper_left(self):
+        # A helper killed with SIGKILL (or one that crashed) never removes the
+        # private copies of the check it was running. The next fetch removes
+        # those older than an hour of running time; it keeps younger ones,
+        # which a check that runs now may still use, and any other file.
+        main = self.init_repo(self.root / "main")
+        self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=main)
+        worktree = self.root / "wt"
+        self.git("worktree", "add", "-q", str(worktree), "-b", "side", cwd=main)
+        cache = self.root / "cache/foamy-github"
+
+        def copies():
+            return {
+                path
+                for folder in ("overlay", "pins")
+                if (cache / folder).is_dir()
+                for path in (cache / folder).iterdir()
+            }
+
+        kill = {}
+        started = threading.Event()
+
+        def at_git(argv):
+            # The status check's copies exist from before this command on.
+            if subcommand(argv)[:1] == [b"symbolic-ref"]:
+                started.wait(10)
+                kill["helper"].kill()
+
+        self.git_hook(at_git)
+
+        def killed_check():
+            before = copies()
+            started.clear()
+            kill["helper"] = subprocess.Popen(
+                command("status", *self.options([{"path": str(worktree), "depth": 0}])),
+                env=self.env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            started.set()
+            self.assertEqual(kill["helper"].wait(60), -signal.SIGKILL)
+            left = copies() - before
+            self.assertEqual({path.parent.name for path in left}, {"overlay", "pins"}, left)
+            return left
+
+        old, young = killed_check(), killed_check()
+        other = cache / "overlay/notes"
+        other.write_text("not a copy\n")
+        # Time the machine was suspended since boot is no running time.
+        asleep = time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+        now = time.time()
+        for path in (*old, other):
+            os.utime(path, (now - 3600 - asleep - 60,) * 2)
+        for path in young:
+            os.utime(path, (now - 3600 + 60,) * 2)
+        code, payload = self.fetch([])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(copies(), {*young, other}, "the copies older than an hour go, and only those")
+
+    @needs_bwrap
     def test_a_stopped_fetch_keeps_the_previous_result(self):
         # The stop signal kills Git first, so every fetch it cuts short fails at
         # once ("Could not read the origin remote", "Stopping."). Those are not

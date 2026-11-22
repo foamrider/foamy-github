@@ -340,6 +340,8 @@ pub fn synchronize(folders: &[Folder], trust: &Trust) -> Result<Obj> {
     };
     write_marker()?;
     let _marker = Marker;
+    // The copies of helpers that never reached their cleanup.
+    pin::remove_leftover_private_files();
     let repositories = status::collect_repositories(folders)?;
     let now = now();
     let previous = status::read_sync_state()?;
@@ -401,36 +403,36 @@ pub fn repository_action(
     let _marker = Marker;
     let row = status::repository_status(&repo, trust, None);
     let label = &repo.label;
-    let said = |suffix: &str| [label.as_slice(), suffix.as_bytes()].concat();
+    // A text that names the repository: in English, and as its catalog key
+    // with the label, which the panel shows in its own language.
+    let said = |suffix: &str, ok: bool| {
+        message([label.as_slice(), suffix.as_bytes()].concat(), ok)
+            .with("key", format!("%1{suffix}"))
+            .with("values", vec![Json::from(label.clone())])
+    };
     if !row.complete {
         return Ok(message(row.error, false));
     }
     if row.upstream.is_empty() {
-        return Ok(message(said(" has no upstream branch"), false));
+        return Ok(said(" has no upstream branch", false));
     }
     let (arguments, mut commits): (Vec<&[u8]>, u64) = if mode == "push" {
         if row.ahead == 0 {
-            return Ok(message(said(" has nothing to push"), true));
+            return Ok(said(" has nothing to push", true));
         }
         if row.behind > 0 {
-            return Ok(message(
-                said(" has remote changes; pull or rebase first"),
-                false,
-            ));
+            return Ok(said(" has remote changes; pull or rebase first", false));
         }
         (vec![b"push"], row.ahead)
     } else {
         if row.dirty_count > 0 {
-            return Ok(message(
-                said(" has local changes; open lazygit before pulling"),
+            return Ok(said(
+                " has local changes; open lazygit before pulling",
                 false,
             ));
         }
         if row.ahead > 0 && row.behind > 0 {
-            return Ok(message(
-                said(" has diverged; open lazygit to resolve it"),
-                false,
-            ));
+            return Ok(said(" has diverged; open lazygit to resolve it", false));
         }
         (vec![b"pull", b"--ff-only"], 0)
     };
@@ -471,5 +473,11 @@ pub fn repository_action(
     Ok(Obj::new()
         .with("ok", true)
         .with("operation", mode)
-        .with("message", text))
+        .with("message", text)
+        .with("key", format!("{verb} %1 commits for %2"))
+        .with(
+            "values",
+            vec![Json::from(commits), Json::from(label.clone())],
+        )
+        .with("count", commits))
 }

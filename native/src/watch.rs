@@ -92,9 +92,9 @@ impl Inotify {
                     self.paths.insert(wd, path.clone());
                 }
                 // A concurrent move/delete is covered by its parent watch and
-                // next batch; an unreadable directory is skipped like Git does,
-                // and so is one whose path is too long to name.
-                Err(Errno::NOENT | Errno::NOTDIR | Errno::ACCESS | Errno::NAMETOOLONG) => continue,
+                // next batch; any other error that skips a directory in a
+                // scan skips its watch too.
+                Err(errno) if status::skips_directory(errno.raw_os_error()) => continue,
                 Err(errno) => {
                     let code = errno.raw_os_error();
                     let mut text = format!("[Errno {code}] Cannot monitor ").into_bytes();

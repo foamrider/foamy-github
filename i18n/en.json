@@ -88,6 +88,19 @@
   "push failed": "push failed",
   "pull failed": "pull failed",
   "Repository is not tracked by this panel": "Repository is not tracked by this panel",
+  "%1 has no upstream branch": "%1 has no upstream branch",
+  "%1 has nothing to push": "%1 has nothing to push",
+  "%1 has remote changes; pull or rebase first": "%1 has remote changes; pull or rebase first",
+  "%1 has local changes; open lazygit before pulling": "%1 has local changes; open lazygit before pulling",
+  "%1 has diverged; open lazygit to resolve it": "%1 has diverged; open lazygit to resolve it",
+  "Pushed %1 commits for %2": {
+    "one": "Pushed %1 commit for %2",
+    "other": "Pushed %1 commits for %2"
+  },
+  "Pulled %1 commits for %2": {
+    "one": "Pulled %1 commit for %2",
+    "other": "Pulled %1 commits for %2"
+  },
   "No repository status received": "No repository status received",
   "Invalid repository status": "Invalid repository status",
   "Failed to parse repository status": "Failed to parse repository status",

@@ -46,7 +46,11 @@
 //!   "folders", "failures": [{path, name, label, ok: false, operation,
 //!   attempts, message}…]}`, also written to the cache; exit 0 when nothing
 //!   failed, else 1.
-//! - `push`/`pull REPOSITORY`: `{"ok", ["operation"], "message"}`; exit 0 on ok.
+//! - `push`/`pull REPOSITORY`: `{"ok", ["operation"], "message", ["key",
+//!   "values", ["count"]]}`; exit 0 on ok. `message` is English. A text that
+//!   names the repository or a commit count also comes as `key`, its fixed
+//!   English text with `%1`, `%2` holes (a catalog key), and `values`, which
+//!   fill them in order; `count`, when present, picks the plural form.
 //! - busy (another fetch/push/pull holds `sync.lock`): `{"ok": false, "busy":
 //!   true, "message"}`, exit 0.
 //! - `identity PATH`: the pinned identity of the repository there now, or an
@@ -73,7 +77,9 @@
 //! 256-failure limit), `syncing` (the pid of a running fetch/push/pull;
 //! stale markers are removed), `sync.lock` (`flock`, non-blocking),
 //! `pins/frozen-*` and `overlay/config-*` (0600 private copies mounted
-//! into the namespace, removed after each check and at a stop signal), and
+//! into the namespace, removed after each check and at a stop signal; a
+//! fetch removes at its start those older than an hour, time suspended not
+//! counted, which a killed or crashed helper left), and
 //! the ssh_config.d copy in `$XDG_RUNTIME_DIR/foamy-github-ssh/ssh_config.d-*`
 //! (removed at exit).
 //!
