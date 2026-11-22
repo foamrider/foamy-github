@@ -1655,6 +1655,41 @@ class LifecycleTest(HelperTest):
                 )
                 self.assertEqual(copies(), before, "private copies outlived the helper")
 
+    @needs_bwrap
+    def test_a_stopped_fetch_keeps_the_previous_result(self):
+        # The stop signal kills Git first, so every fetch it cuts short fails at
+        # once ("local origin", "Stopping."). Those are not results: the rows
+        # keep what the last finished fetch found.
+        projects = self.root / "projects"
+        for name in ("a", "b", "c", "d", "e", "f"):
+            repo = self.init_repo(projects / name)
+            self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=repo)
+        state = self.root / "cache/foamy-github/sync-state.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        previous = json.dumps({"lastAttempt": 5, "lastSuccess": 5, "mode": "fetch", "failures": []}) + "\n"
+        state.write_text(previous)
+        stop = {}
+        started = threading.Event()
+
+        def at_git(argv):
+            if subcommand(argv)[:1] == [b"ls-remote"] and "sent" not in stop:
+                started.wait(10)
+                stop["sent"] = True
+                stop["helper"].send_signal(signal.SIGTERM)
+
+        self.git_hook(at_git)
+        helper = subprocess.Popen(
+            command("fetch", *self.options([{"path": str(projects), "depth": 1}])),
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        stop["helper"] = helper
+        started.set()
+        self.assertEqual(helper.wait(60), 128 + signal.SIGTERM)
+        self.assertTrue(stop.get("sent"), "the fetch never reached ls-remote")
+        self.assertEqual(state.read_text(), previous, "a stopped fetch replaced the last result")
+
     def test_a_held_lock_answers_busy_and_starts_nothing(self):
         # Another fetch, push or pull holds sync.lock (flock, as the helper's
         # own lock): the panel shows a busy reply as a title, not an error.

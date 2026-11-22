@@ -163,13 +163,7 @@ pub fn scan_dir(
             Err(error)
                 if matches!(
                     error.raw_os_error(),
-                    Some(
-                        libc::ENOENT
-                            | libc::ENOTDIR
-                            | libc::EACCES
-                            | libc::EPERM
-                            | libc::ENAMETOOLONG
-                    )
+                    Some(libc::ENOENT | libc::ENOTDIR | libc::EACCES | libc::EPERM)
                 ) =>
             {
                 return Ok(());

@@ -340,6 +340,9 @@ pub fn synchronize(folders: &[Folder], trust: &Trust) -> Result<Obj> {
     let now = now();
     let previous = status::read_sync_state()?;
     let results = status::parallel(&repositories, |repo| fetch_repository(repo, trust));
+    // A stop signal kills Git before the process exits, so the fetches it
+    // cut short fail at once; such failures must not replace the cache.
+    git::wait_if_terminating();
     let failures: Vec<Json> = results
         .into_iter()
         .filter(|result| !matches!(result, Json::Obj(object) if object.get("ok") == Some(&Json::Bool(true))))

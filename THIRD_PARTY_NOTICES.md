@@ -12,9 +12,9 @@ How the lists are made:
 
 ## `foamy-github-helper`
 
-- `bin/aarch64/foamy-github-helper`: sha256 `1d80615ee7846a2fc13d03b7eb6187c4427c3309b1fc7040f0c1de74a9f3bdda`
-- `bin/x86_64/foamy-github-helper`: sha256 `5f780b8ee19357f7cda495021e6b7973ef9f146d284388513277dc1bfb5416c7`
-- `native/native.pin`: source `5f8da75451071ff36c3b1965b4482866cea877801c297b456f10728923864072`, toolchain 1.99.1
+- `bin/aarch64/foamy-github-helper`: sha256 `95e7a129c87ac2f900e7f3e3132ae4a4d4a44cde0de4dcc04857d6a7cf160b3c`
+- `bin/x86_64/foamy-github-helper`: sha256 `fe499fee386e13bd0811362308740d8a84bf1409f5cc46563c92c746d40ea021`
+- `native/native.pin`: source `901734b0f623783e3bfce506924579442c4b500ffe7f9321041b0d5fe6fb9604`, toolchain 1.99.1
 
 ### Crates linked into `foamy-github-helper`
 

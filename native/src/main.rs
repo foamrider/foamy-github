@@ -64,7 +64,8 @@
 //!   summary: the message on stderr, exit 1, nothing on stdout.
 //! - SIGTERM/SIGINT/SIGHUP: every running Git process group is killed, the
 //!   `syncing` marker and the private copies (below) removed, exit 128 +
-//!   signal. A panic exits 101.
+//!   signal; the failures a stop causes never reach `sync-state.json`. A
+//!   panic exits 101.
 //!
 //! # Files (in `$XDG_CACHE_HOME/foamy-github`, default `~/.cache/foamy-github`)
 //!
