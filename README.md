@@ -27,8 +27,8 @@ omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
 4. A repository's arrows push or pull; the terminal button (or Enter) opens it in lazygit.
 5. **Pull all** (the arrow onto a line left of the cog, or `p`) pulls every repository a row's
    pull arrow would: behind, with no local changes and nothing to push. It shows only when
-   there is something to pull. They are pulled one at a time; the title shows the count pulled
-   and anything that failed.
+   there is something to pull. They are pulled one at a time; the title shows the count pulled,
+   and the warning line under it anything that failed, until the next push, pull or fetch.
 
 The popup lists repositories that need attention: ahead, behind, changed, or
 whose last fetch failed. A failed fetch is shown on the repository's row, in
