@@ -1617,6 +1617,19 @@ class LifecycleTest(HelperTest):
         # A check in flight holds private copies in the cache: a frozen config
         # and, for a linked worktree, its frozen .git pointer and commondir.
         # Their owners remove them after the check, which a stop signal ends.
+        #
+        # What this proves: a stop signal while each command's copies exist
+        # ends the helper with 128 + signal, and no copy is left. What it
+        # cannot force: the signal is handled on its own thread, which kills
+        # Git, removes the copies and ends the process, and the killed Git
+        # also ends the main thread's work. The guard at the end of main
+        # (git::wait_if_terminating) matters only when the main thread
+        # returns first. Here the signal's thread nearly always wins, so the
+        # test passes in most runs without the guard; parallel runs (32 at a
+        # time, the aarch64 helper under qemu) showed the other order, 2 of
+        # 160 failed without it. The helper has no hold that would let a test
+        # force the order: main.rs's contract allows no test-only variables,
+        # because such an input would ship in the binary.
         main = self.init_repo(self.root / "main")
         self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=main)
         worktree = self.root / "wt"
@@ -1734,6 +1747,17 @@ class LifecycleTest(HelperTest):
         # The stop signal kills Git first, so every fetch it cuts short fails at
         # once ("Could not read the origin remote", "Stopping."). Those are not
         # results: the rows keep the result of the last finished fetch.
+        #
+        # What this proves: a fetch stopped at its first ls-remote ends with
+        # 128 + signal and leaves sync-state.json as it was. What it cannot
+        # force: the guard before the cache write (git::wait_if_terminating
+        # in synchronize) matters only when the main thread gets there before
+        # the signal's thread ends the process. The signal's thread nearly
+        # always wins, so the test passes in most runs without the guard; a
+        # scratch build whose signal thread waited 1.5 s after killing Git
+        # showed the stop-made failures written without it. The helper has no
+        # such wait for a test to turn on: main.rs's contract allows no
+        # test-only variables, because such an input would ship in the binary.
         projects = self.root / "projects"
         for name in ("a", "b", "c", "d", "e", "f"):
             repo = self.init_repo(projects / name)
