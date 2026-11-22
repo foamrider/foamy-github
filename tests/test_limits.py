@@ -137,6 +137,8 @@ class GitLimitsTest(HelperTest):
         self.assertLess(time.monotonic() - started, 30)
         self.assertFalse(row["complete"])
         self.assertIn("timed out", row["error"])
+        # The row shows the timeout translated.
+        assert_cataloged(self, row["error"])
         descendant = int(pidfile.read_text())
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
@@ -147,6 +149,19 @@ class GitLimitsTest(HelperTest):
             time.sleep(0.02)
         os.kill(descendant, signal.SIGKILL)
         self.fail("a descendant holding Git's pipes outlived the deadline")
+
+    def test_git_that_closes_its_pipes_but_runs_on_times_out(self):
+        # Its output has ended, so the helper waits for its exit, until the
+        # deadline. Without bubblewrap: in the namespace bwrap holds the
+        # pipes open, and the wait for output times out as above.
+        self.without_bwrap()
+        self.script("if name == 'symbolic-ref':\n  os.close(1)\n  os.close(2)\n  time.sleep(60)")
+        started = time.monotonic()
+        row, _ = self.run_status()
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertFalse(row["complete"])
+        self.assertIn("timed out", row["error"])
+        assert_cataloged(self, row["error"])
 
     def test_success_does_not_kill_detached_background_work(self):
         # A push (run without a namespace) may leave background work behind.

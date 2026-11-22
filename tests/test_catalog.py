@@ -8,12 +8,11 @@ reason, which reach the warning line. The messages come from the real
 helper, so a changed text fails here until the catalogs follow it. A status
 check that fails as a whole (a scan or cache limit: one message on stderr,
 exit 1, shown on the warning line) is checked where tests/test_limits.py
-reaches each limit. ("Repository summary is too large. Select fewer
-repository folders." needs an 8 MiB status; Model.parseStatus returns the
-same text, which tests/preferences.test.js covers. The Git timeouts need a
-Git that hangs until the deadline, and "The repository changed during the
-check." needs a change during the check: their entries are not checked
-here.)
+reaches each limit, the two Git timeouts in its deadline tests, and "The
+repository changed during the check." where tests/test_trust.py swaps a
+trusted repository during its check. ("Repository summary is too large.
+Select fewer repository folders." needs an 8 MiB status; Model.parseStatus
+returns the same text, which tests/preferences.test.js covers.)
 """
 
 import unittest

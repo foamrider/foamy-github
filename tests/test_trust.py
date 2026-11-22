@@ -16,7 +16,17 @@ import threading
 import time
 import unittest
 
-from blackbox import BWRAP, LANDLOCK, REAL_GIT, HelperTest, command, needs_bwrap, needs_landlock, subcommand
+from blackbox import (
+    BWRAP,
+    LANDLOCK,
+    REAL_GIT,
+    HelperTest,
+    assert_cataloged,
+    command,
+    needs_bwrap,
+    needs_landlock,
+    subcommand,
+)
 
 
 def elf_interpreter(path):
@@ -1145,10 +1155,14 @@ os.execve({REAL_GIT!r}, [{REAL_GIT!r}, *args], env)""",
             (self.root / "swapped").write_text("")
 
         self.on_git(swap)
-        self.status_row(trusted=trust)
+        row = self.status_row(trusted=trust)
         self.assertTrue((self.root / "swapped").exists(), "the swap happened mid-check")
         for marker in (self.path / ".git/swapped.ran", self.root / "original/.git/swapped.ran"):
             self.assertFalse(marker.exists(), f"the swapped-in repository ran its config with trust: {marker}")
+        # The checked repository is no longer at the path: the row says so,
+        # translated, instead of its counts.
+        self.assertFalse(row["complete"], row)
+        assert_cataloged(self, row["error"])
 
     @needs_bwrap
     def test_untrusted_fetch_writes_only_into_the_inspected_repository(self):
