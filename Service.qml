@@ -59,10 +59,10 @@ Item {
   readonly property string watchError: !inotifyEnabled || !watchFailed ? "" : refreshIntervalSec > 0 ? "Live monitoring unavailable; using timed refresh." : "Live monitoring unavailable; automatic local refresh is disabled."
   property string watchDetail: ""
   // The panel translates lastError as one catalog key, so the watcher's
-  // failure is translated here, before its detail (stderr) is joined to it.
+  // failure and its stop reason are translated here, before they are joined.
   // A failed status check shows first, since no row is current while it
   // lasts; a kept action failure shows again once a status check works.
-  readonly property string lastError: (status.ok === false ? String(status.error || "") : "") || operationError || (watchError ? root.tr(watchError) + (watchDetail ? " " + watchDetail : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
+  readonly property string lastError: (status.ok === false ? String(status.error || "") : "") || operationError || (watchError ? root.tr(watchError) + (watchDetail ? " " + Model.watchDetailText(watchDetail, root.tr) : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
   property bool monitoring: false
   property bool watchRestartRequested: false
   property string watchedFolders: ""
