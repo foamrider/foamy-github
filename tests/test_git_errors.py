@@ -3,7 +3,7 @@
 import time
 import unittest
 
-from blackbox import HelperTest, needs_bwrap
+from blackbox import REAL_GIT, HelperTest, assert_cataloged, needs_bwrap
 
 # A fake Git: config listing and the probe succeed, every inspection fails
 # with the given output.
@@ -16,6 +16,15 @@ if args[:1] in (["config"], ["--version"]):
 sys.stdout.write({stdout!r})
 sys.stderr.write({stderr!r})
 sys.exit(128)"""
+
+# The real Git, except that `ls-remote --get-url` runs the given code.
+ORIGIN_LOOKUP = """import os, signal, sys
+args = sys.argv[1:]
+while args and args[0] in ("-c", "-C"):
+  args = args[2:]
+if args[:2] == ["ls-remote", "--get-url"]:
+{code}
+os.execv({git!r}, [{git!r}, *sys.argv[1:]])"""
 
 
 class GitErrorsTest(HelperTest):
@@ -47,6 +56,32 @@ class GitErrorsTest(HelperTest):
         self.assertFalse(result["ok"])
         self.assertEqual(result["attempts"], 0)
         self.assertEqual(result["operation"], "fetch")
+
+    @needs_bwrap
+    def test_a_failed_origin_lookup_is_not_a_local_origin(self):
+        # An untrusted fetch asks Git which origin it will use. When that
+        # command fails, the origin is unknown: the row shows Git's error,
+        # not the local-origin refusal, which asks the user to trust it.
+        repo = self.init_repo(self.root / "plain")
+        self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=repo)
+        for label, code, message in (
+            (
+                "an error",
+                "  sys.stderr.write('fatal: bad config line 1\\n')\n  sys.exit(128)",
+                "fatal: bad config line 1",
+            ),
+            (
+                "a kill",
+                "  os.kill(os.getpid(), signal.SIGKILL)",
+                "Could not read the origin remote. Check it in lazygit, then refresh.",
+            ),
+        ):
+            with self.subTest(label):
+                self.fake("git", ORIGIN_LOOKUP.format(code=code, git=REAL_GIT), interpreter="/usr/bin/python3 -I")
+                result = self.fetched(repo)
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["message"], message)
+        assert_cataloged(self, "Could not read the origin remote. Check it in lazygit, then refresh.")
 
     @needs_bwrap
     def test_configured_remote_still_fetches(self):

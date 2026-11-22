@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import "../kit"
 import ".." as Plugin
@@ -8,7 +9,7 @@ Item {
   id: preview
   required property QtObject bar
   required property Item anchorItem
-  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-lfs", "settings-no-lfs", "settings-error", "fetching"]
+  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-first", "settings-lfs", "settings-no-lfs", "settings-error", "fetching"]
   property string previewState: "repositories"
   property int settleMs: previewState === "settings-lfs" || previewState === "settings-no-lfs" ? 1500 : 600
   readonly property var popup: previewPopup
@@ -103,7 +104,8 @@ Item {
     readonly property bool busy: fetching
     // Every repository found (Settings lists only those using LFS: neither
     // .dotfiles nor Work/old-site, which stopped using LFS but keeps its trust record).
-    readonly property var repos: preview.previewState === "settings-no-lfs" ? preview.sample : [preview.row(".dotfiles", "main", 0, 0, 1, {
+    // "settings-first" is a new user's: no folders saved, so none.
+    readonly property var repos: preview.previewState === "settings-first" ? [] : preview.previewState === "settings-no-lfs" ? preview.sample : [preview.row(".dotfiles", "main", 0, 0, 1, {
         identity: "65:512:1"
       }), preview.row("Personal/game-assets", "main", 0, 0, 12, {
         usesLfs: true,
@@ -139,7 +141,7 @@ Item {
       Plugin.GithubView {
         service: mock
         settings: ({
-            repositoryFolders: [
+            repositoryFolders: preview.previewState === "settings-first" ? [] : [
               {
                 path: "~/GitHub",
                 depth: 2
@@ -163,8 +165,10 @@ Item {
   }
 
   // Open the first row's Git LFS note, with the keyboard cursor on its LFS
-  // button; "fetching": the cursor on the footer's spinning Refresh
-  // (restarted on every state: the body is kept between states).
+  // button; "fetching": the cursor on the footer's spinning Refresh;
+  // Settings: the folder rows of this state's settings, which the page
+  // loads only as it opens (restarted on every state: the body is kept
+  // between states).
   Timer {
     id: lfsTimer
     interval: 300
@@ -175,6 +179,8 @@ Item {
         preview.popup.bodyItem.showLfsInfo(0)
       if (preview.previewState === "fetching")
         preview.popup.bodyItem.showRefreshCursor()
+      if (preview.previewState.indexOf("settings") === 0)
+        preview.popup.bodyItem.loadFolders()
     }
   }
   // Settings → the end of the page (Git LFS, when shown), once the card has its height.

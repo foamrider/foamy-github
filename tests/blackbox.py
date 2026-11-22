@@ -101,6 +101,16 @@ LANDLOCK = (
 needs_bwrap = unittest.skipUnless(BWRAP, "needs a working bubblewrap")
 needs_landlock = unittest.skipUnless(LANDLOCK, "needs Landlock in the helper (not under qemu-user)")
 
+# The panel shows a helper message through FoamyI18n with its English text
+# as the catalog key, so a message it shows needs an entry in every catalog.
+CATALOGS = {language: json.loads((ROOT / "i18n" / f"{language}.json").read_text()) for language in ("en", "no")}
+
+
+def assert_cataloged(test, message):
+    for language, catalog in CATALOGS.items():
+        test.assertTrue(catalog.get(message), f"no {language} entry: {message!r}")
+
+
 _farm = None
 _farm_lock = threading.Lock()
 

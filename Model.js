@@ -236,14 +236,15 @@ function repositoryMeta(repo, tr, tn) {
   return parts.join(" · ")
 }
 
-// The watcher's stderr when it stops: this prefix, then the reason. A fixed
-// reason is a catalog key; any other text (an OS error) shows as it is.
+// The watcher's stderr when it stops: this prefix, then the reason. Without
+// stderr it is the Service's own "Filesystem watcher exited". A fixed text is
+// a catalog key; any other text (an OS error) shows as it is.
 var WATCH_STOPPED = "Filesystem monitoring stopped: "
 
 function watchDetailText(detail, tr) {
   tr = tr || translate
   var text = String(detail || "")
-  if (text.indexOf(WATCH_STOPPED) !== 0) return text
+  if (text.indexOf(WATCH_STOPPED) !== 0) return tr(text)
   return tr("Filesystem monitoring stopped: %1", [tr(text.slice(WATCH_STOPPED.length))])
 }
 

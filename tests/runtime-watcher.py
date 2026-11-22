@@ -6,17 +6,19 @@ isolated offscreen Quickshell (foamy-kit's harness) with a fake helper.
 
 The plugin runs from a temporary copy whose bin/<arch>/foamy-github-helper
 is a script: each `watch` writes "FAKE-WATCH-HEAD run <n>" and 16 MiB to
-stderr and exits 3 (a failure, not 126/127); every other subcommand runs the
-real helper (FOAMY_HELPER, see tests/blackbox.py) over zero folders. The
-Service keeps only the first 4096 characters of the watcher's stderr, shows
-240 of them, and starts afresh when the watcher starts again (the detail of
-a restarted watcher names its own run). The warning says the failure in
-the panel's language (one run in English, one in Norwegian) and then the
-detail as it is. Every helper start also records the shell's peak resident
-memory (VmHWM of its parent, qs): reading that stderr must not raise it by
-16 MiB (keeping it whole, as a StdioCollector did, costs several times the
-stderr). Temp HOME; no network. Requires
-~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
+stderr and exits 3 (a failure, not 126/127), except the third, which exits 3
+without writing anything; every other subcommand runs the real helper
+(FOAMY_HELPER, see tests/blackbox.py) over zero folders. The Service keeps
+only the first 4096 characters of the watcher's stderr, shows 240 of them,
+and starts afresh when the watcher starts again (the detail of a restarted
+watcher names its own run). The warning says the failure in the panel's
+language (one run in English, one in Norwegian) and then the detail as it
+is; after the silent run the detail is the Service's own "Filesystem
+watcher exited", in the panel's language too. Every helper start also
+records the shell's peak resident memory (VmHWM of its parent, qs): reading
+that stderr must not raise it by 16 MiB (keeping it whole, as a
+StdioCollector did, costs several times the stderr). Temp HOME; no network.
+Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
@@ -47,6 +49,8 @@ GROWTH_LIMIT_KB = 16 * 1024
 HEAD = "FAKE-WATCH-HEAD run "
 # The warning line's failure with refreshIntervalSec 0, before the detail.
 WARNING = "Live monitoring unavailable; automatic local refresh is disabled."
+# The Service's detail when the watcher wrote nothing.
+EXITED = "Filesystem watcher exited"
 
 SHELL = r"""
 import QtQuick
@@ -59,6 +63,7 @@ ShellRoot {
   property var panel: null
   property int checks: 0
   readonly property string warning: "@WARNING@"
+  readonly property string exited: "@EXITED@"
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
   function finish() { console.log("FOAMY CHECKS " + checks); console.log("FOAMY DONE"); Qt.quit() }
 
@@ -78,7 +83,8 @@ ShellRoot {
   }
 
   // Wait for the first watcher to fail, check what was kept, start the
-  // watcher again and wait for the new run to fail.
+  // watcher again and wait for the new run to fail; then once more, for the
+  // run that writes nothing.
   Timer {
     id: poll
     interval: 100
@@ -97,6 +103,13 @@ ShellRoot {
       var warned = shown.indexOf(shell.warning) === 0
       check(warned, "the warning names the failure: " + JSON.stringify(shown.slice(0, 80)))
       var detail = warned ? shown.slice(shell.warning.length) : ""
+      if (phase === 2) {
+        // Without stderr the detail is the Service's own text.
+        check(detail === shell.exited, "a silent watcher's detail is in the panel's language: " + JSON.stringify(detail))
+        stop()
+        shell.finish()
+        return
+      }
       check(detail.length > 0 && detail.length <= 240, "detail shown, at most 240 characters: " + detail.length)
       var head = /^@HEAD@([0-9]+)\n/.exec(detail)
       check(head !== null, "detail starts with the watcher's first bytes: " + JSON.stringify(detail.slice(0, 40)))
@@ -108,8 +121,8 @@ ShellRoot {
         phase = 1
       } else {
         check(run > firstRun && firstRun > 0, "a restarted watcher starts its stderr afresh: run " + run + " after run " + firstRun)
-        stop()
-        shell.finish()
+        service.restartWatcher(true)
+        phase = 2
       }
     }
   }
@@ -129,6 +142,8 @@ echo "$PPID $(awk '/^VmHWM:/ {{ print $2 }}' /proc/$PPID/status)" >> {shlex.quot
 if [ "${{1-}}" = watch ]; then
   runs=$(( $(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0) + 1 ))
   echo "$runs" > {shlex.quote(str(counter))}
+  # The third run fails without writing anything.
+  [ "$runs" -lt 3 ] || exit 3
   {{ printf '%s%s\\n' {shlex.quote(HEAD)} "$runs"; head -c {STDERR_BYTES} /dev/zero | tr '\\0' x; }} >&2
   exit 3
 fi
@@ -143,17 +158,20 @@ for host, language in itertools.product(harness.available_hosts(what="runtime-wa
     work = Path(tempfile.mkdtemp(prefix="foamy-github-watcher-"))
     atexit.register(shutil.rmtree, work, True)
     plugin, counter, memory = fake_plugin(work)
-    warning = json.loads((PLUGIN / "i18n" / f"{language}.json").read_text())[WARNING] + " "
-    shell_qml = SHELL.replace("@WARNING@", json.dumps(warning)[1:-1])
+    catalog = json.loads((PLUGIN / "i18n" / f"{language}.json").read_text())
+    warning = catalog[WARNING] + " "
+    # No entry: nothing can match, so the run fails and shows what was there.
+    exited = catalog.get(EXITED, "")
+    shell_qml = SHELL.replace("@WARNING@", json.dumps(warning)[1:-1]).replace("@EXITED@", json.dumps(exited)[1:-1])
     run = harness.Run(host, shell_qml, plugin=plugin, language=language, prefix=f"foamy-github-watcher-{host}-").start()
     shell_pid = run.process.pid
     run.wait(60)
     run.stop()
     run.ok = "FOAMY DONE" in run.log and not run.failures()
     runs = counter.read_text().strip() if counter.exists() else "0"
-    if int(runs) < 2:
+    if int(runs) < 3:
         run.ok = False
-        print(f"the fake watcher ran {runs} times, expected at least 2")
+        print(f"the fake watcher ran {runs} times, expected at least 3")
     samples = [line.split() for line in (memory.read_text().splitlines() if memory.exists() else [])]
     if len(samples) < 3 or any(len(sample) != 2 or sample[0] != str(shell_pid) for sample in samples):
         run.ok = False

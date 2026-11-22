@@ -60,8 +60,3 @@ Panel.qml: missing-property: Member "iconSlot" not found on type "QObject" | fix
 Service.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var repo = pullAllQueue[0]
 Service.qml: block-scope-var-declaration: var declaration in block scope is hoisted to function scope | var step = root.pullAllResult
 Service.qml: import: Type Service not declared as singleton in qmldir but using pragma Singleton
-preview/Preview.qml: unqualified: Unqualified access | editingSettings: preview.previewState.indexOf("settings") === 0
-preview/Preview.qml: unqualified: Unqualified access | retryable: preview.previewState === "settings-error"
-preview/Preview.qml: unqualified: Unqualified access | service: mock
-preview/Preview.qml: unqualified: Unqualified access | settingsError: preview.previewState === "settings-error" ? "Couldn't save the setting." : ""
-preview/Preview.qml: unqualified: Unqualified access | trustedRepositories: preview.trusted
