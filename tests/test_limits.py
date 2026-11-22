@@ -7,7 +7,7 @@ import subprocess
 import time
 import unittest
 
-from blackbox import HelperTest, command, needs_bwrap
+from blackbox import HelperTest, assert_cataloged, command, needs_bwrap
 
 # A fake Git that answers the read path like an unborn repository without
 # upstream; `status` (and any other subcommand named in the test) runs the
@@ -209,6 +209,8 @@ class GitLimitsTest(HelperTest):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(message, result.stderr)
                 self.assertEqual(result.stdout, b"")
+                # The warning line shows it translated: stderr without surrounding space is the key.
+                assert_cataloged(self, result.stderr.decode().strip())
 
 
 class RealGitLimitsTest(HelperTest):
@@ -298,6 +300,8 @@ class RealGitLimitsTest(HelperTest):
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"Repository limit (256) reached", result.stderr)
         self.assertEqual(result.stdout, b"")
+        # The warning line shows it translated: stderr without surrounding space is the key.
+        assert_cataloged(self, result.stderr.decode().strip())
         big = self.root / "big"
         big.mkdir()
         for index in range(100001):
@@ -305,6 +309,7 @@ class RealGitLimitsTest(HelperTest):
         result = self.run_helper("status", "--folders-json", json.dumps([{"path": str(big), "depth": 1}]))
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"Folder scan limit reached", result.stderr)
+        assert_cataloged(self, result.stderr.decode().strip())
 
     def test_directory_watch_budget_is_explicit(self):
         for index in range(8200):
