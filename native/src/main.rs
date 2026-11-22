@@ -261,7 +261,7 @@ fn trust_of(parsed: &Arguments) -> Result<Trust, Error> {
 fn main() -> ExitCode {
     foamy_helper::process::exit_on_panic(101);
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    match args.first().map(|arg| arg.as_bytes()) {
+    let code = match args.first().map(|arg| arg.as_bytes()) {
         Some(b"exec-only") => exec_only(&args[1..]),
         Some(b"watch") => watch_main(&args[1..]),
         Some(b"pick-folder") => foamy_helper::json::run(
@@ -269,7 +269,9 @@ fn main() -> ExitCode {
             foamy_helper::json::error_reply,
         ),
         _ => status_main(&args),
-    }
+    };
+    git::wait_if_terminating();
+    code
 }
 
 fn status_main(args: &[OsString]) -> ExitCode {

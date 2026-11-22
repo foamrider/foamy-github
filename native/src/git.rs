@@ -136,6 +136,19 @@ pub fn terminating() -> bool {
     registry().terminating
 }
 
+/// Never returns once a stop signal arrived. The signal kills the Git
+/// processes before it removes the private files, so the work they ran can
+/// end first; returning from `main` then would exit with that work's code
+/// and could end the process before the files are gone. `terminate` ends
+/// the process instead.
+pub fn wait_if_terminating() {
+    if terminating() {
+        loop {
+            thread::park();
+        }
+    }
+}
+
 // ---- running Git ---------------------------------------------------------------
 
 /// How Git is started: sandboxed (exec restricted to Git, where Landlock
