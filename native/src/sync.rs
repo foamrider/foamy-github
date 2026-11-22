@@ -145,11 +145,15 @@ fn overlay_fetch(repo: &Repository, policy: &Policy) -> Result<Option<Finished>>
                 .sandbox(true)
                 .pin(Some(&overlay)),
         )?;
-        let effective = if asked.success() {
-            pystr::strip_bytes(&asked.stdout)
-        } else {
-            Vec::new()
-        };
+        if !asked.success() {
+            // Git failed or was killed before it said which origin it would
+            // use: that is no local origin, and trust would not help.
+            return Err(Error::Inspection(git::concise_error(
+                Some(&asked),
+                "Could not read the origin remote. Check it in lazygit, then refresh.",
+            )));
+        }
+        let effective = pystr::strip_bytes(&asked.stdout);
         if effective.is_empty() || config::is_local_url(&effective) {
             return Err(Error::inspection(LOCAL_ORIGIN));
         }

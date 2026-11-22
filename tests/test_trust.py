@@ -1672,8 +1672,8 @@ class LifecycleTest(HelperTest):
     @needs_bwrap
     def test_a_stopped_fetch_keeps_the_previous_result(self):
         # The stop signal kills Git first, so every fetch it cuts short fails at
-        # once ("local origin", "Stopping."). Those are not results: the rows
-        # keep what the last finished fetch found.
+        # once ("Could not read the origin remote", "Stopping."). Those are not
+        # results: the rows keep the result of the last finished fetch.
         projects = self.root / "projects"
         for name in ("a", "b", "c", "d", "e", "f"):
             repo = self.init_repo(projects / name)
