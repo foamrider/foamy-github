@@ -51,13 +51,19 @@ test('status parser rejects oversized messages, repository lists and invalid row
     ['a fractional count', status([{...row, behind:1.5}]), false],
     ['a number', '5', false],
     ['null', 'null', false],
-    // An array comes back without ok: true, which the Service also refuses.
     ['an array', '[]', false],
+    ['an object without ok', '{}', false],
+    ['ok that is not true', JSON.stringify({ok:1, repos:[row]}), false],
+    ['ok false', JSON.stringify({ok:false, repos:[row]}), false],
   ]
   for (const [label, raw, accepted] of cases) {
     const result = Model.parseStatus(raw)
     if (accepted) assert.equal(result.ok, true, label)
-    else assert.notEqual(result.ok, true, label)
+    else {
+      // A rejected status says why.
+      assert.equal(result.ok, false, label)
+      assert.ok(typeof result.error === 'string' && result.error !== '', label)
+    }
   }
 })
 
