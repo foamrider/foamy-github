@@ -50,11 +50,14 @@ Item {
       }
     ] : []
   }
+  // The last push, pull, Pull all or fetch failure. It outlives the status
+  // refresh that follows it and goes when the next one starts; a failed
+  // status check is the status's own error.
   property string operationError: ""
   property bool watchFailed: false
   readonly property string watchError: !inotifyEnabled || !watchFailed ? "" : refreshIntervalSec > 0 ? "Live monitoring unavailable; using timed refresh." : "Live monitoring unavailable; automatic local refresh is disabled."
   property string watchDetail: ""
-  readonly property string lastError: operationError || (watchError ? watchError + (watchDetail ? " " + watchDetail : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
+  readonly property string lastError: operationError || (status.ok === false ? String(status.error || "") : "") || (watchError ? watchError + (watchDetail ? " " + watchDetail : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
   property bool monitoring: false
   property bool watchRestartRequested: false
   property string watchedFolders: ""
@@ -161,6 +164,8 @@ Item {
     syncProcess.running = false
     repositoryActionProcess.running = false
     monitoring = false
+    // No failure may stay on the shared Service for the next bar.
+    operationError = ""
   }
 
   // Popup opened: with live monitoring the rows are already current, so
@@ -339,12 +344,10 @@ Item {
     }
     status = next
     lastChecked = Date.now() / 1000
-    operationError = ""
     return true
   }
 
   function failStatus(message) {
-    operationError = message
     status = Model.unavailableStatus(status, message)
   }
 

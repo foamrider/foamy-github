@@ -8,7 +8,9 @@ run's own system bus.
 
 The fake helper logs every start, SIGTERM and end to calls.log, with the
 trust it was given, and holds each subcommand named in the `block` file
-until the test removes it (at most 30 s). Its status reports one
+until the test removes it (at most 30 s), and fails each subcommand named
+in the `fail` file (push with a JSON reply, fetch with only stderr). Its
+status reports one
 repository using Git LFS, trusted when its trust arguments name anything
 and labelled "other" when its folders name /foamy-other; its pick-folder
 answers /foamy-picked.
@@ -26,6 +28,9 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
 - lfs: the row's LFS button, its note and "Trust this repository", with
   the keys: the identity is checked again and the trust saved.
 - chooser: a folder picked in the folder chooser fills the row and is saved.
+- errors: a failed push and a failed fetch stay on the warning line through
+  the status refresh that follows them; the next fetch clears the failure,
+  and so does the last bar's unload.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
   "unavailable" once the helper exits 127, which the panel then says;
@@ -52,6 +57,10 @@ import fake_nm  # noqa: E402
 
 PLUGIN = Path(__file__).resolve().parents[1]
 REPO = "/foamy-test/repo"
+# What the fake helper says when a push or a fetch fails (Git diagnostics,
+# which pass through the catalogs as they are).
+PUSH_FAILURE = "error: failed to push some refs to origin"
+FETCH_FAILURE = "fatal: unable to access origin"
 
 HELPER = r"""#!/usr/bin/env bash
 # Fake foamy-github-helper (see tests/runtime-lifecycle.py).
@@ -79,6 +88,13 @@ if [ "$folders" != "[]" ]; then
   for ((i = 0; i < 600; i++)); do grep -qx "$sub" "$state/block" 2>/dev/null || break; sleep 0.05; done
 fi
 echo "end $sub $$" >> "$state/calls.log"
+if grep -qx "$sub" "$state/fail" 2>/dev/null; then
+  case "$sub" in
+    fetch) echo "@FETCH_FAILURE@" >&2 ;;
+    *) printf '{"ok":false,"operation":"%s","message":"@PUSH_FAILURE@"}\n' "$sub" ;;
+  esac
+  exit 1
+fi
 case "$sub" in
   status)
     if [ "$folders" = "[]" ]; then
@@ -185,7 +201,7 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, ipcSteps)
+  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, ipcSteps)
   function collect(item, test) {
     var found = item && test(item) ? [item] : []
     var kids = item ? item.children || [] : []
@@ -451,6 +467,61 @@ ShellRoot {
     }
   ]
 
+  // errors: what the warning line says after a failed push or fetch.
+  FileView { id: actionFailFile; path: shell.state + "/fail"; printErrors: false }
+  FileView { id: actionFailRead; path: shell.state + "/fail"; blockLoading: true; printErrors: false }
+  // Fails `names` from the next helper start on, once the file says so.
+  function failing(names, then) {
+    var text = names.join("\n") + "\n"
+    actionFailFile.setText(text)
+    until(function() { actionFailRead.reload(); return actionFailRead.text() === text }, "the fail file is written", then)
+  }
+  readonly property string pushFailure: "@PUSH_FAILURE@"
+  readonly property string fetchFailure: "@FETCH_FAILURE@"
+  readonly property var errorSteps: [
+    function(next) { failing(["push", "fetch"], function() { until(function() { return !service.busy }, "errors: idle", next) }) },
+    function(next) {
+      var statuses = count("end status")
+      service.pushRepository(service.repos[0])
+      check(service.repositoryActionRunning, "errors: the push starts")
+      until(function() { return !service.busy && count("end status") > statuses }, "errors: the push and the status refresh after it end", function() {
+        check(service.operationError === shell.pushFailure, "errors: the failed push is kept: " + service.operationError)
+        check(service.lastError === shell.pushFailure, "errors: the warning line still shows the failed push: " + service.lastError)
+        check(service.status.ok === true && service.repos.length === 1, "errors: the refresh after the push was shown")
+        next()
+      })
+    },
+    function(next) {
+      var statuses = count("end status")
+      check(service.fetch() === "ok", "errors: a fetch starts")
+      check(service.operationError === "", "errors: a new fetch clears the earlier failure: " + service.operationError)
+      until(function() { return !service.busy && count("end status") > statuses }, "errors: the fetch and the status refresh after it end", function() {
+        check(service.lastError === shell.fetchFailure, "errors: the warning line still shows the failed fetch: " + service.lastError)
+        next()
+      })
+    },
+    function(next) {
+      failing(["push"], function() {
+        var ends = count("end fetch")
+        check(service.fetch() === "ok", "errors: a second fetch starts")
+        until(function() { return !service.busy && count("end fetch") > ends }, "errors: the second fetch ends", function() {
+          check(service.operationError === "" && service.lastError === "", "errors: a fetch that works leaves no failure: " + service.lastError)
+          next()
+        })
+      })
+    },
+    function(next) {
+      service.pushRepository(service.repos[0])
+      until(function() { return !service.busy && service.operationError === shell.pushFailure }, "errors: the push fails again", function() {
+        dropPanel()
+        until(function() { return !service.active }, "errors: the last bar goes", function() {
+          check(service.operationError === "" && service.lastError === "", "errors: the last bar's unload clears the failure: " + service.lastError)
+          failing([], function() { settled(trustRepo, next) })
+        })
+      })
+    }
+  ]
+
   // ipc: the real IPC target, called the way omarchy-shell does.
   FileView { id: connectivityFile; path: shell.state + "/connectivity"; printErrors: false }
   Process {
@@ -545,9 +616,12 @@ def main():
         state.mkdir()
         (state / "calls.log").write_text("")
         (state / "block").write_text("")
+        (state / "fail").write_text("")
         helper = HELPER.replace("@STATE@", str(state)).replace("@REPO@", REPO)
+        helper = helper.replace("@PUSH_FAILURE@", PUSH_FAILURE).replace("@FETCH_FAILURE@", FETCH_FAILURE)
         plugin = hostenv.fake_helper_plugin(PLUGIN, work / "plugin", "foamy-github-helper", helper)
         shell = SHELL.replace("@STATE@", str(state)).replace("@REPO@", REPO)
+        shell = shell.replace("@PUSH_FAILURE@", PUSH_FAILURE).replace("@FETCH_FAILURE@", FETCH_FAILURE)
         # A short prefix: the run's IPC socket path must stay under 108 bytes.
         run = harness.Run(host, shell, plugin=plugin, prefix="fgh-life-", system_bus="private")
         # The fake must own its name before qs starts: Quickshell looks for
