@@ -27,8 +27,8 @@ omarchy plugin add https://github.com/foamrider/foamy-github.git --enable
 4. A repository's arrows push or pull; the terminal button (or Enter) opens it in lazygit.
 5. **Pull all** (the arrow onto a line left of the cog, or `p`) pulls every repository a row's
    pull arrow would: behind, with no local changes and nothing to push. It shows only when
-   there is something to pull. They are pulled one at a time; the title shows the count pulled
-   and anything that failed.
+   there is something to pull. They are pulled one at a time; the title shows the count pulled,
+   and the warning line under it anything that failed, until the next push, pull or fetch.
 
 The popup lists repositories that need attention: ahead, behind, changed, or
 whose last fetch failed. A failed fetch is shown on the repository's row, in
@@ -402,8 +402,8 @@ bash tests/kit-check.sh
 python3 ~/GitHub/Personal/foamy-kit/preview/i18n_runtime.py .   # live language switching (the kit's catalog check)
 python3 tests/runtime-panel.py                     # offscreen on 4.5, needs foamy-kit
 python3 tests/runtime-pullall.py                   # Pull all over local Git repositories, a failing step, and opening lazygit
-python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded
-python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust and folder edits, the LFS trust flow, the folder chooser and IPC (fake helper, fake NetworkManager)
+python3 tests/runtime-watcher.py                   # a failing watcher's stderr: fake helper, bounded, in English and Norwegian
+python3 tests/runtime-lifecycle.py                 # helper jobs across unload, trust and folder edits, the LFS trust flow, the folder chooser, failures kept on the warning line and IPC (fake helper, fake NetworkManager)
 python3 tests/runtime-stored.py                    # an invalid folder or trust list in shell.json is named and kept
 ~/GitHub/Personal/foamy-kit/preview/render.py .
 ```

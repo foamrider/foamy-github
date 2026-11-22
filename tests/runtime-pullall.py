@@ -42,13 +42,6 @@ ShellRoot {
   id: shell
   property var panel: null
   property int checks: 0
-  // The last Pull all error: the status refresh that follows clears
-  // operationError, so keep what it said.
-  property string pullErrors: ""
-  Connections {
-    target: Plugin.Service
-    function onOperationErrorChanged() { if (Plugin.Service.operationError !== "") shell.pullErrors = Plugin.Service.operationError }
-  }
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
   function collect(item, test) {
     var found = test(item) ? [item] : []
@@ -155,8 +148,10 @@ ShellRoot {
       } else if (phase === 3) {
         if (service.pullingAll || service.busy) return
         check(service.actionStatus === "Pulled 2 repositories", "count reported: " + JSON.stringify(service.actionStatus))
-        check(shell.pullErrors.indexOf("missing-origin") >= 0 && shell.pullErrors.indexOf(" · ") < 0,
-          "only beta's failure is reported: " + shell.pullErrors)
+        // After the status refresh that followed Pull all.
+        check(service.operationError.indexOf("missing-origin") >= 0 && service.operationError.indexOf(" · ") < 0,
+          "only beta's failure is reported: " + service.operationError)
+        check(service.lastError === service.operationError, "the warning line shows it: " + service.lastError)
         check(service.pullableRepos.length === 1 && service.pullableRepos[0].label === "beta", "beta is left to pull")
         check(JSON.stringify(Object.keys(rows(view)).sort()) === JSON.stringify(["beta", "gamma"]), "the clean clones leave the list: " + Object.keys(rows(view)))
         // Two repositories behind, four commits.

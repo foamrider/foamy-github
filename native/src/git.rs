@@ -125,6 +125,7 @@ fn terminate(signum: i32) -> ! {
         cleanup();
     }
     pin::remove_ssh_copies();
+    pin::remove_all_private_files();
     // Worker threads may still be inside Git calls; exit without waiting.
     // SAFETY: _exit ends the process immediately.
     unsafe { libc::_exit(128 + signum) }
@@ -133,6 +134,19 @@ fn terminate(signum: i32) -> ! {
 /// True once a stop signal arrived (spawns are refused from then on).
 pub fn terminating() -> bool {
     registry().terminating
+}
+
+/// Never returns once a stop signal arrived. The signal kills the Git
+/// processes before it removes the private files, so the work they ran can
+/// end first; returning from `main` then would exit with that work's code
+/// and could end the process before the files are gone. `terminate` ends
+/// the process instead.
+pub fn wait_if_terminating() {
+    if terminating() {
+        loop {
+            thread::park();
+        }
+    }
 }
 
 // ---- running Git ---------------------------------------------------------------

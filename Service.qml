@@ -50,11 +50,19 @@ Item {
       }
     ] : []
   }
+  // The last push, pull, Pull all or fetch failure, or the missing helper.
+  // It outlives the status refresh that follows it and goes when the next
+  // push, pull or fetch starts; a failed status check is the status's own
+  // error.
   property string operationError: ""
   property bool watchFailed: false
   readonly property string watchError: !inotifyEnabled || !watchFailed ? "" : refreshIntervalSec > 0 ? "Live monitoring unavailable; using timed refresh." : "Live monitoring unavailable; automatic local refresh is disabled."
   property string watchDetail: ""
-  readonly property string lastError: operationError || (watchError ? watchError + (watchDetail ? " " + watchDetail : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
+  // The panel translates lastError as one catalog key, so the watcher's
+  // failure and its stop reason are translated here, before they are joined.
+  // A failed status check shows first, since no row is current while it
+  // lasts; a kept action failure shows again once a status check works.
+  readonly property string lastError: (status.ok === false ? String(status.error || "") : "") || operationError || (watchError ? root.tr(watchError) + (watchDetail ? " " + Model.watchDetailText(watchDetail, root.tr) : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
   property bool monitoring: false
   property bool watchRestartRequested: false
   property string watchedFolders: ""
@@ -161,6 +169,8 @@ Item {
     syncProcess.running = false
     repositoryActionProcess.running = false
     monitoring = false
+    // No failure may stay on the shared Service for the next bar.
+    operationError = ""
   }
 
   // Popup opened: with live monitoring the rows are already current, so
@@ -339,12 +349,10 @@ Item {
     }
     status = next
     lastChecked = Date.now() / 1000
-    operationError = ""
     return true
   }
 
   function failStatus(message) {
-    operationError = message
     status = Model.unavailableStatus(status, message)
   }
 

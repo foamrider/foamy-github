@@ -26,7 +26,10 @@ test('Model\'s messages to the panel have catalog entries; diagnostics pass thro
     Model.fetchOutcome(1, '', '').message,
     Model.parseStatus('').error,
     Model.parseStatus('x').error,
-    Model.parseStatus('{"repos":[{}]}').error,
+    Model.parseStatus('{"ok":true,"repos":[{}]}').error,
+    Model.parseStatus('[]').error,
+    Model.parseStatus('x'.repeat(8 * 1024 * 1024 + 1)).error,
+    Model.parseStatus(JSON.stringify({ok:true, repos:Array(257).fill({})})).error,
   ]
   for (const message of messages) {
     assert.equal(typeof message, 'string', String(message))
@@ -61,6 +64,26 @@ test('fetch errors render inline after the status line and translate', () => {
   assert.equal(Model.syncErrorText(repo), 'No origin remote configured. Add one in lazygit, then refresh.')
   assert.notEqual(Model.syncErrorText(repo, nb), repo.syncError)
   assert.equal(Model.syncErrorText({...repo, syncError:''}), '')
+})
+
+test('a row\'s status error and the watcher\'s stop reason translate; diagnostics pass through', () => {
+  const unavailable = error => Model.repositoryMeta({complete:false, error}, nb, nbn)
+  const inspect = 'Could not inspect the repository. Open it in lazygit.'
+  assert.notEqual(nb(inspect), inspect)
+  assert.equal(unavailable(inspect), `${nb('Status unavailable')} · ${nb(inspect)}`)
+  assert.equal(unavailable('fatal: bad object HEAD'), `${nb('Status unavailable')} · fatal: bad object HEAD`)
+  assert.equal(Model.repositoryMeta({complete:false, error:inspect}), `Status unavailable · ${inspect}`)
+  const stopped = reason => 'Filesystem monitoring stopped: ' + reason
+  const limit = 'Directory watch limit reached. Use timed refresh or select narrower repository folders.'
+  assert.notEqual(nb(limit), limit)
+  assert.notEqual(nb('Filesystem monitoring stopped: %1', ['x']), 'Filesystem monitoring stopped: x')
+  assert.equal(Model.watchDetailText(stopped(limit), nb), nb('Filesystem monitoring stopped: %1', [nb(limit)]))
+  assert.equal(Model.watchDetailText(stopped(limit)), stopped(limit))
+  // An OS error after the prefix is a diagnostic; text without the prefix stays as it is.
+  assert.equal(Model.watchDetailText(stopped('Input/output error (os error 5)'), nb),
+    nb('Filesystem monitoring stopped: %1', ['Input/output error (os error 5)']))
+  assert.equal(Model.watchDetailText('thread panicked at main.rs', nb), 'thread panicked at main.rs')
+  assert.equal(Model.watchDetailText('', nb), '')
 })
 
 test('every catalog plural has one and other forms, and Norwegian covers every English key', () => {

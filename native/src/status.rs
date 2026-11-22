@@ -136,7 +136,8 @@ fn is_dir(path: &[u8]) -> bool {
 }
 
 /// Streams a directory's entries; `visit(name, is_dir_not_link, is_link)`.
-/// A directory removed, replaced or unreadable meanwhile ends the listing.
+/// A directory removed, replaced or unreadable meanwhile ends the listing,
+/// as does one whose path is too long to open (4096 bytes or more).
 pub fn scan_dir(
     path: &[u8],
     budget: &mut ScanBudget,
@@ -147,7 +148,9 @@ pub fn scan_dir(
         Err(error)
             if matches!(
                 error.raw_os_error(),
-                Some(libc::ENOENT | libc::ENOTDIR | libc::EACCES | libc::EPERM)
+                Some(
+                    libc::ENOENT | libc::ENOTDIR | libc::EACCES | libc::EPERM | libc::ENAMETOOLONG
+                )
             ) =>
         {
             return Ok(());
@@ -499,7 +502,7 @@ pub struct Checked {
 
 impl Drop for Checked {
     fn drop(&mut self) {
-        config::remove_files(&self.files);
+        pin::remove_private_files(&self.files);
     }
 }
 
@@ -826,7 +829,8 @@ fn now() -> i64 {
 }
 
 /// `payload_from_rows`: rows sorted affected (or failed to fetch) first,
-/// then by label; totals; the cached fetch state with `syncing` and `stale`.
+/// then by label; totals; the cached fetch state with `syncing` and `stale`,
+/// its failures only those of these rows.
 pub fn payload_from_rows(mut rows: Vec<Row>, folders: &[Folder]) -> Result<Obj> {
     let mut state = read_sync_state()?;
     let failures: Vec<(Vec<u8>, Vec<u8>)> = match state.get("failures") {
@@ -870,8 +874,20 @@ pub fn payload_from_rows(mut rows: Vec<Row>, folders: &[Folder]) -> Result<Obj> 
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
     let rows: Vec<Row> = keyed.into_iter().map(|(_, row)| row).collect();
 
-    let failed = match state.get("failures") {
-        Some(Json::Arr(list)) => list.len(),
+    // The cache keeps the last fetch's failures until the next fetch, also
+    // for repositories no longer scanned (a folder change starts no fetch):
+    // only those with a row count and are listed.
+    let failed = match state.get_mut("failures") {
+        Some(Json::Arr(list)) => {
+            list.retain(|failure| match failure {
+                Json::Obj(failure) => {
+                    let path = failure.get("path").map_or_else(Vec::new, Json::py_str);
+                    rows.iter().any(|row| row.repo.path == path)
+                }
+                _ => false,
+            });
+            list.len()
+        }
         _ => 0,
     };
     state.set("syncing", Json::Bool(marker_is_running()));
@@ -953,13 +969,16 @@ mod tests {
         });
         assert!(result.unwrap_err().to_string().contains("scan limit"));
         assert_eq!(seen, 10);
-        // A directory that vanished meanwhile is no error.
+        // A directory that vanished meanwhile is no error, nor is one whose
+        // path is too long to open.
         assert!(
             scan_dir(b"/nonexistent/foamy", &mut ScanBudget::new(), |_, _, _| Ok(
                 ()
             ))
             .is_ok()
         );
+        let deep = [&b"/"[..], &[b'd'; 4096]].concat();
+        assert!(scan_dir(&deep, &mut ScanBudget::new(), |_, _, _| Ok(())).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

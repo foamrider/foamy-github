@@ -144,12 +144,29 @@ class RepositoryFoldersTest(HelperTest):
     def test_unreadable_cache_reads_as_defaults(self):
         state = self.root / "cache/foamy-github/sync-state.json"
         state.parent.mkdir(parents=True)
-        for content in ("not json", "[]", '{"failures": 3}'):
+
+        def refuse(constant):
+            raise ValueError(f"{constant} in the status line: JSON.parse refuses it")
+
+        # NaN, Infinity and a number too large for a float are not JSON that
+        # the panel can read: a file with one is invalid as a whole.
+        for content in (
+            "not json",
+            "[]",
+            '{"failures": 3}',
+            '{"lastSuccess": 5, "note": NaN}',
+            '{"lastSuccess": 5, "lastAttempt": Infinity}',
+            '{"lastSuccess": 5, "mode": -Infinity}',
+            '{"lastSuccess": 5, "lastAttempt": 1e400}',
+        ):
             with self.subTest(content=content):
                 state.write_text(content)
-                sync = self.status([])["sync"]
+                result = self.run_helper("status", *self.options([]))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                sync = json.loads(result.stdout, parse_constant=refuse)["sync"]
                 self.assertTrue(sync["stale"])
                 self.assertEqual(sync["failures"], [])
+                self.assertEqual(sync["lastSuccess"], 0)
 
 
 if __name__ == "__main__":

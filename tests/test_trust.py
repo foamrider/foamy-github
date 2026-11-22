@@ -12,10 +12,11 @@ import signal
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 
-from blackbox import BWRAP, LANDLOCK, HelperTest, command, needs_bwrap, needs_landlock, subcommand
+from blackbox import BWRAP, LANDLOCK, REAL_GIT, HelperTest, command, needs_bwrap, needs_landlock, subcommand
 
 
 def elf_interpreter(path):
@@ -843,6 +844,46 @@ class TrustModelTest(Case):
         self.assertEqual(allowed, {"http", "https", "ssh", "git", "foo"})
 
     @needs_bwrap
+    def test_fetch_config_alone_refuses_local_transports(self):
+        # GIT_ALLOW_PROTOCOL closes every transport but the network ones; the
+        # fetch's command-scope config must close the local ones on its own
+        # too, for a Git that runs without the variable, also where the
+        # user's own config allows them. The wrapper drops the variable and
+        # gives each repository's fetch a local URL in place of its checked
+        # origin. One fetch for all three: each failed fetch is retried.
+        remote = self.file_remote()
+        local = self.root / "local"
+        urls = {}
+        for transport in ("file", "ext", "fd"):
+            repo = self.init_repo(local / transport)
+            self.repo_git("remote", "add", "origin", self.served("remote.git"), cwd=repo)
+            urls[os.path.realpath(repo)] = {
+                "file": "file://" + str(remote),
+                # Inside the namespace only the fetched repository's Git directory is writable.
+                "ext": f"ext::sh -c touch% {repo}/.git/pwned",
+                "fd": "fd::0",
+            }[transport]
+        self.global_config("".join(f'[protocol "{name}"]\n\tallow = always\n' for name in ("file", "ext", "fd")))
+        self.fake(
+            "git",
+            f"""import os, sys
+args = sys.argv[1:]
+env = dict(os.environ)
+if "fetch" in args:
+  env.pop("GIT_ALLOW_PROTOCOL", None)
+  args[-1] = {urls!r}[args[args.index("-C") + 1]]
+os.execve({REAL_GIT!r}, [{REAL_GIT!r}, *args], env)""",
+            interpreter="/usr/bin/python3 -I",
+        )
+        _code, payload = self.fetch([{"path": str(local), "depth": 1}])
+        messages = {failure["path"]: failure["message"] for failure in payload["failures"]}
+        for path in urls:
+            transport = Path(path).name
+            with self.subTest(transport=transport):
+                self.assertIn(f"transport '{transport}' not allowed", messages.get(path, "fetched"))
+        self.assertFalse((local / "ext/.git/pwned").exists(), "the ext transport ran its command")
+
+    @needs_bwrap
     def test_symlinked_git_dir_paths_refuse_the_fetch(self):
         # Codex P2: a symlinked objects dir or refs/remotes/origin would send the
         # fetch's writes into another (victim) repository.
@@ -1479,6 +1520,32 @@ class TrustModelTest(Case):
         self.assertEqual(payload["repos"][1]["syncError"], "")
         self.assertEqual(payload["totals"]["failedRepos"], 1)
 
+    def test_cached_failures_of_repositories_no_longer_scanned_are_left_out(self):
+        # A folder change starts no fetch: until the next one, the cache still
+        # holds failures of repositories that the panel no longer lists. No
+        # row can show them, so neither the count nor the list has them.
+        other = self.init_repo(self.root / "a-other")
+        gone = self.root / "removed"
+        state = self.root / "cache/foamy-github/sync-state.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        failures = {path: {"path": str(path), "message": f"fatal: {path.name}"} for path in (gone, self.path, other)}
+        state.write_text(
+            json.dumps(
+                {
+                    "lastAttempt": 0,
+                    "lastSuccess": 0,
+                    "mode": "fetch",
+                    "failures": [*failures.values(), "not a failure"],
+                }
+            )
+        )
+        for scanned, shown in ((self.path, [self.path]), (other, [other]), (gone, [])):
+            with self.subTest(scanned=scanned.name):
+                payload = self.status([{"path": str(scanned), "depth": 0}])
+                self.assertEqual([row["path"] for row in payload["repos"]], [str(path) for path in shown])
+                self.assertEqual(payload["sync"]["failures"], [failures[path] for path in shown])
+                self.assertEqual(payload["totals"]["failedRepos"], len(shown))
+
 
 class LifecycleTest(HelperTest):
     def test_sigterm_kills_running_git_children(self):
@@ -1530,6 +1597,98 @@ class LifecycleTest(HelperTest):
         helper.send_signal(signal.SIGTERM)
         self.assertEqual(helper.wait(5), 128 + signal.SIGTERM)
         self.assertFalse(marker.exists())
+
+    @needs_bwrap
+    def test_a_stop_signal_removes_the_private_config_copies(self):
+        # A check in flight holds private copies in the cache: a frozen config
+        # and, for a linked worktree, its frozen .git pointer and commondir.
+        # Their owners remove them after the check, which a stop signal ends.
+        main = self.init_repo(self.root / "main")
+        self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=main)
+        worktree = self.root / "wt"
+        self.git("worktree", "add", "-q", str(worktree), "-b", "side", cwd=main)
+        cache = self.root / "cache/foamy-github"
+
+        def copies():
+            return sorted(
+                f"{folder}/{path.name}"
+                for folder in ("overlay", "pins")
+                if (cache / folder).is_dir()
+                for path in (cache / folder).iterdir()
+            )
+
+        stop = {}
+        started = threading.Event()
+
+        def at_git(argv):
+            if subcommand(argv)[:1] == [stop["at"]]:
+                started.wait(10)
+                stop["held"] = copies()
+                stop["helper"].send_signal(signal.SIGTERM)
+
+        self.git_hook(at_git)
+        # Each command stops at a Git process that runs while its copies exist.
+        for name, at in (("status", b"symbolic-ref"), ("fetch", b"ls-remote"), ("watch", b"ls-files")):
+            with self.subTest(command=name):
+                started.clear()
+                stop.clear()
+                stop["at"] = at
+                before = copies()  # each row reports only its own
+                helper = subprocess.Popen(
+                    command(name, *self.options([{"path": str(worktree), "depth": 0}])),
+                    env=self.env,
+                    stdin=subprocess.PIPE,  # the watcher runs until its stdin ends
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                stop["helper"] = helper
+                started.set()
+                try:
+                    self.assertEqual(helper.wait(60), 128 + signal.SIGTERM)
+                finally:
+                    helper.stdin.close()
+                held = [entry for entry in stop.get("held", []) if entry not in before]
+                self.assertEqual(
+                    [sum(entry.startswith(folder) for entry in held) for folder in ("overlay/", "pins/")],
+                    [2, 2],
+                    f"the copies of the check in flight: {held}",
+                )
+                self.assertEqual(copies(), before, "private copies outlived the helper")
+
+    @needs_bwrap
+    def test_a_stopped_fetch_keeps_the_previous_result(self):
+        # The stop signal kills Git first, so every fetch it cuts short fails at
+        # once ("local origin", "Stopping."). Those are not results: the rows
+        # keep what the last finished fetch found.
+        projects = self.root / "projects"
+        for name in ("a", "b", "c", "d", "e", "f"):
+            repo = self.init_repo(projects / name)
+            self.git("remote", "add", "origin", "git://127.0.0.1:1/repo", cwd=repo)
+        state = self.root / "cache/foamy-github/sync-state.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        previous = json.dumps({"lastAttempt": 5, "lastSuccess": 5, "mode": "fetch", "failures": []}) + "\n"
+        state.write_text(previous)
+        stop = {}
+        started = threading.Event()
+
+        def at_git(argv):
+            if subcommand(argv)[:1] == [b"ls-remote"] and "sent" not in stop:
+                started.wait(10)
+                stop["sent"] = True
+                stop["helper"].send_signal(signal.SIGTERM)
+
+        self.git_hook(at_git)
+        helper = subprocess.Popen(
+            command("fetch", *self.options([{"path": str(projects), "depth": 1}])),
+            env=self.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        stop["helper"] = helper
+        started.set()
+        self.assertEqual(helper.wait(60), 128 + signal.SIGTERM)
+        self.assertTrue(stop.get("sent"), "the fetch never reached ls-remote")
+        self.assertEqual(state.read_text(), previous, "a stopped fetch replaced the last result")
 
     def test_a_held_lock_answers_busy_and_starts_nothing(self):
         # Another fetch, push or pull holds sync.lock (flock, as the helper's

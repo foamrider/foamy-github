@@ -33,7 +33,8 @@ function parseStatus(raw) {
   if (text === "") return failedStatus("No repository status received")
   try {
     var parsed = JSON.parse(text)
-    if (!parsed || typeof parsed !== "object") return failedStatus("Invalid repository status")
+    // The helper's status is always an object with ok: true; anything else is not one.
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || parsed.ok !== true) return failedStatus("Invalid repository status")
     var fallback = defaultStatus()
     parsed.totals = Object.assign({}, fallback.totals, parsed.totals || {})
     parsed.repos = Array.isArray(parsed.repos) ? parsed.repos : []
@@ -225,7 +226,7 @@ function repositoryMeta(repo, tr, tn) {
   tr = tr || translate
   tn = tn || plural
   if (!repo) return ""
-  if (repo.complete === false) return tr("Status unavailable") + " · " + String(repo.error || "")
+  if (repo.complete === false) return tr("Status unavailable") + " · " + tr(String(repo.error || ""))
   var parts = []
   var branch = String(repo.branch || tr("detached"))
   parts.push(branch)
@@ -233,6 +234,17 @@ function repositoryMeta(repo, tr, tn) {
   if (repo.behind > 0) parts.push("↓" + tn("%1 commits", repo.behind))
   if (repo.dirtyCount > 0) parts.push(tr("%1 changed", [repo.dirtyCount]))
   return parts.join(" · ")
+}
+
+// The watcher's stderr when it stops: this prefix, then the reason. A fixed
+// reason is a catalog key; any other text (an OS error) shows as it is.
+var WATCH_STOPPED = "Filesystem monitoring stopped: "
+
+function watchDetailText(detail, tr) {
+  tr = tr || translate
+  var text = String(detail || "")
+  if (text.indexOf(WATCH_STOPPED) !== 0) return text
+  return tr("Filesystem monitoring stopped: %1", [tr(text.slice(WATCH_STOPPED.length))])
 }
 
 // Filesystem watcher retry: 30 s, doubling to 30 min while it keeps failing
@@ -310,6 +322,7 @@ if (typeof module !== "undefined") {
     unavailableStatus: unavailableStatus,
     relativeTime: relativeTime,
     repositoryMeta: repositoryMeta,
+    watchDetailText: watchDetailText,
     watchRetry: watchRetry,
     displayedRepos: displayedRepos,
     canPull: canPull,
