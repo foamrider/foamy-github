@@ -92,8 +92,9 @@ impl Inotify {
                     self.paths.insert(wd, path.clone());
                 }
                 // A concurrent move/delete is covered by its parent watch and
-                // next batch; an unreadable directory is skipped like Git does.
-                Err(Errno::NOENT | Errno::NOTDIR | Errno::ACCESS) => continue,
+                // next batch; an unreadable directory is skipped like Git does,
+                // and so is one whose path is too long to name.
+                Err(Errno::NOENT | Errno::NOTDIR | Errno::ACCESS | Errno::NAMETOOLONG) => continue,
                 Err(errno) => {
                     let code = errno.raw_os_error();
                     let mut text = format!("[Errno {code}] Cannot monitor ").into_bytes();
@@ -680,6 +681,8 @@ mod tests {
         let mut notify = Inotify::new().unwrap();
         let missing = BTreeSet::from([b"/nonexistent/foamy-github".to_vec()]);
         notify.reconcile(&missing).unwrap(); // ENOENT is skipped
+        let deep = BTreeSet::from([[&b"/"[..], &[b'd'; 4096]].concat()]);
+        notify.reconcile(&deep).unwrap(); // and so is ENAMETOOLONG
         let too_many: BTreeSet<Vec<u8>> = (0..=MAX_WATCHES)
             .map(|n| format!("/d{n}").into_bytes())
             .collect();

@@ -69,8 +69,43 @@ fn random_suffix() -> Vec<u8> {
         .collect()
 }
 
+/// The private files ([`private_file`]) that exist now, so that a stop
+/// signal can remove them ([`remove_all_private_files`]); `None` from then
+/// on. A file is created and recorded, and removed and forgotten, under
+/// this lock, so none can slip past the signal's cleanup.
+static PRIVATE_FILES: Mutex<Option<Vec<Vec<u8>>>> = Mutex::new(Some(Vec::new()));
+
+fn private_files() -> std::sync::MutexGuard<'static, Option<Vec<Vec<u8>>>> {
+    PRIVATE_FILES.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Removes private files made by [`private_file`].
+pub fn remove_private_files(files: &[Vec<u8>]) {
+    let mut recorded = private_files();
+    for name in files {
+        let _ = std::fs::remove_file(paths::os(name));
+        if let Some(recorded) = recorded.as_mut() {
+            recorded.retain(|path| path != name);
+        }
+    }
+}
+
+/// Removes every private file that exists now and refuses new ones (a stop
+/// signal ends the process without running the owners' drops).
+pub fn remove_all_private_files() {
+    let files = private_files().take().unwrap_or_default();
+    for name in files {
+        let _ = std::fs::remove_file(paths::os(&name));
+    }
+}
+
 /// `tempfile.mkstemp(prefix=…, dir=…)` with `data` written: 0600, `O_EXCL`.
+/// The caller removes it with [`remove_private_files`].
 pub fn private_file(directory: &[u8], prefix: &str, data: &[u8]) -> Result<Vec<u8>> {
+    let mut recorded = private_files();
+    let Some(recorded) = recorded.as_mut() else {
+        return Err(Error::inspection("Stopping."));
+    };
     for _ in 0..100 {
         let path = [directory, b"/", prefix.as_bytes(), &random_suffix()].concat();
         match std::fs::OpenOptions::new()
@@ -85,6 +120,7 @@ pub fn private_file(directory: &[u8], prefix: &str, data: &[u8]) -> Result<Vec<u
                     let _ = std::fs::remove_file(paths::os(&path));
                     return Err(Error::os(error, Some(&path)));
                 }
+                recorded.push(path.clone());
                 return Ok(path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -410,9 +446,7 @@ pub struct Pin {
 
 impl Drop for Pin {
     fn drop(&mut self) {
-        for name in &self.files {
-            let _ = std::fs::remove_file(paths::os(name));
-        }
+        remove_private_files(&self.files);
     }
 }
 
@@ -458,9 +492,7 @@ pub fn pin_repository(repo: &[u8]) -> Result<Option<Pin>> {
     let mut files: Vec<Vec<u8>> = Vec::new();
     let result = pin_inner(repo, &mut files);
     if result.is_err() {
-        for name in &files {
-            let _ = std::fs::remove_file(paths::os(name));
-        }
+        remove_private_files(&files);
     }
     result.map(Some)
 }

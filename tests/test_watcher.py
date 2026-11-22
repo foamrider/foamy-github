@@ -96,6 +96,24 @@ class WatcherTest(HelperTest):
         (folder / "tracked.txt").write_text("edit")
         self.assertEqual(self.changed()["totals"]["dirtyRepos"], 1)
 
+    def test_a_tree_deeper_than_the_path_limit_is_skipped_not_fatal(self):
+        # Paths of 4096 bytes and more can't be listed or watched by name
+        # (ENAMETOOLONG); that one deep tree must not end live monitoring.
+        repo = self.repository("one")
+        name = "d" * 250
+        fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for _ in range(20):  # each level relative to the last: the whole path is too long for mkdir
+                os.mkdir(name, dir_fd=fd)
+                deeper = os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+                os.close(fd)
+                fd = deeper
+        finally:
+            os.close(fd)
+        self.assertEqual(self.start()["repoCount"], 1)
+        (repo / "tracked.txt").write_text("changed\n")
+        self.assertEqual(self.changed()["totals"]["dirtyRepos"], 1)
+
     def test_staging_commit_and_branch_change_are_detected(self):
         repo = self.repository("one")
         self.start()

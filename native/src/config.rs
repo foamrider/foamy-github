@@ -39,13 +39,18 @@ pub struct Entry {
 }
 
 const READ_OVERRIDES: [(&str, &str); 1] = [("status.submoduleSummary", "false")];
-const FETCH_OVERRIDES: [(&str, &str); 12] = [
+// The protocol entries close what GIT_ALLOW_PROTOCOL closes, for a Git
+// that runs without it: local transports never, the user's own config
+// allowing them or not.
+const FETCH_OVERRIDES: [(&str, &str); 14] = [
     ("protocol.allow", "never"),
     ("protocol.https.allow", "always"),
     ("protocol.http.allow", "always"),
     ("protocol.ssh.allow", "always"),
     ("protocol.git.allow", "always"),
-    ("protocol.file.allow", "always"),
+    ("protocol.file.allow", "never"),
+    ("protocol.ext.allow", "never"),
+    ("protocol.fd.allow", "never"),
     ("maintenance.auto", "false"),
     ("gc.auto", "0"),
     ("gc.autoPackLimit", "0"),
@@ -678,15 +683,9 @@ pub fn config_overlay(
     match result {
         Ok(overlay) => Ok((overlay, files)),
         Err(error) => {
-            remove_files(&files);
+            pin::remove_private_files(&files);
             Err(error)
         }
-    }
-}
-
-pub fn remove_files(files: &[Vec<u8>]) {
-    for name in files {
-        let _ = std::fs::remove_file(paths::os(name));
     }
 }
 

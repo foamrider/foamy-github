@@ -125,6 +125,7 @@ fn terminate(signum: i32) -> ! {
         cleanup();
     }
     pin::remove_ssh_copies();
+    pin::remove_all_private_files();
     // Worker threads may still be inside Git calls; exit without waiting.
     // SAFETY: _exit ends the process immediately.
     unsafe { libc::_exit(128 + signum) }

@@ -40,7 +40,8 @@
 //!   (null when unknown), dirtyCount, affected, complete, error, usesLfs,
 //!   trusted, identity, syncError`; rows needing attention first, then by
 //!   label. One repository's failure is its row's `error` (`complete:
-//!   false`), never the scan's. Exit 0.
+//!   false`), never the scan's. `failures` and `failedRepos` hold only the
+//!   cached fetch failures of repositories in `repos`. Exit 0.
 //! - `fetch`: `{"ok", "lastAttempt", "lastSuccess", "mode": "fetch",
 //!   "folders", "failures": [{path, name, label, ok: false, operation,
 //!   attempts, message}…]}`, also written to the cache; exit 0 when nothing
@@ -62,7 +63,8 @@
 //! - Bad settings, the repository/scan/watch limits, an oversized cache or
 //!   summary: the message on stderr, exit 1, nothing on stdout.
 //! - SIGTERM/SIGINT/SIGHUP: every running Git process group is killed, the
-//!   `syncing` marker removed, exit 128 + signal. A panic exits 101.
+//!   `syncing` marker and the private copies (below) removed, exit 128 +
+//!   signal. A panic exits 101.
 //!
 //! # Files (in `$XDG_CACHE_HOME/foamy-github`, default `~/.cache/foamy-github`)
 //!
@@ -70,8 +72,9 @@
 //! 256-failure limit), `syncing` (the pid of a running fetch/push/pull;
 //! stale markers are removed), `sync.lock` (`flock`, non-blocking),
 //! `pins/frozen-*` and `overlay/config-*` (0600 private copies mounted
-//! into the namespace, removed after each check), and the ssh_config.d copy
-//! in `$XDG_RUNTIME_DIR/foamy-github-ssh/ssh_config.d-*` (removed at exit).
+//! into the namespace, removed after each check and at a stop signal), and
+//! the ssh_config.d copy in `$XDG_RUNTIME_DIR/foamy-github-ssh/ssh_config.d-*`
+//! (removed at exit).
 //!
 //! # Child processes (the same tools and argv as the Python helper)
 //!

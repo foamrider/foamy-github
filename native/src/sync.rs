@@ -182,7 +182,7 @@ fn overlay_fetch(repo: &Repository, policy: &Policy) -> Result<Option<Finished>>
         }
         Ok(Some(completed))
     })();
-    config::remove_files(&files);
+    pin::remove_private_files(&files);
     result
 }
 

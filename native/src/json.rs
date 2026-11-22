@@ -192,18 +192,9 @@ fn write_value(out: &mut Vec<u8>, value: &Json) {
     }
 }
 
-/// Python's `float.__repr__` for the values a cache file can hold.
+/// Python's `float.__repr__` for the values a cache file can hold (finite:
+/// [`parse`] makes no other).
 fn float_text(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".into();
-    }
-    if value.is_infinite() {
-        return if value > 0.0 {
-            "Infinity".into()
-        } else {
-            "-Infinity".into()
-        };
-    }
     let text = format!("{value:?}");
     // Rust: 1e16 / 1e-7; Python: 1e+16 / 1e-07.
     if let Some((mantissa, exponent)) = text.split_once('e') {
@@ -247,7 +238,9 @@ fn write_string(out: &mut Vec<u8>, bytes: &[u8]) {
 
 /// Parses JSON text as Python's `json.loads` (strict: no control
 /// characters in strings, no trailing data). Lone surrogates other than
-/// U+DC80..U+DCFF, which no path can hold, are refused.
+/// U+DC80..U+DCFF, which no path can hold, are refused, and so are `NaN`,
+/// `Infinity` and numbers too large for a float: written back, they would
+/// make a status line that JavaScript's `JSON.parse` refuses.
 pub fn parse(text: &[u8]) -> Result<Json, String> {
     let mut parser = Parser {
         text,
@@ -297,12 +290,6 @@ impl Parser<'_> {
             Some(b'n') => self.expect(b"null").map(|_| Json::Null),
             Some(b't') => self.expect(b"true").map(|_| Json::Bool(true)),
             Some(b'f') => self.expect(b"false").map(|_| Json::Bool(false)),
-            Some(b'N') => self.expect(b"NaN").map(|_| Json::Float(f64::NAN)),
-            Some(b'I') => self.expect(b"Infinity").map(|_| Json::Float(f64::INFINITY)),
-            Some(b'-') if self.text[self.at..].starts_with(b"-Infinity") => {
-                self.at += 9;
-                Ok(Json::Float(f64::NEG_INFINITY))
-            }
             Some(b'-' | b'0'..=b'9') => self.number(),
             _ => Err("Expecting value".into()),
         }
@@ -423,9 +410,10 @@ impl Parser<'_> {
                 return Ok(Json::Int(n));
             }
         }
-        text.parse::<f64>()
-            .map(Json::Float)
-            .map_err(|_| "Expecting value".into())
+        match text.parse::<f64>() {
+            Ok(value) if value.is_finite() => Ok(Json::Float(value)),
+            _ => Err("Number out of range".into()),
+        }
     }
 
     fn hex4(&mut self) -> Result<u32, String> {
@@ -544,6 +532,11 @@ mod tests {
             b"[1] 2",
             b"",
             b"\"\\ud800\"",
+            b"NaN",
+            b"[Infinity]",
+            b"{\"a\": -Infinity}",
+            b"1e400",
+            b"-1e400",
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
