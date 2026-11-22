@@ -83,6 +83,10 @@ test('a row\'s status error and the watcher\'s stop reason translate; diagnostic
   assert.equal(Model.watchDetailText(stopped('Input/output error (os error 5)'), nb),
     nb('Filesystem monitoring stopped: %1', ['Input/output error (os error 5)']))
   assert.equal(Model.watchDetailText('thread panicked at main.rs', nb), 'thread panicked at main.rs')
+  // A watcher that wrote nothing: the Service's own text, which translates.
+  const exited = 'Filesystem watcher exited'
+  assert.notEqual(nb(exited), exited)
+  assert.equal(Model.watchDetailText(exited, nb), nb(exited))
   assert.equal(Model.watchDetailText('', nb), '')
 })
 

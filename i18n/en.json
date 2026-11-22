@@ -16,6 +16,7 @@
   "Live monitoring unavailable; automatic local refresh is disabled.": "Live monitoring unavailable; automatic local refresh is disabled.",
   "Live monitoring unavailable; using timed refresh.": "Live monitoring unavailable; using timed refresh.",
   "Filesystem monitoring stopped: %1": "Filesystem monitoring stopped: %1",
+  "Filesystem watcher exited": "Filesystem watcher exited",
   "Directory watch limit reached. Use timed refresh or select narrower repository folders.": "Directory watch limit reached. Use timed refresh or select narrower repository folders.",
   "Ignored directory limit reached. Use timed refresh or select narrower repository folders.": "Ignored directory limit reached. Use timed refresh or select narrower repository folders.",
   "Discovery watch limit reached. Select narrower repository folders.": "Discovery watch limit reached. Select narrower repository folders.",

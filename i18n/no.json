@@ -16,6 +16,7 @@
   "Live monitoring unavailable; automatic local refresh is disabled.": "Direkteovervåking er utilgjengelig; automatisk lokal oppdatering er deaktivert.",
   "Live monitoring unavailable; using timed refresh.": "Direkteovervåking er utilgjengelig; bruker tidsstyrt oppdatering.",
   "Filesystem monitoring stopped: %1": "Filovervåkingen stoppet: %1",
+  "Filesystem watcher exited": "Filovervåkeren avsluttet",
   "Directory watch limit reached. Use timed refresh or select narrower repository folders.": "Grensen for overvåkede mapper er nådd. Bruk tidsstyrt oppdatering, eller velg mer avgrensede prosjektmapper.",
   "Ignored directory limit reached. Use timed refresh or select narrower repository folders.": "Grensen for ignorerte mapper er nådd. Bruk tidsstyrt oppdatering, eller velg mer avgrensede prosjektmapper.",
   "Discovery watch limit reached. Select narrower repository folders.": "Grensen for overvåking av nye prosjekter er nådd. Velg mer avgrensede prosjektmapper.",
