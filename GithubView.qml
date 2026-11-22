@@ -510,7 +510,7 @@ PanelKeyCatcher {
             translate: FoamyI18n.t
             Accessible.name: FoamyI18n.t("Repository folder %1", [folderRow.index + 1])
             onPasteErrorChanged: if (pasteError !== "")
-              root.settingsErrorReported(pasteError)
+              root.settingsErrorReported(FoamyI18n.t(pasteError))
             onTextEdited: folderRows.setProperty(folderRow.index, "path", text)
             onEditingFinished: root.foldersEdited(root.folderList())
             onInputActiveFocusChanged: if (inputActiveFocus)

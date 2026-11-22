@@ -7,8 +7,9 @@ offscreen Quickshell against a host shell, through foamy-kit's harness.
 Checks: it loads without errors; one Service and one leader for three
 instances; the popup body builds on open with the GithubView; the keys move
 the cursor from Settings to the footer's Refresh (no Pull all with nothing
-to pull) and open Settings; a paste error, a folder edit and a trust edit
-reach the Panel and the bar; the folder chooser (the helper's pick-folder
+to pull) and open Settings; a paste error reaches the Panel in the panel's
+language (Norwegian, switched live); a folder edit and a trust edit reach
+the Panel and the bar; the folder chooser (the helper's pick-folder
 on the run's private bus, where no portal runs) releases the popup and
 comes back to Settings with its error. Temp HOME, no folders, no network.
 Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
@@ -16,6 +17,7 @@ Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -29,6 +31,7 @@ PLUGIN = Path(__file__).resolve().parents[1]
 SHELL = r"""
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import "harness"
 import "plugin/kit" as Kit
 import "plugin" as Plugin
@@ -53,6 +56,9 @@ ShellRoot {
     Item { id: host; width: 1920; height: 1080 }
   }
   Component { id: barComponent; MockBar { barSize: 34 } }
+  FileView { id: language; path: Quickshell.env("OMARCHY_LANGUAGE_FILE") }
+  // The kit's paste errors (English) and their Norwegian catalog entries.
+  readonly property var pasteErrors: @PASTE_ERRORS@
 
   Component.onCompleted: {
     var component = Qt.createComponent(Qt.resolvedUrl("plugin/Panel.qml"))
@@ -80,6 +86,8 @@ ShellRoot {
         && saves.length > 0 && saves[saves.length - 1].settings.trustRepositoryConfig === false
     },
     function() { return panels[1].editingSettings && !panels[1].prefs.busy },
+    function() { return Kit.FoamyI18n.language === "no" },
+    function() { return Kit.FoamyI18n.language === "en" },
     // Both identity checks ended; the destroyed leader left.
     function() {
       return JSON.stringify(panels[1].bar.saved).indexOf("@IDENT@") >= 0
@@ -149,16 +157,27 @@ ShellRoot {
         view.activateRequested()
       } else if (n === 2) {
         check(panels[1].editingSettings, "settings open")
+        // Step 3 checks the paste errors in Norwegian.
+        language.setText("no\n")
+      } else if (n === 3) {
         var view1 = panels[1].popup.bodyItem
         // A paste error of the folder field reaches the Panel, which owns
-        // settingsError, so clearing it there leaves the page's binding intact.
+        // settingsError, in the panel's language; clearing it there leaves
+        // the page's binding intact.
         var field = collect(view1, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0]
-        var pasteText = "Clipboard paste timed out. Copy the text again."
-        field.pasteError = pasteText
-        check(panels[1].settingsError === pasteText && view1.settingsError === pasteText, "a paste error reaches the Panel and the page: " + view1.settingsError)
-        panels[1].settingsError = ""
-        check(view1.settingsError === "", "settingsError binding survives a paste error")
-        field.pasteError = ""
+        for (var english in shell.pasteErrors) {
+          var shown = shell.pasteErrors[english]
+          field.pasteError = english
+          check(shown !== english && panels[1].settingsError === shown && view1.settingsError === shown,
+            "a paste error reaches the Panel and the page in Norwegian: " + view1.settingsError)
+          panels[1].settingsError = ""
+          check(view1.settingsError === "", "settingsError binding survives a paste error")
+          field.pasteError = ""
+        }
+        // The rest runs in English (step 4).
+        language.setText("en\n")
+      } else if (n === 4) {
+        var view1 = panels[1].popup.bodyItem
         var bar1 = panels[1].bar
         panels[1].save("fetchIntervalSec", 1800)
         check(bar1.saved.length > 0 && bar1.saved[bar1.saved.length - 1].settings.fetchIntervalSec === 1800, "saved inline")
@@ -195,7 +214,7 @@ ShellRoot {
         panels[2].setTrusted({ path: "@REPO@", identity: "9:9:9|9:9:9" }, true)
         panels[1].close()
         panels[0].destroy()
-      } else if (n === 3) {
+      } else if (n === 5) {
         var saved1 = panels[1].bar.saved
         check(saved1.length > 0 && JSON.stringify(saved1[saved1.length - 1].settings.trustedRepositories).indexOf("@IDENT@") >= 0,
               "trust saved after re-verifying the identity")
@@ -211,7 +230,7 @@ ShellRoot {
         shell.folderBefore = collect(view3, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0].text
         view3.browseRequested(0)
         check(!panels[1].opened, "the popup is released for the folder chooser")
-      } else if (n === 4) {
+      } else if (n === 6) {
         check(panels[1].editingSettings, "the folder chooser round trip keeps Settings")
         check(panels[1].settingsError === "@PICK_ERROR@", "the chooser's error is shown: " + panels[1].settingsError)
         var row = collect(panels[1].popup.bodyItem, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0]
@@ -251,6 +270,19 @@ TRUST_IDENTITY = subprocess.run(
     command("identity", TRUST_REPO), capture_output=True, text=True, check=True
 ).stdout.strip()
 SHELL = SHELL.replace("@REPO@", TRUST_REPO).replace("@IDENT@", TRUST_IDENTITY)
+
+# The texts the kit's SafeTextField sets as pasteError, with the entries the
+# Norwegian catalog gives them.
+NORWEGIAN = json.loads((PLUGIN / "i18n" / "no.json").read_text())
+PASTE_ERRORS = {
+    text: NORWEGIAN.get(text, text)
+    for text in (
+        "Clipboard paste timed out. Copy the text again.",
+        "Clipboard text is too large or contains invalid characters.",
+        "Could not paste clipboard text. Copy plain text and try again.",
+    )
+}
+SHELL = SHELL.replace("@PASTE_ERRORS@", json.dumps(PASTE_ERRORS))
 
 # Without bubblewrap the identity is empty, and every trust check would
 # match "" and pass with nothing trusted.
