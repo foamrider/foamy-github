@@ -50,9 +50,10 @@ Item {
   }
   // The last push, pull, Pull all or fetch failure, or the missing helper,
   // as message data like actionMessages, so a kept failure follows language
-  // changes too. It outlives the status refresh that follows it and goes
-  // when the next push, pull or fetch starts; a failed status check is the
-  // status's own error.
+  // changes too; a text that is no template has no values (see
+  // Model.messageText). It outlives the status refresh that follows it and
+  // goes when the next push, pull or fetch starts; a failed status check is
+  // the status's own error.
   property var operationErrors: []
   readonly property string operationError: Model.messageText(operationErrors, root.tr, FoamyI18n.tn)
   property bool watchFailed: false
@@ -90,8 +91,7 @@ Item {
     root.helperUnavailable = true
     root.operationErrors = [
       {
-        label: FoamyNative.UNAVAILABLE_TEXT,
-        values: []
+        label: FoamyNative.UNAVAILABLE_TEXT
       }
     ]
     status = Model.unavailableStatus(status, FoamyNative.UNAVAILABLE_TEXT)
@@ -553,8 +553,7 @@ Item {
         root.setActionStatus("")
         root.operationErrors = [
           {
-            label: outcome.message,
-            values: []
+            label: outcome.message
           }
         ]
       }
@@ -588,8 +587,7 @@ Item {
       // The failure, if this is one: the reply's message, or without a reply
       // the helper's stderr as it is.
       var failure = result ? Model.actionMessage(result, "Repository action failed") : {
-        label: String(repositoryActionError.text || "Repository action failed").trim(),
-        values: []
+        label: String(repositoryActionError.text || "Repository action failed").trim()
       }
       if (root.pullingAll) {
         var step = root.pullAllResult

@@ -109,8 +109,7 @@ Item {
     }, "")
     readonly property var pullFailures: [
       {
-        label: "fatal: '/home/me/GitHub/old-host/notes.git' does not appear to be a git repository",
-        values: []
+        label: "fatal: '/home/me/GitHub/old-host/notes.git' does not appear to be a git repository"
       },
       refusal]
     readonly property string lastError: unavailable || warned ? "Live monitoring unavailable; using timed refresh." : pulled ? Model.messageText(pullFailures, FoamyI18n.t, FoamyI18n.tn) : ""

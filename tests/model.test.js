@@ -178,9 +178,9 @@ test('a push or pull reply gives its key and values, else its message', () => {
   const refused = {ok: false, message: 'site has no upstream branch', key: '%1 has no upstream branch', values: ['site']}
   assert.deepEqual(Model.actionMessage(refused, 'x'), {label: '%1 has no upstream branch', values: ['site']})
   assert.deepEqual(Model.actionMessage({...refused, values: Array(8).fill('x'.repeat(4096))}, 'x').label, '%1 has no upstream branch')
-  // No key (an older helper, Git's own error) or no message.
-  assert.deepEqual(Model.actionMessage({ok: false, message: 'fatal: origin is gone'}, 'x'), {label: 'fatal: origin is gone', values: []})
-  assert.deepEqual(Model.actionMessage({ok: false}, 'Repository action failed'), {label: 'Repository action failed', values: []})
+  // No key (an older helper, Git's own error) or no message: no values.
+  assert.deepEqual(Model.actionMessage({ok: false, message: 'fatal: origin is gone'}, 'x'), {label: 'fatal: origin is gone'})
+  assert.deepEqual(Model.actionMessage({ok: false}, 'Repository action failed'), {label: 'Repository action failed'})
   // A key, values or count of the wrong shape or size: the English message.
   const cases = [
     ['a key that is not a string', {key: 5}],
@@ -195,7 +195,7 @@ test('a push or pull reply gives its key and values, else its message', () => {
     ['a negative count', {count: -1}],
   ]
   for (const [what, change] of cases)
-    assert.deepEqual(Model.actionMessage({...pushed, ...change}, 'x'), {label: 'Pushed 2 commits for site', values: []}, what)
+    assert.deepEqual(Model.actionMessage({...pushed, ...change}, 'x'), {label: 'Pushed 2 commits for site'}, what)
 })
 
 test('the pick-folder reply gives a path, a cancel or an error code', () => {

@@ -68,9 +68,10 @@ import fake_nm  # noqa: E402
 PLUGIN = Path(__file__).resolve().parents[1]
 REPO = "/foamy-test/repo"
 # What the fake helper says when a push or a fetch fails (Git diagnostics,
-# which pass through the catalogs as they are).
-PUSH_FAILURE = "error: failed to push some refs to origin"
-FETCH_FAILURE = "fatal: unable to access origin"
+# which pass through the catalogs as they are). Their paths hold "{length}"
+# and "{constructor}", which a translation with values would fill in.
+PUSH_FAILURE = "error: failed to push some refs to /srv/{length}/{constructor}/repo.git"
+FETCH_FAILURE = "fatal: unable to access /srv/{length}/{constructor}/origin.git"
 # Two replies of the real helper, whose texts name the repository ("repo")
 # and a commit count, and what the panel shows for each.
 CATALOGS = {language: json.loads((PLUGIN / "i18n" / f"{language}.json").read_text()) for language in ("en", "no")}

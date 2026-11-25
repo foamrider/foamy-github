@@ -90,6 +90,15 @@ test('a row\'s status error and the watcher\'s stop reason translate; diagnostic
   assert.equal(Model.watchDetailText('', nb), '')
 })
 
+test('Git\'s own text in a kept push or pull failure shows as it is, "{length}" in a path too', () => {
+  // The kit fills a "{name}" hole from any values it gets; a list has
+  // "length" and "constructor".
+  const diagnostic = "fatal: '/srv/{length}/{constructor}/repo.git' does not appear to be a git repository"
+  const failure = Model.actionMessage({ok: false, operation: 'push', message: diagnostic}, 'Repository action failed')
+  const nbv = (label, count, values) => I18n.plural(label, count, 'nb', values)
+  assert.equal(Model.messageText([failure], nb, nbv), diagnostic)
+})
+
 test('every catalog plural has one and other forms, and Norwegian covers every English key', () => {
   const tokens = text => [...text.matchAll(/%[1-9][0-9]*|\{\w+\}/g)].map(m => m[0]).sort()
   const forms = value => typeof value === 'object' ? Object.values(value) : [value]
