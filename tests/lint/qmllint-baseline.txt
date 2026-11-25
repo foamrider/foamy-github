@@ -16,11 +16,10 @@ GithubView.qml: missing-property: Member "focusPath" not found on type "QQuickIt
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | if (service.lastChecked === 0)
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | status: root.service ? FoamyI18n.updatedAgo(root.service.lastChecked * 1000, root.now) : ""
-GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 
+GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | text: !root.service ? "" : root.service.status.ok === false ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked ===
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | Accessible.role: root.service && root.service.lastError !== "" ? Accessible.AlertMessage : Accessible.StaticText
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | color: root.service && root.service.lastError !== "" ? Commons.Color.urgent : FoamyPalette.onSurface(FoamyPalette.warning)
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | if (service.lastError !== "")
-GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError) : root.lastSyncText + " · " + FoamyI18n.t("remote state may be st
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError) : root.lastSyncText + " · " + FoamyI18n.t("remote state may be st
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | visible: !!root.service && (root.service.lastError !== "" || root.sync.stale)
@@ -40,7 +39,8 @@ GithubView.qml: missing-property: Member "status" not found on type "QObject" | 
 GithubView.qml: missing-property: Member "status" not found on type "QObject" | if (service.status.repoCount === 0)
 GithubView.qml: missing-property: Member "status" not found on type "QObject" | return FoamyI18n.tn("%1 repositories need attention", Math.max(service.status.affectedCount, repos.length))
 GithubView.qml: missing-property: Member "status" not found on type "QObject" | source: FoamyI18n.tn("%1 repositories", root.service ? root.service.status.repoCount : 0)
-GithubView.qml: missing-property: Member "status" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked === 0 
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | text: !root.service ? "" : root.service.status.ok === false ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked ===
+GithubView.qml: missing-property: Member "status" not found on type "QObject" | text: !root.service ? "" : root.service.status.ok === false ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked ===
 GithubView.qml: missing-property: Member "sync" not found on type "QObject" | readonly property var sync: service ? service.sync : Model.defaultStatus().sync
 GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | if (service.syncing)
 GithubView.qml: missing-property: Member "syncing" not found on type "QObject" | readonly property bool animateTitle: !!service && (service.syncing || service.repositoryActionRunning || (service.refreshing && service.lastChecked === 0))

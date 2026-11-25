@@ -173,7 +173,15 @@ class GitLimitsTest(HelperTest):
             f"    open({str(marker)!r}, 'w').close()\n  sys.exit(0)"
         )
         code, result = self.action("push", self.repo, [{"path": str(self.repo), "depth": 0}])
-        self.assertEqual((code, result), (0, {"ok": True, "operation": "push", "message": "Pushed 1 commit for repo"}))
+        pushed = {
+            "ok": True,
+            "operation": "push",
+            "message": "Pushed 1 commit for repo",
+            "key": "Pushed %1 commits for %2",
+            "values": [1, "repo"],
+            "count": 1,
+        }
+        self.assertEqual((code, result), (0, pushed))
         deadline = time.monotonic() + 2
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.01)

@@ -135,9 +135,27 @@ fn is_dir(path: &[u8]) -> bool {
     std::fs::metadata(paths::os(path)).is_ok_and(|meta| meta.is_dir())
 }
 
+/// Whether an error on a directory skips it instead of failing the scan or
+/// the watch: it went away or was replaced meanwhile, it is unreadable (Git
+/// skips it too), its path is too long to open (4096 bytes or more), or it
+/// is on a dead FUSE or NFS mount (ENOTCONN, ESTALE), which would otherwise
+/// stop monitoring of every repository at each retry. Any other error, EIO
+/// included, still fails: it can be a real fault the user should see.
+pub fn skips_directory(errno: i32) -> bool {
+    matches!(
+        errno,
+        libc::ENOENT
+            | libc::ENOTDIR
+            | libc::EACCES
+            | libc::EPERM
+            | libc::ENAMETOOLONG
+            | libc::ENOTCONN
+            | libc::ESTALE
+    )
+}
+
 /// Streams a directory's entries; `visit(name, is_dir_not_link, is_link)`.
-/// A directory removed, replaced or unreadable meanwhile ends the listing,
-/// as does one whose path is too long to open (4096 bytes or more).
+/// An error that [`skips_directory`] ends the listing.
 pub fn scan_dir(
     path: &[u8],
     budget: &mut ScanBudget,
@@ -145,29 +163,13 @@ pub fn scan_dir(
 ) -> Result<()> {
     let entries = match std::fs::read_dir(paths::os(path)) {
         Ok(entries) => entries,
-        Err(error)
-            if matches!(
-                error.raw_os_error(),
-                Some(
-                    libc::ENOENT | libc::ENOTDIR | libc::EACCES | libc::EPERM | libc::ENAMETOOLONG
-                )
-            ) =>
-        {
-            return Ok(());
-        }
+        Err(error) if error.raw_os_error().is_some_and(skips_directory) => return Ok(()),
         Err(error) => return Err(Error::os(error, Some(path))),
     };
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
-            Err(error)
-                if matches!(
-                    error.raw_os_error(),
-                    Some(libc::ENOENT | libc::ENOTDIR | libc::EACCES | libc::EPERM)
-                ) =>
-            {
-                return Ok(());
-            }
+            Err(error) if error.raw_os_error().is_some_and(skips_directory) => return Ok(()),
             Err(error) => return Err(Error::os(error, Some(path))),
         };
         budget.check()?;
@@ -980,6 +982,27 @@ mod tests {
         let deep = [&b"/"[..], &[b'd'; 4096]].concat();
         assert!(scan_dir(&deep, &mut ScanBudget::new(), |_, _, _| Ok(())).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_dead_mount_is_skipped_like_an_unreadable_directory_but_an_io_error_is_not() {
+        // The rule scan_dir and the watcher's reconcile share. A dead FUSE
+        // or NFS mount in a watched worktree must not stop monitoring of
+        // every repository at each retry; EIO can be a real fault and
+        // still fails. A real dead mount needs FUSE or NFS in the test.
+        for (errno, skipped) in [
+            (libc::EACCES, true),
+            (libc::ENOTCONN, true),
+            (libc::ESTALE, true),
+            (libc::EIO, false),
+        ] {
+            assert_eq!(
+                skips_directory(errno),
+                skipped,
+                "{}",
+                crate::error::strerror(errno)
+            );
+        }
     }
 
     #[test]

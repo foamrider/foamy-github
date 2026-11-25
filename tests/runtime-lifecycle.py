@@ -9,7 +9,8 @@ run's own system bus.
 The fake helper logs every start, SIGTERM and end to calls.log, with the
 trust it was given, and holds each subcommand named in the `block` file
 until the test removes it (at most 30 s), and fails each subcommand named
-in the `fail` file (fetch with only stderr, any other with a JSON reply). Its
+in the `fail` file (fetch with only stderr, any other with a JSON reply). A
+push or pull answers with the JSON in the `reply` file when it has one. Its
 status reports one
 repository using Git LFS, trusted when its trust arguments name anything
 and labelled "other" when its folders name /foamy-other; its pick-folder
@@ -32,6 +33,13 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
   the status refresh that follows them; the next fetch clears the failure,
   and so does the last bar's unload. A failed status check shows its own
   failure, also over a kept push failure, until a status check works.
+- language: a push the helper refuses with a text that names the
+  repository, and a push whose text names its commit count, show in the
+  panel's language (Norwegian, switched live); the kept failure follows a
+  switch back to English.
+- footer: with no folders, the text under the empty list stays "No
+  repositories yet" while a failed fetch is kept on the warning line, and
+  says the status is unavailable only when the status check fails.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
   "unavailable" once the helper exits 127, which the panel then says;
@@ -44,6 +52,7 @@ Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
 
 import atexit
+import json
 import os
 import shutil
 import sys
@@ -59,9 +68,41 @@ import fake_nm  # noqa: E402
 PLUGIN = Path(__file__).resolve().parents[1]
 REPO = "/foamy-test/repo"
 # What the fake helper says when a push or a fetch fails (Git diagnostics,
-# which pass through the catalogs as they are).
-PUSH_FAILURE = "error: failed to push some refs to origin"
-FETCH_FAILURE = "fatal: unable to access origin"
+# which pass through the catalogs as they are). Their paths hold "{length}"
+# and "{constructor}", which a translation with values would fill in.
+PUSH_FAILURE = "error: failed to push some refs to /srv/{length}/{constructor}/repo.git"
+FETCH_FAILURE = "fatal: unable to access /srv/{length}/{constructor}/origin.git"
+# Two replies of the real helper, whose texts name the repository ("repo")
+# and a commit count, and what the panel shows for each.
+CATALOGS = {language: json.loads((PLUGIN / "i18n" / f"{language}.json").read_text()) for language in ("en", "no")}
+REFUSED_KEY = "%1 has remote changes; pull or rebase first"
+PUSHED_KEY = "Pushed %1 commits for %2"
+REPLIES = {
+    "refused": {
+        "reply": {
+            "ok": False,
+            "operation": "push",
+            "message": "repo has remote changes; pull or rebase first",
+            "key": REFUSED_KEY,
+            "values": ["repo"],
+        },
+        "en": CATALOGS["en"][REFUSED_KEY].replace("%1", "repo"),
+        "no": CATALOGS["no"][REFUSED_KEY].replace("%1", "repo"),
+    },
+    "pushed": {
+        "reply": {
+            "ok": True,
+            "operation": "push",
+            "message": "Pushed 1 commit for repo",
+            "key": PUSHED_KEY,
+            "values": [1, "repo"],
+            "count": 1,
+        },
+        "no": CATALOGS["no"][PUSHED_KEY]["one"].replace("%1", "1").replace("%2", "repo"),
+    },
+}
+for entry in REPLIES.values():
+    entry["reply"] = json.dumps(entry["reply"], separators=(",", ":"))
 
 HELPER = r"""#!/usr/bin/env bash
 # Fake foamy-github-helper (see tests/runtime-lifecycle.py).
@@ -89,6 +130,15 @@ if [ "$folders" != "[]" ]; then
   for ((i = 0; i < 600; i++)); do grep -qx "$sub" "$state/block" 2>/dev/null || break; sleep 0.05; done
 fi
 echo "end $sub $$" >> "$state/calls.log"
+case "$sub" in
+  push | pull)
+    if [ -s "$state/reply" ]; then
+      cat "$state/reply"
+      grep -q '"ok":true' "$state/reply"
+      exit $?
+    fi
+    ;;
+esac
 if grep -qx "$sub" "$state/fail" 2>/dev/null; then
   case "$sub" in
     fetch) echo "@FETCH_FAILURE@" >&2 ;;
@@ -119,6 +169,7 @@ import Quickshell
 import Quickshell.Io
 import "harness"
 import "plugin" as Plugin
+import "plugin/kit" as Kit
 
 ShellRoot {
   id: shell
@@ -202,7 +253,7 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, ipcSteps)
+  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, languageSteps, footerSteps, ipcSteps)
   function collect(item, test) {
     var found = item && test(item) ? [item] : []
     var kids = item ? item.children || [] : []
@@ -555,6 +606,89 @@ ShellRoot {
     }
   ]
 
+  // language: the helper's texts that name the repository or a commit
+  // count, in the panel's language.
+  FileView { id: languageFile; path: Quickshell.env("OMARCHY_LANGUAGE_FILE"); printErrors: false }
+  FileView { id: replyFile; path: shell.state + "/reply"; printErrors: false }
+  FileView { id: replyRead; path: shell.state + "/reply"; blockLoading: true; printErrors: false }
+  readonly property var replies: @REPLIES@
+  // The fake's push and pull answer with `text` ("": as before), once the file says so.
+  function replying(text, then) {
+    replyFile.setText(text)
+    until(function() { replyRead.reload(); return replyRead.text() === text }, "the reply file is written", then)
+  }
+  function speaking(language, then) {
+    languageFile.setText(language + "\n")
+    until(function() { return Kit.FoamyI18n.language === language }, "the panel speaks " + language, then)
+  }
+  readonly property var languageSteps: [
+    function(next) {
+      speaking("no", function() {
+        replying(shell.replies.refused.reply, function() {
+          var statuses = count("end status")
+          service.pushRepository(service.repos[0])
+          until(function() { return !service.busy && count("end status") > statuses }, "language: the refused push and the status refresh after it end", function() {
+            check(service.lastError === shell.replies.refused.no, "language: the refused push names the repository in Norwegian: " + service.lastError)
+            speaking("en", function() {
+              check(service.lastError === shell.replies.refused.en, "language: the kept failure follows the language: " + service.lastError)
+              next()
+            })
+          })
+        })
+      })
+    },
+    function(next) {
+      speaking("no", function() {
+        replying(shell.replies.pushed.reply, function() {
+          var ends = count("end push")
+          service.pushRepository(service.repos[0])
+          // The title shows it for 5 s from the push's end.
+          until(function() { return !service.repositoryActionRunning && count("end push") > ends }, "language: the push ends", function() {
+            check(service.actionStatus === shell.replies.pushed.no && service.lastError === "",
+              "language: the push's commit count and repository in Norwegian: " + service.actionStatus + " | " + service.lastError)
+            replying("", function() { speaking("en", function() { until(function() { return !service.busy }, "language: idle", next) }) })
+          })
+        })
+      })
+    }
+  ]
+
+  // footer: the text under an empty list (no folders: the status check
+  // works and finds no repository).
+  function emptyListText() { var text = named(panel.popup.bodyItem, "githubEmptyList"); return text ? text.text : "(none)" }
+  readonly property string noRepositories: "No repositories yet. Add a folder in Settings."
+  readonly property var footerSteps: [
+    function(next) {
+      panel.settings = settingsWith(trustRepo, [])
+      panel.open()
+      until(function() {
+        return panel.popup.bodyItem !== null && !service.busy && service.scannedFolders === "[]" && service.status.repoCount === 0
+      }, "footer: no repository is found", function() {
+        check(emptyListText() === shell.noRepositories, "footer: no repository yet: " + emptyListText())
+        failing(["fetch"], function() {
+          var statuses = count("end status")
+          check(service.fetch() === "ok", "footer: a fetch starts")
+          until(function() { return !service.busy && count("end status") > statuses }, "footer: the failed fetch and the status refresh after it end", function() {
+            check(service.status.ok === true && service.lastError === shell.fetchFailure, "footer: the failed fetch is kept: " + service.lastError)
+            check(emptyListText() === shell.noRepositories, "footer: a kept fetch failure is no failed status check: " + emptyListText())
+            next()
+          })
+        })
+      })
+    },
+    function(next) {
+      refreshFailing(["fetch", "status"], "footer: the status check fails", function() {
+        check(service.status.ok === false && emptyListText() === "Repository status is unavailable. Try Refresh again.",
+          "footer: a failed status check says so: " + emptyListText())
+        failing([], function() {
+          panel.close()
+          panel.settings = settingsWith(trustRepo)
+          until(function() { return !panel.opened && !service.busy && service.repos.length === 1 }, "footer: the repository is back", next)
+        })
+      })
+    }
+  ]
+
   // ipc: the real IPC target, called the way omarchy-shell does.
   FileView { id: connectivityFile; path: shell.state + "/connectivity"; printErrors: false }
   Process {
@@ -650,11 +784,13 @@ def main():
         (state / "calls.log").write_text("")
         (state / "block").write_text("")
         (state / "fail").write_text("")
+        (state / "reply").write_text("")
         helper = HELPER.replace("@STATE@", str(state)).replace("@REPO@", REPO)
         helper = helper.replace("@PUSH_FAILURE@", PUSH_FAILURE).replace("@FETCH_FAILURE@", FETCH_FAILURE)
         plugin = hostenv.fake_helper_plugin(PLUGIN, work / "plugin", "foamy-github-helper", helper)
         shell = SHELL.replace("@STATE@", str(state)).replace("@REPO@", REPO)
         shell = shell.replace("@PUSH_FAILURE@", PUSH_FAILURE).replace("@FETCH_FAILURE@", FETCH_FAILURE)
+        shell = shell.replace("@REPLIES@", json.dumps(REPLIES))
         # A short prefix: the run's IPC socket path must stay under 108 bytes.
         run = harness.Run(host, shell, plugin=plugin, prefix="fgh-life-", system_bus="private")
         # The fake must own its name before qs starts: Quickshell looks for

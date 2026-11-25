@@ -9,7 +9,7 @@ Item {
   id: preview
   required property QtObject bar
   required property Item anchorItem
-  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "empty", "unavailable", "settings", "settings-first", "settings-lfs", "settings-no-lfs", "settings-error", "fetching"]
+  property var previewStates: ["repositories", "lfs-untrusted", "lfs-trusted", "clean", "clean-warning", "empty", "unavailable", "settings", "settings-first", "settings-lfs", "settings-no-lfs", "settings-error", "fetching", "pulled"]
   property string previewState: "repositories"
   property int settleMs: previewState === "settings-lfs" || previewState === "settings-no-lfs" ? 1500 : 600
   readonly property var popup: previewPopup
@@ -70,10 +70,16 @@ Item {
   QtObject {
     id: mock
     readonly property bool lfsState: preview.previewState.indexOf("lfs-") === 0
-    readonly property bool clean: preview.previewState === "clean"
+    // "clean-warning": every repository clean while a kept failure (here the
+    // watcher's) is on the warning line; the status check itself works.
+    readonly property bool warned: preview.previewState === "clean-warning"
+    readonly property bool clean: preview.previewState === "clean" || warned
     readonly property bool empty: preview.previewState === "empty"
     readonly property bool unavailable: preview.previewState === "unavailable"
     readonly property bool fetching: preview.previewState === "fetching"
+    // After a Pull all: one repository pulled, one failed with Git's error
+    // and one refused by the helper with a text that names it.
+    readonly property bool pulled: preview.previewState === "pulled"
     readonly property var affectedRepos: clean || empty ? [] : unavailable ? [preview.row("Work/monorepo", "main", 0, 0, 0, {
         complete: false,
         error: "Git inspection timed out. Open the repository in lazygit and retry."
@@ -95,9 +101,20 @@ Item {
         lastSuccess: preview.now - 600,
         failures: clean || empty || unavailable ? [] : [1, 2, 3]
       })
-    readonly property string lastError: unavailable ? "Live monitoring unavailable; using timed refresh." : ""
+    readonly property var refusal: Model.actionMessage({
+      ok: false,
+      message: "Work/docs has no upstream branch",
+      key: "%1 has no upstream branch",
+      values: ["Work/docs"]
+    }, "")
+    readonly property var pullFailures: [
+      {
+        label: "fatal: '/home/me/GitHub/old-host/notes.git' does not appear to be a git repository"
+      },
+      refusal]
+    readonly property string lastError: unavailable || warned ? "Live monitoring unavailable; using timed refresh." : pulled ? Model.messageText(pullFailures, FoamyI18n.t, FoamyI18n.tn) : ""
     readonly property double lastChecked: preview.now
-    readonly property string actionStatus: ""
+    readonly property string actionStatus: pulled ? FoamyI18n.tn("Pulled %1 repositories", 1) : ""
     readonly property bool syncing: fetching
     readonly property bool refreshing: false
     readonly property bool repositoryActionRunning: false

@@ -179,6 +179,35 @@ function fetchOutcome(exitCode, stdout, stderr) {
   return { status: "error", message: detail || "Repository synchronization failed", failed: 0, exitCode: exitCode }
 }
 
+// A push or pull reply as message data ({label, values, count}): its `key`
+// and `values` when the text names the repository or a commit count
+// (`count` picks the plural form), else its English `message`, which is a
+// catalog key or Git's own text, with no values. A key, values or count of
+// the wrong shape or size falls back to the message.
+function actionMessage(result, fallback) {
+  var values = result && Array.isArray(result.values) ? result.values : null
+  var keyed = !!values && typeof result.key === "string" && result.key !== "" && result.key.length <= 4096
+    && values.length <= 8 && values.every(function(value) {
+      return (typeof value === "string" && value.length <= 4096) || Number.isSafeInteger(value)
+    })
+    && (result.count === undefined || (Number.isSafeInteger(result.count) && result.count >= 0))
+  if (!keyed) return { label: String(result && result.message || fallback) }
+  var message = { label: result.key, values: values }
+  if (result.count !== undefined) message.count = result.count
+  return message
+}
+
+// Message data as one text in the panel's language: each label translated
+// with its values (a plural one for its count), joined with " · ". A label
+// with no values gets none, not an empty list: the kit fills a "{name}" hole
+// from any values it is given, and a list has "length" and "constructor",
+// so a path in Git's own text would change.
+function messageText(messages, tr, tn) {
+  return messages.map(function(message) {
+    return message.count !== undefined ? tn(message.label, message.count, message.values) : tr(message.label, message.values)
+  }).join(" · ")
+}
+
 // The trusted list with `repo` (its path and identity) added or removed.
 function withTrust(list, repo, trusted) {
   var out = (list || []).filter(function(entry) { return entry.path !== repo.path })
@@ -334,6 +363,8 @@ if (typeof module !== "undefined") {
     trustRevoked: trustRevoked,
     trustBase: trustBase,
     fetchOutcome: fetchOutcome,
+    actionMessage: actionMessage,
+    messageText: messageText,
     lfsRepos: lfsRepos,
     validTrustedList: validTrustedList,
     syncErrorText: syncErrorText

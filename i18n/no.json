@@ -88,6 +88,19 @@
   "push failed": "sending mislyktes",
   "pull failed": "henting mislyktes",
   "Repository is not tracked by this panel": "Prosjektet følges ikke av dette panelet",
+  "%1 has no upstream branch": "%1 har ingen upstream-gren",
+  "%1 has nothing to push": "%1 har ingenting å sende",
+  "%1 has remote changes; pull or rebase first": "%1 har endringer i fjernlageret; hent eller rebase først",
+  "%1 has local changes; open lazygit before pulling": "%1 har lokale endringer; åpne lazygit før du henter",
+  "%1 has diverged; open lazygit to resolve it": "%1 har divergert; åpne lazygit for å løse det",
+  "Pushed %1 commits for %2": {
+    "one": "Sendte %1 innsending for %2",
+    "other": "Sendte %1 innsendinger for %2"
+  },
+  "Pulled %1 commits for %2": {
+    "one": "Hentet %1 innsending for %2",
+    "other": "Hentet %1 innsendinger for %2"
+  },
   "No repository status received": "Ingen prosjektstatus mottatt",
   "Invalid repository status": "Ugyldig prosjektstatus",
   "Failed to parse repository status": "Kunne ikke tolke prosjektstatus",

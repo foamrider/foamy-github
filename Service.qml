@@ -39,9 +39,7 @@ Item {
   property bool scheduledFetchPending: false
   // Keep message data so an in-flight operation follows language changes.
   property var actionMessages: []
-  readonly property string actionStatus: actionMessages.map(function (message) {
-    return message.count !== undefined ? FoamyI18n.tn(message.label, message.count) : root.tr(message.label, message.values)
-  }).join(" · ")
+  readonly property string actionStatus: Model.messageText(actionMessages, root.tr, FoamyI18n.tn)
   function setActionStatus(label, values) {
     actionMessages = label ? [
       {
@@ -50,16 +48,20 @@ Item {
       }
     ] : []
   }
-  // The last push, pull, Pull all or fetch failure, or the missing helper.
-  // It outlives the status refresh that follows it and goes when the next
-  // push, pull or fetch starts; a failed status check is the status's own
-  // error.
-  property string operationError: ""
+  // The last push, pull, Pull all or fetch failure, or the missing helper,
+  // as message data like actionMessages, so a kept failure follows language
+  // changes too; a text that is no template has no values (see
+  // Model.messageText). It outlives the status refresh that follows it and
+  // goes when the next push, pull or fetch starts; a failed status check is
+  // the status's own error.
+  property var operationErrors: []
+  readonly property string operationError: Model.messageText(operationErrors, root.tr, FoamyI18n.tn)
   property bool watchFailed: false
   readonly property string watchError: !inotifyEnabled || !watchFailed ? "" : refreshIntervalSec > 0 ? "Live monitoring unavailable; using timed refresh." : "Live monitoring unavailable; automatic local refresh is disabled."
   property string watchDetail: ""
-  // The panel translates lastError as one catalog key, so the watcher's
-  // failure and its stop reason are translated here, before they are joined.
+  // The panel translates lastError as one catalog key, so what is not one
+  // is translated here: the kept failure, and the watcher's failure with its
+  // stop reason, before they are joined.
   // A failed status check shows first, since no row is current while it
   // lasts; a kept action failure shows again once a status check works.
   readonly property string lastError: (status.ok === false ? String(status.error || "") : "") || operationError || (watchError ? root.tr(watchError) + (watchDetail ? " " + Model.watchDetailText(watchDetail, root.tr) : "") : "") || (totals.unavailableRepos > 0 ? "Some repository checks are incomplete. Open the affected repository in lazygit, then refresh." : "")
@@ -87,7 +89,11 @@ Item {
     if (!root.helperUnavailable)
       console.warn("foamy.github: the native helper isn't available for this CPU (exit", exitCode + ")")
     root.helperUnavailable = true
-    root.operationError = FoamyNative.UNAVAILABLE_TEXT
+    root.operationErrors = [
+      {
+        label: FoamyNative.UNAVAILABLE_TEXT
+      }
+    ]
     status = Model.unavailableStatus(status, FoamyNative.UNAVAILABLE_TEXT)
     return true
   }
@@ -170,7 +176,7 @@ Item {
     repositoryActionProcess.running = false
     monitoring = false
     // No failure may stay on the shared Service for the next bar.
-    operationError = ""
+    operationErrors = []
   }
 
   // Popup opened: with live monitoring the rows are already current, so
@@ -267,7 +273,7 @@ Item {
       return "offline"
     }
     syncing = true
-    operationError = ""
+    operationErrors = []
     // An earlier completion timer must not clear the new progress title.
     actionMessageTimer.stop()
     setActionStatus("Fetching repositories…")
@@ -290,7 +296,7 @@ Item {
   // starts as the previous one exits, before its status refresh.
   readonly property var pullableRepos: Model.pullableRepos(repos)
   property var pullAllQueue: []
-  // { pulled, failures: [message] } while running
+  // { pulled, failures: [message data] } while running
   property var pullAllResult: null
   readonly property bool pullingAll: pullAllResult !== null
   function pullAll() {
@@ -324,7 +330,7 @@ Item {
         count: result.pulled
       }
     ] : []
-    operationError = result.failures.join(" · ")
+    operationErrors = result.failures
   }
 
   // `queued`: the next Pull all step, which may follow a status refresh the
@@ -333,7 +339,7 @@ Item {
     if ((queued ? root.repositoryActionRunning || root.syncing : root.busy) || !root.active || root.helperUnavailable || !repo || !repo.path || repo.complete !== true)
       return false
     repositoryActionRunning = true
-    operationError = ""
+    operationErrors = []
     actionMessageTimer.stop()
     setActionStatus(mode === "push" ? "Pushing %1…" : "Pulling %1…", [String(repo.label || repo.name || "repository")])
     repositoryActionProcess.command = helperCommand([mode, String(repo.path)].concat(helperArguments()))
@@ -545,7 +551,11 @@ Item {
         ]
       } else {
         root.setActionStatus("")
-        root.operationError = outcome.message
+        root.operationErrors = [
+          {
+            label: outcome.message
+          }
+        ]
       }
       actionMessageTimer.restart()
       root.refresh()
@@ -574,12 +584,17 @@ Item {
       try {
         result = JSON.parse(String(repositoryActionOutput.text || "{}"))
       } catch (e) {}
+      // The failure, if this is one: the reply's message, or without a reply
+      // the helper's stderr as it is.
+      var failure = result ? Model.actionMessage(result, "Repository action failed") : {
+        label: String(repositoryActionError.text || "Repository action failed").trim()
+      }
       if (root.pullingAll) {
         var step = root.pullAllResult
         if (result && result.ok)
           step.pulled++
         else
-          step.failures.push(result ? String(result.message || "Repository action failed") : String(repositoryActionError.text || "Repository action failed").trim())
+          step.failures.push(failure)
         root.pullAllResult = step
         root.pullNext()
         if (root.pullingAll)
@@ -590,14 +605,11 @@ Item {
         return
       }
       if (result && (result.ok || result.busy)) {
-        root.setActionStatus(String(result.message || "Repository action complete"))
-        root.operationError = ""
-      } else if (result) {
-        root.setActionStatus("")
-        root.operationError = String(result.message || "Repository action failed")
+        root.actionMessages = [Model.actionMessage(result, "Repository action complete")]
+        root.operationErrors = []
       } else {
         root.setActionStatus("")
-        root.operationError = String(repositoryActionError.text || "Repository action failed").trim()
+        root.operationErrors = [failure]
       }
       actionMessageTimer.restart()
       root.refresh()

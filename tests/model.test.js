@@ -172,6 +172,32 @@ test('fetch helper output is validated before reporting', () => {
   assert.equal(Model.fetchOutcome(1, '', 'e'.repeat(300)).message.length, 240)
 })
 
+test('a push or pull reply gives its key and values, else its message', () => {
+  const pushed = {ok: true, operation: 'push', message: 'Pushed 2 commits for site', key: 'Pushed %1 commits for %2', values: [2, 'site'], count: 2}
+  assert.deepEqual(Model.actionMessage(pushed, 'x'), {label: 'Pushed %1 commits for %2', values: [2, 'site'], count: 2})
+  const refused = {ok: false, message: 'site has no upstream branch', key: '%1 has no upstream branch', values: ['site']}
+  assert.deepEqual(Model.actionMessage(refused, 'x'), {label: '%1 has no upstream branch', values: ['site']})
+  assert.deepEqual(Model.actionMessage({...refused, values: Array(8).fill('x'.repeat(4096))}, 'x').label, '%1 has no upstream branch')
+  // No key (an older helper, Git's own error) or no message: no values.
+  assert.deepEqual(Model.actionMessage({ok: false, message: 'fatal: origin is gone'}, 'x'), {label: 'fatal: origin is gone'})
+  assert.deepEqual(Model.actionMessage({ok: false}, 'Repository action failed'), {label: 'Repository action failed'})
+  // A key, values or count of the wrong shape or size: the English message.
+  const cases = [
+    ['a key that is not a string', {key: 5}],
+    ['an empty key', {key: ''}],
+    ['a key over 4096 characters', {key: 'x'.repeat(4097)}],
+    ['values that are not a list', {values: 'site'}],
+    ['an object among the values', {values: [{}, 'site']}],
+    ['a fraction among the values', {values: [1.5, 'site']}],
+    ['nine values', {values: Array(9).fill('site')}],
+    ['a value over 4096 characters', {values: [2, 'x'.repeat(4097)]}],
+    ['a count that is not a number', {count: '2'}],
+    ['a negative count', {count: -1}],
+  ]
+  for (const [what, change] of cases)
+    assert.deepEqual(Model.actionMessage({...pushed, ...change}, 'x'), {label: 'Pushed 2 commits for site'}, what)
+})
+
 test('the pick-folder reply gives a path, a cancel or an error code', () => {
   assert.deepEqual(Model.folderPickReply(0, '{"ok":true,"path":"/home/me/Code"}\n'), {path: '/home/me/Code'})
   assert.deepEqual(Model.folderPickReply(0, 'noise\n{"ok":true,"cancelled":true}\n'), {cancelled: true})
