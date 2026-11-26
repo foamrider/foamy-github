@@ -99,9 +99,7 @@ Item {
   }
   readonly property var repositoryFolders: preferences.repositoryFolders
   readonly property string folderArguments: JSON.stringify(repositoryFolders)
-  onFolderArgumentsChanged: Qt.callLater(function () {
-    root.restartWatcher(true)
-  })
+  onFolderArgumentsChanged: Qt.callLater(root.restartWatcher, true)
   // Per-repository trust: absolute paths whose own Git config runs in
   // automatic checks (the panel offers it for Git LFS repositories). The old
   // global switch stays honoured until the panel migrates it once.
@@ -120,9 +118,7 @@ Item {
       root.fetchRestartRequested = true
       syncProcess.running = false
     }
-    Qt.callLater(function () {
-      root.restartWatcher(true)
-    })
+    Qt.callLater(root.restartWatcher, true)
   }
   // The trust the running (or last) fetch was started with.
   property string fetchTrust: ""
@@ -142,9 +138,7 @@ Item {
   readonly property var totals: status.totals || Model.defaultStatus().totals
   readonly property var sync: status.sync || Model.defaultStatus().sync
   readonly property bool inotifyEnabled: preferences.inotifyEnabled
-  onInotifyEnabledChanged: Qt.callLater(function () {
-    root.restartWatcher(true)
-  })
+  onInotifyEnabledChanged: Qt.callLater(root.restartWatcher, true)
   // 0 turns timed refresh off.
   readonly property int refreshIntervalSec: preferences.refreshIntervalSec
   readonly property int fetchIntervalSec: preferences.fetchIntervalSec
@@ -161,7 +155,8 @@ Item {
 
   onActiveChanged: {
     if (active) {
-      root.restartWatcher(true)
+      // Queued, after the settings the leader hands over (see restartWatcher).
+      Qt.callLater(root.restartWatcher, true)
       if (networkReady)
         networkReadyTimer.start()
       return
@@ -186,6 +181,13 @@ Item {
       root.refresh()
   }
 
+  // Starts the watcher (without live monitoring, a status check), stopping
+  // a running one first. The Service turning active and a change of
+  // folders, trust or live monitoring all queue the same call,
+  // Qt.callLater(root.restartWatcher, true), which runs once per event-loop
+  // turn: at shell start the bar's first member makes the Service active
+  // before the leader hands over the settings, and those handlers fire for
+  // their first values too, so the watcher starts once, with the settings.
   function restartWatcher(resetBackoff) {
     if (!root.active || root.helperUnavailable)
       return
