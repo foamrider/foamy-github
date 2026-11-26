@@ -330,6 +330,7 @@ Panel {
       GithubView {
         service: Service
         settings: prefs.effectiveSettings
+        queue: prefs
         opened: root.opened
         editingSettings: root.editingSettings
         saving: prefs.busy

@@ -18,6 +18,8 @@ PanelKeyCatcher {
 
   property QtObject service: null
   property var settings: ({})
+  // The Panel's FoamyPrefsQueue, which the interval dropdowns save through.
+  property QtObject queue: null
   property bool opened: true
   property bool editingSettings: false
   property bool saving: false
@@ -130,16 +132,11 @@ PanelKeyCatcher {
     cursor.reset()
     lfsNotePath = ""
   }
-  onEditingSettingsChanged: {
-    if (editingSettings) {
-      loadFolders()
-      settingsPage.resetScroll()
-      Qt.callLater(settingsPage.focusBack)
-    } else {
-      Qt.callLater(function () {
-        root.forceActiveFocus()
-      })
-    }
+  // When Settings hides, FoamyPopup gives the keys back to this view.
+  onEditingSettingsChanged: if (editingSettings) {
+    loadFolders()
+    settingsPage.resetScroll()
+    Qt.callLater(settingsPage.focusBack)
   }
 
   Connections {
@@ -577,6 +574,9 @@ PanelKeyCatcher {
         compact: true
         label: Prefs.value(Schema.fields, root.settings, "inotifyEnabled") ? FoamyI18n.t("Fallback refresh every") : FoamyI18n.t("Refresh every")
         value: String(Prefs.value(Schema.fields, root.settings, "refreshIntervalSec"))
+        // A pick the queue refuses gives way at once.
+        queue: root.queue
+        queueKey: "refreshIntervalSec"
         options: [
           {
             value: "0",
@@ -608,6 +608,8 @@ PanelKeyCatcher {
         compact: true
         label: FoamyI18n.t("Fetch remotes every")
         value: String(Prefs.value(Schema.fields, root.settings, "fetchIntervalSec"))
+        queue: root.queue
+        queueKey: "fetchIntervalSec"
         options: [
           {
             value: "300",

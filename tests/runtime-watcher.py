@@ -8,7 +8,10 @@ The plugin runs from a temporary copy whose bin/<arch>/foamy-github-helper
 is a script: each `watch` writes "FAKE-WATCH-HEAD run <n>" and 16 MiB to
 stderr and exits 3 (a failure, not 126/127), except the third, which exits 3
 without writing anything; every other subcommand runs the real helper
-(FOAMY_HELPER, see tests/blackbox.py) over zero folders. The Service keeps
+(FOAMY_HELPER, see tests/blackbox.py) over one empty folder. The watcher
+starts once at shell start, with that folder: the bar's first member makes
+the Service active before the leader hands over the settings, and the
+setting handlers fire for their first values too. The Service keeps
 only the first 4096 characters of the watcher's stderr, shows 240 of them,
 and starts afresh when the watcher starts again (the detail of a restarted
 watcher names its own run). The warning says the failure in the panel's
@@ -62,6 +65,8 @@ ShellRoot {
   id: shell
   property var panel: null
   property int checks: 0
+  // Watcher starts since the panel was made (the Service stamps each one).
+  property int watchStarts: 0
   readonly property string warning: "@WARNING@"
   readonly property string exited: "@EXITED@"
   function check(ok, what) { checks++; if (!ok) console.log("FOAMY FAIL " + what) }
@@ -72,13 +77,22 @@ ShellRoot {
     Item { id: host; width: 800; height: 600 }
   }
   Component { id: barComponent; MockBar { barSize: 34 } }
+  Connections {
+    id: startCount
+    target: null
+    function onWatchStartedAtChanged() { shell.watchStarts++ }
+  }
 
   Component.onCompleted: {
     var component = Qt.createComponent(Qt.resolvedUrl("plugin/Panel.qml"))
     if (component.status !== Component.Ready) { console.log("FOAMY FAIL load " + component.errorString()); Qt.quit(); return }
     var bar = barComponent.createObject(shell, { moduleName: "foamy.github" })
     panel = component.createObject(host, { bar: bar, width: 40, height: 34,
-      settings: { repositoryFolders: [], inotifyEnabled: true, refreshIntervalSec: 0, fetchIntervalSec: 86400 } })
+      settings: { repositoryFolders: [{ path: "@FOLDER@", depth: 2 }], inotifyEnabled: true, refreshIntervalSec: 0, fetchIntervalSec: 86400 } })
+    // The Service is made with the panel; a watcher started while it was
+    // made, before this could listen, has stamped its start already.
+    watchStarts = Plugin.Service.watchStartedAt > 0 ? 1 : 0
+    startCount.target = Plugin.Service
     poll.start()
   }
 
@@ -115,6 +129,8 @@ ShellRoot {
       check(head !== null, "detail starts with the watcher's first bytes: " + JSON.stringify(detail.slice(0, 40)))
       var run = head ? Number(head[1]) : -1
       if (phase === 0) {
+        // Up to its first failure, the only watcher is the one shell start made.
+        check(shell.watchStarts === 1, "the watcher starts once at shell start: " + shell.watchStarts + " starts")
         firstRun = run
         service.restartWatcher(true)
         check(!service.watchFailed && service.watchDetail === "", "a restart clears the failure")
@@ -158,11 +174,18 @@ for host, language in itertools.product(harness.available_hosts(what="runtime-wa
     work = Path(tempfile.mkdtemp(prefix="foamy-github-watcher-"))
     atexit.register(shutil.rmtree, work, True)
     plugin, counter, memory = fake_plugin(work)
+    # The saved folder, which differs from the default (none) as a user's does.
+    folder = work / "repositories"
+    folder.mkdir()
     catalog = json.loads((PLUGIN / "i18n" / f"{language}.json").read_text())
     warning = catalog[WARNING] + " "
     # No entry: nothing can match, so the run fails and shows what was there.
     exited = catalog.get(EXITED, "")
-    shell_qml = SHELL.replace("@WARNING@", json.dumps(warning)[1:-1]).replace("@EXITED@", json.dumps(exited)[1:-1])
+    shell_qml = (
+        SHELL.replace("@WARNING@", json.dumps(warning)[1:-1])
+        .replace("@EXITED@", json.dumps(exited)[1:-1])
+        .replace("@FOLDER@", json.dumps(str(folder))[1:-1])
+    )
     run = harness.Run(host, shell_qml, plugin=plugin, language=language, prefix=f"foamy-github-watcher-{host}-").start()
     shell_pid = run.process.pid
     run.wait(60)
