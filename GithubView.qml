@@ -130,16 +130,11 @@ PanelKeyCatcher {
     cursor.reset()
     lfsNotePath = ""
   }
-  onEditingSettingsChanged: {
-    if (editingSettings) {
-      loadFolders()
-      settingsPage.resetScroll()
-      Qt.callLater(settingsPage.focusBack)
-    } else {
-      Qt.callLater(function () {
-        root.forceActiveFocus()
-      })
-    }
+  // When Settings hides, FoamyPopup gives the keys back to this view.
+  onEditingSettingsChanged: if (editingSettings) {
+    loadFolders()
+    settingsPage.resetScroll()
+    Qt.callLater(settingsPage.focusBack)
   }
 
   Connections {

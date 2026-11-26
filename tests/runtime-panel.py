@@ -9,7 +9,8 @@ instances; the popup body builds on open with the GithubView; the keys move
 the cursor from Settings to the footer's Refresh (no Pull all with nothing
 to pull) and open Settings; a paste error reaches the Panel in the panel's
 language (Norwegian, switched live); a folder edit and a trust edit reach
-the Panel and the bar; the folder chooser (the helper's pick-folder
+the Panel and the bar; the popup closed on Settings and opened again closes
+on Esc (a real key press); the folder chooser (the helper's pick-folder
 on the run's private bus, where no portal runs) releases the popup and
 comes back to Settings with its error. Temp HOME, no folders, no network.
 Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
@@ -30,6 +31,7 @@ import harness  # noqa: E402
 PLUGIN = Path(__file__).resolve().parents[1]
 SHELL = r"""
 import QtQuick
+import QtTest
 import Quickshell
 import Quickshell.Io
 import "harness"
@@ -50,10 +52,23 @@ ShellRoot {
     for (var i = 0; i < kids.length; i++) collect(kids[i], test, out)
     return out
   }
+  // Whether the item that has the keys in panel's popup window is `ancestor`
+  // or inside it.
+  function keysIn(panel, ancestor) {
+    var body = panel.popup.bodyItem
+    var window = body ? body.Window.window : null
+    for (var at = window ? window.activeFocusItem : null; at; at = at.parent)
+      if (at === ancestor) return true
+    return false
+  }
+  function settingsPage(view) { return collect(view, function(item) { return item.backTarget !== undefined })[0] }
 
   FloatingWindow {
     implicitWidth: 1920; implicitHeight: 1080
+    // The screen the popups draw into, so an open popup has this window's keys.
+    ScreenSim {}
     Item { id: host; width: 1920; height: 1080 }
+    Item { TestEvent { id: ev } }
   }
   Component { id: barComponent; MockBar { barSize: 34 } }
   FileView { id: language; path: Quickshell.env("OMARCHY_LANGUAGE_FILE") }
@@ -93,6 +108,13 @@ ShellRoot {
       return JSON.stringify(panels[1].bar.saved).indexOf("@IDENT@") >= 0
         && panels[2].settingsError !== "" && Kit.FoamyShared.memberCount("github") === 2
     },
+    // Settings shows again, and its page has the keys (the view focuses Back).
+    function() {
+      var view = panels[1].popup.bodyItem
+      return panels[1].editingSettings && view !== null && shell.keysIn(panels[1], shell.settingsPage(view))
+    },
+    // Opened again after it closed on Settings: the host gave the body the keys.
+    function() { return panels[1].popup.open && shell.keysIn(panels[1], panels[1].popup.bodyItem) },
     // Back from the folder chooser, with its answer.
     function() { return panels[1].opened && !panels[1].returningFromBrowser && panels[1].settingsError !== "" },
     function() { return !Plugin.Service.active }
@@ -224,13 +246,22 @@ ShellRoot {
         check(!panels[1].opened && !panels[1].editingSettings, "settings reset when the popup closes")
         panels[1].openSettings()
         check(panels[1].opened && panels[1].editingSettings, "openSettings() on a closed popup lands on Settings")
+      } else if (n === 6) {
+        // The popup closes on Settings and opens again (step 7: Esc closes it).
+        panels[1].close()
+        check(!panels[1].editingSettings, "closing the popup leaves Settings")
+        panels[1].open()
+      } else if (n === 7) {
+        ev.keyClick(Qt.Key_Escape, Qt.NoModifier, -1)
+        check(!panels[1].opened, "Esc closes the popup that was closed on Settings")
+        panels[1].openSettings()
         // The folder chooser: the popup is released while the helper's
         // pick-folder runs, then reopens on Settings with its answer.
         var view3 = panels[1].popup.bodyItem
         shell.folderBefore = collect(view3, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0].text
         view3.browseRequested(0)
         check(!panels[1].opened, "the popup is released for the folder chooser")
-      } else if (n === 6) {
+      } else if (n === 8) {
         check(panels[1].editingSettings, "the folder chooser round trip keeps Settings")
         check(panels[1].settingsError === "@PICK_ERROR@", "the chooser's error is shown: " + panels[1].settingsError)
         var row = collect(panels[1].popup.bodyItem, function(item) { return item.pasteError !== undefined && item.placeholderText === "~/Projects" })[0]
