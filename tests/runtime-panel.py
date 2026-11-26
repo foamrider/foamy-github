@@ -7,12 +7,13 @@ offscreen Quickshell against a host shell, through foamy-kit's harness.
 Checks: it loads without errors; one Service and one leader for three
 instances; the popup body builds on open with the GithubView; the keys move
 the cursor from Settings to the footer's Refresh (no Pull all with nothing
-to pull) and open Settings; a paste error reaches the Panel in the panel's
-language (Norwegian, switched live); a folder edit and a trust edit reach
-the Panel and the bar; the popup closed on Settings and opened again closes
-on Esc (a real key press); the folder chooser (the helper's pick-folder
-on the run's private bus, where no portal runs) releases the popup and
-comes back to Settings with its error. Temp HOME, no folders, no network.
+to pull) and open Settings; each paste failure the kit lists in
+kit/i18n-texts.json reaches the Panel in the panel's language (Norwegian,
+switched live); a folder edit and a trust edit reach the Panel and the bar;
+the popup closed on Settings and opened again closes on Esc (a real key
+press); the folder chooser (the helper's pick-folder on the run's private
+bus, where no portal runs) releases the popup and comes back to Settings
+with its error. Temp HOME, no folders, no network.
 Requires ~/GitHub/Personal/foamy-kit (or FOAMY_KIT).
 
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
@@ -302,17 +303,20 @@ TRUST_IDENTITY = subprocess.run(
 ).stdout.strip()
 SHELL = SHELL.replace("@REPO@", TRUST_REPO).replace("@IDENT@", TRUST_IDENTITY)
 
-# The texts the kit's SafeTextField sets as pasteError, with the entries the
-# Norwegian catalog gives them.
+# The texts the kit's SafeTextField sets as pasteError: FoamyClipboard's
+# paste failures in the kit's list of the texts it hands the plugin to
+# translate, with the entries the Norwegian catalog gives them. A text the
+# kit rewords has no entry yet, so it shows in English and the check fails.
 NORWEGIAN = json.loads((PLUGIN / "i18n" / "no.json").read_text())
+KIT_TEXTS = json.loads((PLUGIN / "kit" / "i18n-texts.json").read_text())
 PASTE_ERRORS = {
-    text: NORWEGIAN.get(text, text)
-    for text in (
-        "Clipboard paste timed out. Copy the text again.",
-        "Clipboard text is too large or contains invalid characters.",
-        "Could not paste clipboard text. Copy plain text and try again.",
-    )
+    entry["text"]: NORWEGIAN.get(entry["text"], entry["text"])
+    for entry in KIT_TEXTS
+    if entry["component"] == "FoamyClipboard"
 }
+# Without texts the paste step would check nothing.
+if not PASTE_ERRORS:
+    sys.exit("runtime-panel: kit/i18n-texts.json lists no FoamyClipboard text")
 SHELL = SHELL.replace("@PASTE_ERRORS@", json.dumps(PASTE_ERRORS))
 
 # Without bubblewrap the identity is empty, and every trust check would
