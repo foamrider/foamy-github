@@ -1,4 +1,4 @@
-// foamy-kit 0.14.1 2bf04951d2e8f9b8db9dc873cfe976414781934e68a84bdd31e615774255b201 — do not edit; change foamy-kit and run sync
+// foamy-kit 0.15.1 c6ce6d6eb211e88f92802fead8ff9e18507616c382f361343c63b99ab173233d — do not edit; change foamy-kit and run sync
 import QtQuick
 import qs.Commons as Commons
 import qs.Ui
@@ -20,7 +20,8 @@ import "FoamyText.js" as FoamyText
 //   }
 //
 // Leading items (the default property) replace `source`. The status is one
-// line, bodySmall, secondary (`statusError` paints it urgent); it elides
+// line, bodySmall, secondary (`statusError` paints it in the error colour,
+// readable on the popup surface); it elides
 // and, if `statusTooltip` is set, shows that short hint on hover.
 // `statusClickable` makes it a link (statusClicked). The refresh button
 // spins while `refreshing` and is inert then; `showRefresh: false` hides it.
@@ -99,7 +100,7 @@ Column {
       textFormat: Text.PlainText
       elide: Text.ElideRight
       horizontalAlignment: Text.AlignRight
-      color: root.statusError ? Commons.Color.urgent : FoamyPalette.secondaryText
+      color: root.statusError ? FoamyPalette.onSurface(FoamyPalette.error) : FoamyPalette.secondaryText
       font.family: FoamyStyle.fontFamily
       font.pixelSize: FoamyStyle.font.bodySmall
       font.underline: root.statusClickable && statusMouse.containsMouse
