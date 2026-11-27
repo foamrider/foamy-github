@@ -3,7 +3,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
-import qs.Commons as Commons
 import qs.Ui
 import "kit"
 import "Model.js" as Model
@@ -349,6 +348,7 @@ PanelKeyCatcher {
             onClicked: root.pullAll()
           }
         ]
+        // On the hero band: the counts are measured on its strongest tint.
         Flow {
           Layout.fillWidth: true
           spacing: FoamyStyle.padding
@@ -356,26 +356,26 @@ PanelKeyCatcher {
             value: root.totals.aheadRepos
             label: FoamyI18n.t("ahead")
             symbol: "↑"
-            tint: FoamyPalette.onSurface(FoamyPalette.success)
+            tint: FoamyPalette.onSurface(FoamyPalette.success, FoamyPalette.bandFill)
           }
           SummaryCount {
             value: root.totals.behindRepos
             label: FoamyI18n.t("behind")
             symbol: "↓"
-            tint: FoamyPalette.onSurface(FoamyPalette.info)
+            tint: FoamyPalette.onSurface(FoamyPalette.info, FoamyPalette.bandFill)
           }
           SummaryCount {
             value: root.totals.dirtyRepos
             label: FoamyI18n.t("changed")
             symbol: "•"
-            tint: FoamyPalette.onSurface(FoamyPalette.warning)
+            tint: FoamyPalette.onSurface(FoamyPalette.warning, FoamyPalette.bandFill)
           }
           SummaryCount {
             visible: value > 0
             value: root.totals.failedRepos
             label: FoamyI18n.t("failed")
             symbol: "!"
-            tint: FoamyPalette.onSurface(FoamyPalette.error)
+            tint: FoamyPalette.onSurface(FoamyPalette.error, FoamyPalette.bandFill)
           }
         }
       }
@@ -385,6 +385,7 @@ PanelKeyCatcher {
       }
       Text {
         id: statusWarning
+        objectName: "githubStatusWarning"
         visible: !!root.service && (root.service.lastError !== "" || root.sync.stale)
         x: FoamyStyle.padding
         width: parent.width - FoamyStyle.padding * 2
@@ -393,7 +394,7 @@ PanelKeyCatcher {
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignLeft
-        color: root.service && root.service.lastError !== "" ? Commons.Color.urgent : FoamyPalette.onSurface(FoamyPalette.warning)
+        color: root.service && root.service.lastError !== "" ? FoamyPalette.onSurface(FoamyPalette.error) : FoamyPalette.onSurface(FoamyPalette.warning)
         font.family: FoamyStyle.fontFamily
         font.pixelSize: FoamyStyle.font.bodySmall
         Accessible.role: root.service && root.service.lastError !== "" ? Accessible.AlertMessage : Accessible.StaticText
@@ -724,11 +725,13 @@ PanelKeyCatcher {
       anchors.rightMargin: FoamyStyle.gapSmall
       spacing: FoamyStyle.rowPadding
 
+      // The 2 px bar alone carries the state: measured on the row's
+      // cursor fill, its strongest surface, so it keeps one colour.
       Rectangle {
         Layout.preferredWidth: 2
         Layout.preferredHeight: FoamyStyle.controlHeight
         radius: FoamyStyle.pillRadius(width)
-        color: repoRow.stateColor
+        color: FoamyPalette.onSurface(repoRow.stateColor, Qt.tint(FoamyPalette.background, repoRow.fill))
       }
 
       ColumnLayout {

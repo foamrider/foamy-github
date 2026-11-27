@@ -39,7 +39,9 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
   switch back to English.
 - footer: with no folders, the text under the empty list stays "No
   repositories yet" while a failed fetch is kept on the warning line, and
-  says the status is unavailable only when the status check fails.
+  says the status is unavailable only when the status check fails; the
+  failure on the warning line reads at 4.5:1 (the run's theme has a dim
+  red).
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
   "unavailable" once the helper exits 127, which the panel then says;
@@ -680,6 +682,14 @@ ShellRoot {
       refreshFailing(["fetch", "status"], "footer: the status check fails", function() {
         check(service.status.ok === false && emptyListText() === "Repository status is unavailable. Try Refresh again.",
           "footer: a failed status check says so: " + emptyListText())
+        // The run's theme has a dim red: the warning line still reads.
+        var palette = Kit.FoamyPalette
+        var warning = named(panel.popup.bodyItem, "githubStatusWarning")
+        check(palette.contrastRatio(palette.error, palette.background) < 4.5, "footer: the theme's red is dim: " + palette.error)
+        check(warning && warning.text === shell.statusFailure
+              && palette.contrastRatio(warning.color, palette.background) >= 4.5,
+          "footer: the failed status check reads on the popup: " + (warning && warning.text) + " in " + (warning && warning.color)
+          + " at " + (warning && palette.contrastRatio(warning.color, palette.background).toFixed(2)) + ":1")
         failing([], function() {
           panel.close()
           panel.settings = settingsWith(trustRepo)
@@ -792,7 +802,15 @@ def main():
         shell = shell.replace("@PUSH_FAILURE@", PUSH_FAILURE).replace("@FETCH_FAILURE@", FETCH_FAILURE)
         shell = shell.replace("@REPLIES@", json.dumps(REPLIES))
         # A short prefix: the run's IPC socket path must stay under 108 bytes.
-        run = harness.Run(host, shell, plugin=plugin, prefix="fgh-life-", system_bus="private")
+        # A dark theme with a dim red, for the warning line's contrast check.
+        run = harness.Run(
+            host,
+            shell,
+            plugin=plugin,
+            prefix="fgh-life-",
+            system_bus="private",
+            theme=KIT / "tests/fixtures/themes/dim-red.toml",
+        )
         # The fake must own its name before qs starts: Quickshell looks for
         # NetworkManager only once, at start.
         run.start_buses()
