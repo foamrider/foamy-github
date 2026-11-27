@@ -12,8 +12,9 @@ until the test removes it (at most 30 s), and fails each subcommand named
 in the `fail` file (fetch with only stderr, any other with a JSON reply). A
 push or pull answers with the JSON in the `reply` file when it has one. Its
 status reports one
-repository using Git LFS, trusted when its trust arguments name anything
-and labelled "other" when its folders name /foamy-other; its pick-folder
+repository using Git LFS, trusted when its trust arguments name anything,
+labelled "other" when its folders name /foamy-other and with the last
+fetch's error in the `syncerror` file, counted as failed; its pick-folder
 answers /foamy-picked.
 
 Scenes, one shell, each step waiting on an event (a timeout fails the run):
@@ -42,6 +43,10 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
   says the status is unavailable only when the status check fails; the
   failure on the warning line reads at 4.5:1 (the run's theme has a dim
   red).
+- ink: in that theme, a repository whose last fetch failed shows its red
+  "failed" count readable on the hero band, and its state bar and error
+  text readable on its row under the cursor, in one red at rest and under
+  the cursor.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
   "unavailable" once the helper exits 127, which the panel then says;
@@ -158,7 +163,10 @@ case "$sub" in
     [ -n "$trust" ] && [ "$trust" != "[]" ] && trusted=true
     label=repo
     case "$folders" in *foamy-other*) label=other ;; esac
-    printf '{"ok":true,"repoCount":1,"affectedCount":1,"totals":{"dirtyRepos":1},"repos":[{"path":"@REPO@","name":"%s","owner":"","label":"%s","branch":"main","upstream":"origin/main","ahead":1,"behind":0,"dirty":true,"dirtyCount":1,"affected":true,"complete":true,"error":"","usesLfs":true,"trusted":%s,"identity":"1:2:3|1:2:3","syncError":""}],"sync":{"stale":false}}\n' "$label" "$label" "$trusted"
+    failed=0
+    synced=$(cat "$state/syncerror" 2>/dev/null)
+    [ -n "$synced" ] && failed=1
+    printf '{"ok":true,"repoCount":1,"affectedCount":1,"totals":{"dirtyRepos":1,"failedRepos":%s},"repos":[{"path":"@REPO@","name":"%s","owner":"","label":"%s","branch":"main","upstream":"origin/main","ahead":1,"behind":0,"dirty":true,"dirtyCount":1,"affected":true,"complete":true,"error":"","usesLfs":true,"trusted":%s,"identity":"1:2:3|1:2:3","syncError":"%s"}],"sync":{"stale":false}}\n' "$failed" "$label" "$label" "$trusted" "$synced"
     ;;
   fetch) printf '{"ok":true,"failures":[]}\n' ;;
   *) printf '{"ok":true,"message":"done"}\n' ;;
@@ -255,7 +263,7 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, languageSteps, footerSteps, ipcSteps)
+  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, languageSteps, footerSteps, inkSteps, ipcSteps)
   function collect(item, test) {
     var found = item && test(item) ? [item] : []
     var kids = item ? item.children || [] : []
@@ -695,6 +703,66 @@ ShellRoot {
           panel.settings = settingsWith(trustRepo)
           until(function() { return !panel.opened && !service.busy && service.repos.length === 1 }, "footer: the repository is back", next)
         })
+      })
+    }
+  ]
+
+  // ink: a repository whose last fetch failed, in the run's dim-red theme.
+  FileView { id: syncErrorFile; path: shell.state + "/syncerror"; printErrors: false }
+  FileView { id: syncErrorRead; path: shell.state + "/syncerror"; blockLoading: true; printErrors: false }
+  readonly property string syncFailure: "fatal: could not read from the remote"
+  // A status check whose repository has `text` as its last fetch's error.
+  function syncFailing(text, label, then) {
+    syncErrorFile.setText(text)
+    until(function() { syncErrorRead.reload(); return syncErrorRead.text() === text }, "the syncerror file is written", function() {
+      var statuses = count("end status")
+      service.refresh()
+      until(function() { return !service.busy && count("end status") > statuses }, label, then)
+    })
+  }
+  readonly property var inkSteps: [
+    function(next) {
+      syncFailing(shell.syncFailure, "ink: the status check with a failed fetch ends", function() {
+        panel.open()
+        until(function() { return panel.popup.bodyItem !== null && service.totals.failedRepos === 1 }, "ink: the popup shows the failed repository", next)
+      })
+    },
+    function(next) {
+      var palette = Kit.FoamyPalette
+      var view = panel.popup.bodyItem
+      var ratio = function(c, under) { return palette.contrastRatio(c, under).toFixed(2) }
+      check(palette.contrastRatio(palette.error, palette.background) < 4.5, "ink: the theme's red is dim: " + palette.error)
+      // The counts sit on the wash's strongest stop. (On the band's
+      // strongest point, that stop under the full glow, this red stays
+      // under 4.5:1: onSurface lightens it at most 1.7 times.)
+      var failed = named(named(view, "githubFailedCount"), "summaryCountValue")
+      check(failed && failed.text === "! 1" && palette.contrastRatio(failed.color, palette.bandFill) >= 4.5,
+        "ink: the failed count reads on the band: " + (failed && failed.text) + " " + (failed && failed.color) + " at "
+        + (failed && ratio(failed.color, palette.bandFill)) + ":1")
+      var row = firstRow(view)
+      var bar = named(row, "githubStateBar")
+      var error = named(row, "githubRowError")
+      // The popup has no window, so read the text, not the effective visibility.
+      check(row && !row.hasCursor && error && error.text.indexOf(shell.syncFailure) >= 0,
+        "ink: the row shows its fetch error, without the cursor: " + (row && row.hasCursor) + " " + (error && error.text))
+      // As text: a copy, not a reference that follows the item.
+      var restBar = bar ? String(bar.color) : ""
+      var restError = error ? String(error.color) : ""
+      if (row)
+        row.hovered()
+      // What the row draws under the cursor, over the popup: its colour
+      // animates to this fill.
+      var under = row ? Qt.tint(palette.background, row.fill) : palette.background
+      check(row && row.hasCursor && row.fill.a > 0, "ink: the row takes the cursor: " + (row && row.fill))
+      check(bar && palette.contrastRatio(bar.color, under) >= 4.5,
+        "ink: the red state bar reads under the cursor: " + (bar && bar.color) + " at " + (bar && ratio(bar.color, under)) + ":1")
+      check(error && palette.contrastRatio(error.color, under) >= 4.5,
+        "ink: the fetch error reads under the cursor: " + (error && error.color) + " at " + (error && ratio(error.color, under)) + ":1")
+      check(bar && error && Qt.colorEqual(bar.color, error.color) && Qt.colorEqual(bar.color, restBar) && Qt.colorEqual(error.color, restError),
+        "ink: one red in the row, at rest and under the cursor: " + restBar + " " + restError + " " + (bar && bar.color) + " " + (error && error.color))
+      syncFailing("", "ink: the fetch error is gone", function() {
+        panel.close()
+        until(function() { return !panel.opened && service.totals.failedRepos === 0 }, "ink: the popup closes", next)
       })
     }
   ]
