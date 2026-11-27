@@ -12,8 +12,9 @@ until the test removes it (at most 30 s), and fails each subcommand named
 in the `fail` file (fetch with only stderr, any other with a JSON reply). A
 push or pull answers with the JSON in the `reply` file when it has one. Its
 status reports one
-repository using Git LFS, trusted when its trust arguments name anything
-and labelled "other" when its folders name /foamy-other; its pick-folder
+repository using Git LFS, trusted when its trust arguments name anything,
+labelled "other" when its folders name /foamy-other and with the last
+fetch's error in the `syncerror` file, counted as failed; its pick-folder
 answers /foamy-picked.
 
 Scenes, one shell, each step waiting on an event (a timeout fails the run):
@@ -39,7 +40,15 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
   switch back to English.
 - footer: with no folders, the text under the empty list stays "No
   repositories yet" while a failed fetch is kept on the warning line, and
-  says the status is unavailable only when the status check fails.
+  says the status is unavailable only when the status check fails; the
+  failure on the warning line reads at 4.5:1 (the run's theme has a dim
+  red).
+- ink: in that theme, a repository whose last fetch failed shows its red
+  "failed" count readable on the hero band, and its state bar and error
+  text readable on its row under the cursor, in one red at rest and under
+  the cursor, and its LFS chip's text readable on the chip there. A second
+  run repeats this scene alone in the kit's light theme, which darkens the
+  chip's green.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
   started, "busy" while one runs, "offline" without the network and
   "unavailable" once the helper exits 127, which the panel then says;
@@ -51,7 +60,6 @@ Timed polling only (no live monitoring); temp HOME; no network. Requires
 Runs on Omarchy 4.5: the installed /usr/share/omarchy/shell, or the tree in
 FOAMY_HOST_45."""
 
-import atexit
 import json
 import os
 import shutil
@@ -156,7 +164,10 @@ case "$sub" in
     [ -n "$trust" ] && [ "$trust" != "[]" ] && trusted=true
     label=repo
     case "$folders" in *foamy-other*) label=other ;; esac
-    printf '{"ok":true,"repoCount":1,"affectedCount":1,"totals":{"dirtyRepos":1},"repos":[{"path":"@REPO@","name":"%s","owner":"","label":"%s","branch":"main","upstream":"origin/main","ahead":1,"behind":0,"dirty":true,"dirtyCount":1,"affected":true,"complete":true,"error":"","usesLfs":true,"trusted":%s,"identity":"1:2:3|1:2:3","syncError":""}],"sync":{"stale":false}}\n' "$label" "$label" "$trusted"
+    failed=0
+    synced=$(cat "$state/syncerror" 2>/dev/null)
+    [ -n "$synced" ] && failed=1
+    printf '{"ok":true,"repoCount":1,"affectedCount":1,"totals":{"dirtyRepos":1,"failedRepos":%s},"repos":[{"path":"@REPO@","name":"%s","owner":"","label":"%s","branch":"main","upstream":"origin/main","ahead":1,"behind":0,"dirty":true,"dirtyCount":1,"affected":true,"complete":true,"error":"","usesLfs":true,"trusted":%s,"identity":"1:2:3|1:2:3","syncError":"%s"}],"sync":{"stale":false}}\n' "$failed" "$label" "$label" "$trusted" "$synced"
     ;;
   fetch) printf '{"ok":true,"failures":[]}\n' ;;
   *) printf '{"ok":true,"message":"done"}\n' ;;
@@ -253,7 +264,11 @@ ShellRoot {
     }, "a new panel settles", then)
   }
 
-  readonly property var steps: [].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, languageSteps, footerSteps, ipcSteps)
+  readonly property var steps: @STEPS@
+  // The light run's start: a panel for the trusted repository.
+  readonly property var startSteps: [
+    function(next) { settled(trustRepo, next) }
+  ]
   function collect(item, test) {
     var found = item && test(item) ? [item] : []
     var kids = item ? item.children || [] : []
@@ -680,10 +695,98 @@ ShellRoot {
       refreshFailing(["fetch", "status"], "footer: the status check fails", function() {
         check(service.status.ok === false && emptyListText() === "Repository status is unavailable. Try Refresh again.",
           "footer: a failed status check says so: " + emptyListText())
+        // The run's theme has a dim red: the warning line still reads.
+        var palette = Kit.FoamyPalette
+        var warning = named(panel.popup.bodyItem, "githubStatusWarning")
+        check(palette.contrastRatio(palette.error, palette.background) < 4.5, "footer: the theme's red is dim: " + palette.error)
+        check(warning && warning.text === shell.statusFailure
+              && palette.contrastRatio(warning.color, palette.background) >= 4.5,
+          "footer: the failed status check reads on the popup: " + (warning && warning.text) + " in " + (warning && warning.color)
+          + " at " + (warning && palette.contrastRatio(warning.color, palette.background).toFixed(2)) + ":1")
         failing([], function() {
           panel.close()
           panel.settings = settingsWith(trustRepo)
           until(function() { return !panel.opened && !service.busy && service.repos.length === 1 }, "footer: the repository is back", next)
+        })
+      })
+    }
+  ]
+
+  // ink: a repository whose last fetch failed, in the dim-red run's theme
+  // and in the light run's.
+  FileView { id: syncErrorFile; path: shell.state + "/syncerror"; printErrors: false }
+  FileView { id: syncErrorRead; path: shell.state + "/syncerror"; blockLoading: true; printErrors: false }
+  readonly property string syncFailure: "fatal: could not read from the remote"
+  // A status check whose repository has `text` as its last fetch's error.
+  function syncFailing(text, label, then) {
+    syncErrorFile.setText(text)
+    until(function() { syncErrorRead.reload(); return syncErrorRead.text() === text }, "the syncerror file is written", function() {
+      var statuses = count("end status")
+      service.refresh()
+      until(function() { return !service.busy && count("end status") > statuses }, label, then)
+    })
+  }
+  readonly property var inkSteps: [
+    function(next) {
+      syncFailing(shell.syncFailure, "ink: the status check with a failed fetch ends", function() {
+        // Opening the popup takes a fresh status: wait until it has ended.
+        var statuses = count("end status")
+        panel.open()
+        until(function() {
+          return panel.popup.bodyItem !== null && !service.busy && count("end status") > statuses && service.totals.failedRepos === 1
+        }, "ink: the popup shows the failed repository", next)
+      })
+    },
+    function(next) {
+      var palette = Kit.FoamyPalette
+      var view = panel.popup.bodyItem
+      var ratio = function(c, under) { return palette.contrastRatio(c, under).toFixed(2) }
+      // The dim-red run is about the red; the light run about the chip's green.
+      if (!palette.lightTheme)
+        check(palette.contrastRatio(palette.error, palette.background) < 4.5, "ink: the theme's red is dim: " + palette.error)
+      // The counts sit on the wash's strongest stop. (On the band's
+      // strongest point, that stop under the full glow, the dim-red
+      // theme's red stays under 4.5:1: onSurface changes it at most 1.7 times.)
+      var failed = named(named(view, "githubFailedCount"), "summaryCountValue")
+      check(failed && failed.text === "! 1" && palette.contrastRatio(failed.color, palette.bandFill) >= 4.5,
+        "ink: the failed count reads on the band: " + (failed && failed.text) + " " + (failed && failed.color) + " at "
+        + (failed && ratio(failed.color, palette.bandFill)) + ":1")
+      var row = firstRow(view)
+      var bar = named(row, "githubStateBar")
+      var error = named(row, "githubRowError")
+      var chip = named(row, "githubLfsChip")
+      var chipText = named(row, "githubLfsChipText")
+      // The popup has no window, so read the text, not the effective visibility.
+      check(row && !row.hasCursor && error && error.text.indexOf(shell.syncFailure) >= 0,
+        "ink: the row shows its fetch error, without the cursor: " + (row && row.hasCursor) + " " + (error && error.text))
+      check(row && row.trusted && chip && chipText, "ink: the trusted row has its LFS chip: " + (row && row.trusted))
+      // As text: a copy, not a reference that follows the item.
+      var restBar = bar ? String(bar.color) : ""
+      var restError = error ? String(error.color) : ""
+      if (row)
+        row.hovered()
+      check(row && row.hasCursor && row.fill.a > 0, "ink: the row takes the cursor: " + (row && row.fill))
+      // The row's colour animates to its cursor fill; measure once it is there.
+      until(function() { return !!row && Qt.colorEqual(row.color, row.fill) }, "ink: the row draws its cursor fill", function() {
+        // What the row draws under the cursor, over the popup, in 8 bits.
+        var under = Qt.color(String(Qt.tint(palette.background, row.color)))
+        check(bar && palette.contrastRatio(bar.color, under) >= 4.5,
+          "ink: the red state bar reads under the cursor: " + (bar && bar.color) + " at " + (bar && ratio(bar.color, under)) + ":1")
+        check(error && palette.contrastRatio(error.color, under) >= 4.5,
+          "ink: the fetch error reads under the cursor: " + (error && error.color) + " at " + (error && ratio(error.color, under)) + ":1")
+        check(bar && error && Qt.colorEqual(bar.color, error.color) && Qt.colorEqual(bar.color, restBar) && Qt.colorEqual(error.color, restError),
+          "ink: one red in the row, at rest and under the cursor: " + restBar + " " + restError + " " + (bar && bar.color) + " " + (error && error.color))
+        // The chip's green tint over the row under the cursor, in 8 bits.
+        var chipUnder = chip ? Qt.color(String(Qt.tint(under, chip.color))) : under
+        if (palette.lightTheme)
+          check(palette.contrastRatio(palette.success, chipUnder) < 4.5, "ink: the theme's green is faint on the chip: " + palette.success
+            + " at " + ratio(palette.success, chipUnder) + ":1")
+        check(chipText && palette.contrastRatio(chipText.color, chipUnder) >= 4.5,
+          "ink: the LFS chip's text reads on the chip under the cursor: " + (chipText && chipText.color) + " at "
+          + (chipText && ratio(chipText.color, chipUnder)) + ":1")
+        syncFailing("", "ink: the fetch error is gone", function() {
+          panel.close()
+          until(function() { return !panel.opened && service.totals.failedRepos === 0 }, "ink: the popup closes", next)
         })
       })
     }
@@ -774,11 +877,25 @@ ShellRoot {
 """
 
 
-def main():
-    status = 0
-    for host in harness.available_hosts(what="runtime-lifecycle"):
-        work = Path(tempfile.mkdtemp(prefix="fgh-life-"))
-        atexit.register(shutil.rmtree, work, True)
+# Each run: its label, its scenes and its theme. The kit's light theme
+# darkens the LFS chip's green, which reads as it is in the dim-red theme.
+RUNS = [
+    (
+        "",
+        "[].concat(unloadSteps, trustSteps, folderSteps, lfsSteps, chooserSteps, errorSteps, languageSteps,"
+        " footerSteps, inkSteps, ipcSteps)",
+        # A dark theme with a dim red, for the warning line's and the ink
+        # scene's contrast checks.
+        KIT / "tests/fixtures/themes/dim-red.toml",
+    ),
+    (" light", "[].concat(startSteps, inkSteps)", "light"),
+]
+
+
+def lifecycle(host, label, steps, theme):
+    work = Path(tempfile.mkdtemp(prefix="fgh-life-"))
+    keep = False
+    try:
         state = work / "state"
         state.mkdir()
         (state / "calls.log").write_text("")
@@ -790,9 +907,9 @@ def main():
         plugin = hostenv.fake_helper_plugin(PLUGIN, work / "plugin", "foamy-github-helper", helper)
         shell = SHELL.replace("@STATE@", str(state)).replace("@REPO@", REPO)
         shell = shell.replace("@PUSH_FAILURE@", PUSH_FAILURE).replace("@FETCH_FAILURE@", FETCH_FAILURE)
-        shell = shell.replace("@REPLIES@", json.dumps(REPLIES))
+        shell = shell.replace("@REPLIES@", json.dumps(REPLIES)).replace("@STEPS@", steps)
         # A short prefix: the run's IPC socket path must stay under 108 bytes.
-        run = harness.Run(host, shell, plugin=plugin, prefix="fgh-life-", system_bus="private")
+        run = harness.Run(host, shell, plugin=plugin, prefix="fgh-life-", system_bus="private", theme=theme)
         # The fake must own its name before qs starts: Quickshell looks for
         # NetworkManager only once, at start.
         run.start_buses()
@@ -816,13 +933,26 @@ def main():
             print("\n".join(warnings))
         checks = [line for line in run.log.splitlines() if "FOAMY CHECKS" in line]
         if run.ok:
-            print(f"{host}: lifecycle passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)")
+            print(
+                f"{host}{label}: lifecycle passed ({checks[0].split('FOAMY CHECKS')[1].strip() if checks else '?'} checks)"
+            )
             run.cleanup()
-        else:
-            status = 1
-            print(f"{host}: lifecycle FAILED; log at {run.base}/qs.log, helper calls at {state}/calls.log")
-            atexit.unregister(shutil.rmtree)
-            print("\n".join(run.failures() or run.log.splitlines()[-30:]))
+            return True
+        keep = True
+        print(f"{host}{label}: lifecycle FAILED; log at {run.base}/qs.log, helper calls at {state}/calls.log")
+        print("\n".join(run.failures() or run.log.splitlines()[-30:]))
+        return False
+    finally:
+        if not keep:
+            shutil.rmtree(work, True)
+
+
+def main():
+    status = 0
+    for host in harness.available_hosts(what="runtime-lifecycle"):
+        for label, steps, theme in RUNS:
+            if not lifecycle(host, label, steps, theme):
+                status = 1
     return status
 
 

@@ -18,7 +18,7 @@ GithubView.qml: missing-property: Member "lastChecked" not found on type "QObjec
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | status: root.service ? FoamyI18n.updatedAgo(root.service.lastChecked * 1000, root.now) : ""
 GithubView.qml: missing-property: Member "lastChecked" not found on type "QObject" | text: !root.service ? "" : root.service.status.ok === false ? FoamyI18n.t("Repository status is unavailable. Try Refresh again.") : root.service.lastChecked ===
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | Accessible.role: root.service && root.service.lastError !== "" ? Accessible.AlertMessage : Accessible.StaticText
-GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | color: root.service && root.service.lastError !== "" ? Commons.Color.urgent : FoamyPalette.onSurface(FoamyPalette.warning)
+GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | color: root.service && root.service.lastError !== "" ? FoamyPalette.onSurface(FoamyPalette.error) : FoamyPalette.onSurface(FoamyPalette.warning)
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | if (service.lastError !== "")
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError) : root.lastSyncText + " · " + FoamyI18n.t("remote state may be st
 GithubView.qml: missing-property: Member "lastError" not found on type "QObject" | text: !root.service ? "" : root.service.lastError !== "" ? FoamyI18n.t(root.service.lastError) : root.lastSyncText + " · " + FoamyI18n.t("remote state may be st

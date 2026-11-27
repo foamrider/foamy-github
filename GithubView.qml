@@ -3,7 +3,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
-import qs.Commons as Commons
 import qs.Ui
 import "kit"
 import "Model.js" as Model
@@ -49,6 +48,10 @@ PanelKeyCatcher {
   readonly property var sync: service ? service.sync : Model.defaultStatus().sync
   readonly property bool busy: !!service && service.busy
   readonly property bool hasFailures: sync.failures.length > 0
+  // What status colours on the hero band are measured on: an opaque bound
+  // of its strongest tint, the wash's start under the full glow
+  // (FoamyHeroBand paints the glow over the wash).
+  readonly property color bandSurface: Qt.tint(FoamyPalette.bandFill, FoamyPalette.bandGlow)
   // Cursor stops: each row, then its "LFS" button when the repository uses
   // Git LFS and is untrusted, then (note open, trust available) its "Trust
   // this repository" button; then Settings (header) and Refresh (footer),
@@ -349,6 +352,7 @@ PanelKeyCatcher {
             onClicked: root.pullAll()
           }
         ]
+        // On the hero band: the counts are measured on root.bandSurface.
         Flow {
           Layout.fillWidth: true
           spacing: FoamyStyle.padding
@@ -356,26 +360,27 @@ PanelKeyCatcher {
             value: root.totals.aheadRepos
             label: FoamyI18n.t("ahead")
             symbol: "↑"
-            tint: FoamyPalette.onSurface(FoamyPalette.success)
+            tint: FoamyPalette.onSurface(FoamyPalette.success, root.bandSurface)
           }
           SummaryCount {
             value: root.totals.behindRepos
             label: FoamyI18n.t("behind")
             symbol: "↓"
-            tint: FoamyPalette.onSurface(FoamyPalette.info)
+            tint: FoamyPalette.onSurface(FoamyPalette.info, root.bandSurface)
           }
           SummaryCount {
             value: root.totals.dirtyRepos
             label: FoamyI18n.t("changed")
             symbol: "•"
-            tint: FoamyPalette.onSurface(FoamyPalette.warning)
+            tint: FoamyPalette.onSurface(FoamyPalette.warning, root.bandSurface)
           }
           SummaryCount {
+            objectName: "githubFailedCount"
             visible: value > 0
             value: root.totals.failedRepos
             label: FoamyI18n.t("failed")
             symbol: "!"
-            tint: FoamyPalette.onSurface(FoamyPalette.error)
+            tint: FoamyPalette.onSurface(FoamyPalette.error, root.bandSurface)
           }
         }
       }
@@ -385,6 +390,7 @@ PanelKeyCatcher {
       }
       Text {
         id: statusWarning
+        objectName: "githubStatusWarning"
         visible: !!root.service && (root.service.lastError !== "" || root.sync.stale)
         x: FoamyStyle.padding
         width: parent.width - FoamyStyle.padding * 2
@@ -393,7 +399,7 @@ PanelKeyCatcher {
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         horizontalAlignment: Text.AlignLeft
-        color: root.service && root.service.lastError !== "" ? Commons.Color.urgent : FoamyPalette.onSurface(FoamyPalette.warning)
+        color: root.service && root.service.lastError !== "" ? FoamyPalette.onSurface(FoamyPalette.error) : FoamyPalette.onSurface(FoamyPalette.warning)
         font.family: FoamyStyle.fontFamily
         font.pixelSize: FoamyStyle.font.bodySmall
         Accessible.role: root.service && root.service.lastError !== "" ? Accessible.AlertMessage : Accessible.StaticText
@@ -667,6 +673,7 @@ PanelKeyCatcher {
     spacing: FoamyStyle.gapSmall
     Text {
       id: countValue
+      objectName: "summaryCountValue"
       text: parent.symbol + " " + FoamyI18n.number(parent.value)
       textFormat: Text.PlainText
       color: parent.tint
@@ -691,6 +698,10 @@ PanelKeyCatcher {
     readonly property string meta: Model.repositoryMeta(repo, FoamyI18n.t, FoamyI18n.tn)
     readonly property string syncError: Model.syncErrorText(repo, FoamyI18n.t)
     readonly property color stateColor: !repo ? FoamyPalette.success : repo.complete === false || repo.syncError ? FoamyPalette.error : repo.dirtyCount > 0 ? FoamyPalette.warning : repo.behind > 0 ? FoamyPalette.info : FoamyPalette.success
+    // The row under the cursor (its strongest fill): status text and marks
+    // are measured there, so they keep one colour at rest and under the
+    // cursor.
+    readonly property color statusSurface: Qt.tint(FoamyPalette.background, fill)
 
     height: content.implicitHeight + FoamyStyle.rowPadding * 2 + (lfsPanel.visible ? lfsPanel.implicitHeight + FoamyStyle.gap : 0)
     readonly property int rowStop: root.stops.rows[rowIndex] !== undefined ? root.stops.rows[rowIndex] : -1
@@ -724,11 +735,13 @@ PanelKeyCatcher {
       anchors.rightMargin: FoamyStyle.gapSmall
       spacing: FoamyStyle.rowPadding
 
+      // The 2 px bar alone carries the state.
       Rectangle {
+        objectName: "githubStateBar"
         Layout.preferredWidth: 2
         Layout.preferredHeight: FoamyStyle.controlHeight
         radius: FoamyStyle.pillRadius(width)
-        color: repoRow.stateColor
+        color: FoamyPalette.onSurface(repoRow.stateColor, repoRow.statusSurface)
       }
 
       ColumnLayout {
@@ -785,6 +798,7 @@ PanelKeyCatcher {
             height: repoRow.trusted ? chip.height : lfsButton.height
             Rectangle {
               id: chip
+              objectName: "githubLfsChip"
               visible: repoRow.trusted
               x: FoamyStyle.gapSmall
               width: chipText.implicitWidth + FoamyStyle.gap * 2
@@ -795,10 +809,12 @@ PanelKeyCatcher {
               Accessible.name: FoamyI18n.t("Git LFS, trusted")
               Text {
                 id: chipText
+                objectName: "githubLfsChipText"
                 anchors.centerIn: parent
                 text: FoamyI18n.t("LFS")
                 textFormat: Text.PlainText
-                color: FoamyPalette.onSurface(FoamyPalette.success)
+                // On the chip's tint, over the row under the cursor.
+                color: FoamyPalette.onSurface(FoamyPalette.success, Qt.tint(repoRow.statusSurface, chip.color))
                 font.family: FoamyStyle.fontFamily
                 font.pixelSize: FoamyStyle.font.caption
                 font.weight: Font.DemiBold
@@ -829,6 +845,7 @@ PanelKeyCatcher {
           }
           Text {
             id: errorText
+            objectName: "githubRowError"
             visible: statusLine.hasError
             width: statusLine.errorInline ? Math.max(0, statusLine.width - metaText.width - statusLine.badgeSpace) : statusLine.width
             text: (statusLine.errorInline ? " · " : "") + repoRow.syncError
@@ -836,7 +853,7 @@ PanelKeyCatcher {
             elide: Text.ElideRight
             maximumLineCount: 1
             horizontalAlignment: Text.AlignLeft
-            color: FoamyPalette.onSurface(FoamyPalette.error)
+            color: FoamyPalette.onSurface(FoamyPalette.error, repoRow.statusSurface)
             font.family: FoamyStyle.fontFamily
             font.pixelSize: FoamyStyle.font.bodySmall
             Accessible.role: Accessible.AlertMessage
