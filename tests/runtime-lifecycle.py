@@ -31,6 +31,9 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
   the keys: the identity is checked again and the trust saved. The row and
   the LFS button the keys reach draw the keys' accent border, the row
   again after Enter on Trust; on open and after the pointer, none does.
+  Untrusted again, the keys draw it on the footer's Refresh, the band's
+  Settings and Trust, and a click on Trust leaves the row with the
+  pointer's look.
 - chooser: a folder picked in the folder chooser fills the row and is saved.
 - errors: a failed push and a failed fetch stay on the warning line through
   the status refresh that follows them; the next fetch clears the failure,
@@ -279,15 +282,18 @@ ShellRoot {
     return found
   }
   function named(item, name) { return collect(item, function(i) { return i.objectName === name })[0] }
-  // What draws the keys' accent border, as a JSON list: a row (by label)
-  // or an action (by objectName).
+  // What draws the keys' accent border, as a JSON list: a row (by label),
+  // a button or an action (by objectName, else its icon).
   function keysBorders(view) {
     var accent = Kit.FoamyPalette.accent
     return JSON.stringify(collect(view, function(i) {
       if (i.byKeys !== undefined && i.borderSpec !== undefined)
         return i.hasCursor && i.borderTop > 0 && Qt.colorEqual(i.borderSpec.color, accent)
+      // A FoamyButton always has a border; the keys' one is the accent.
+      if (i.cursorByKeys !== undefined && i.kind !== undefined)
+        return i.hasCursor && Qt.colorEqual(i.border.color, accent)
       return i.cursorByKeys !== undefined && i.border !== undefined && i.border.width > 0
-    }).map(function(i) { return i.repo ? "row " + i.repo.label : i.objectName }))
+    }).map(function(i) { return i.repo ? "row " + i.repo.label : i.objectName || i.iconName }))
   }
   // The view's first repository row. The harness's popup has no window, so
   // its list never runs its own layout pass: run it, as a shown window would.
@@ -512,6 +518,7 @@ ShellRoot {
       view.moveRequested(0, 1)
       var trust = named(view, "githubTrustButton")
       check(trust && trust.hasCursor, "lfs: Down: Trust this repository")
+      check(keysBorders(view) === '["githubTrustButton"]', "lfs: Down: the keys' border on Trust: " + keysBorders(view))
       var saved = panel.bar.saved.length
       var identities = count("start identity")
       view.activateRequested()
@@ -527,6 +534,40 @@ ShellRoot {
         panel.close()
         panel.settings = settingsWith(trustRepo)
         until(function() { return !panel.opened && !service.busy && service.repos[0].trusted === true }, "lfs: the popup closes", next)
+      })
+    },
+    // Untrusted again: the keys reach the footer's Refresh and the band's
+    // Settings, then Trust, which a click trusts with the pointer's look.
+    function(next) {
+      panel.settings = settingsWith([])
+      panel.open()
+      until(function() {
+        return panel.popup.bodyItem !== null && !service.busy && service.repos.length === 1 && service.repos[0].trusted === false
+      }, "lfs: the popup lists the repository untrusted again", next)
+    },
+    function(next) {
+      var view = panel.popup.bodyItem
+      view.moveRequested(0, -1)
+      check(keysBorders(view) === '["foamyFooterRefresh"]', "lfs: Up from nothing: the keys' border on Refresh: " + keysBorders(view))
+      view.moveRequested(0, -1)
+      check(keysBorders(view) === '["settings"]', "lfs: Up: the keys' border on Settings: " + keysBorders(view))
+      firstRow(view).hovered()
+      view.moveRequested(0, 1)
+      view.activateRequested()
+      view.moveRequested(0, 1)
+      var trust = named(view, "githubTrustButton")
+      check(trust && trust.hasCursor && keysBorders(view) === '["githubTrustButton"]',
+        "lfs: the keys on Trust again: " + keysBorders(view))
+      var saved = panel.bar.saved.length
+      var identities = count("start identity")
+      if (trust)
+        trust.clicked()
+      until(function() { return count("start identity") > identities && panel.bar.saved.length > saved }, "lfs: the clicked trust is saved", function() {
+        check(firstRow(view).hasCursor, "lfs: after the click the cursor is on the row")
+        check(keysBorders(view) === "[]", "lfs: a click on Trust leaves no keys' border: " + keysBorders(view))
+        panel.close()
+        panel.settings = settingsWith(trustRepo)
+        until(function() { return !panel.opened && !service.busy && service.repos[0].trusted === true }, "lfs: the popup closes again", next)
       })
     }
   ]

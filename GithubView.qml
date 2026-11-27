@@ -118,7 +118,7 @@ PanelKeyCatcher {
   onMoveRequested: function (dx, dy) {
     cursor.move(dy !== 0 ? dy : dx)
   }
-  onActivateRequested: root.activate(cursor.index)
+  onActivateRequested: root.activate(cursor.index, true)
   onCloseRequested: root.closeRequestedByView()
   onTabRequested: function (direction) {
     root.switchPanelRequested(direction)
@@ -169,7 +169,8 @@ PanelKeyCatcher {
     lfsNotePath = lfsNotePath === repo.path ? "" : String(repo.path)
   }
 
-  // Preview/tests: open a row's Git LFS note with the cursor on its LFS button.
+  // Preview/tests: open a row's Git LFS note with the pointer's cursor on
+  // its LFS button.
   function clearCursor() {
     cursor.reset()
     lfsNotePath = ""
@@ -180,7 +181,7 @@ PanelKeyCatcher {
     lfsNotePath = String(repos[row].path)
     cursor.hover(stops.infos[row])
   }
-  // Preview/tests: the keyboard cursor on the footer's Refresh button.
+  // Preview/tests: the pointer's cursor on the footer's Refresh button.
   function showRefreshCursor() {
     cursor.hover(refreshStop)
   }
@@ -189,7 +190,8 @@ PanelKeyCatcher {
     settingsPage.keepVisible(lfsSection.visible ? lfsSection : refreshSection)
   }
 
-  function activate(index) {
+  // byKeys: a key activated it (Enter), not the pointer.
+  function activate(index, byKeys) {
     if (index < 0)
       return
     var info = stops.infos.indexOf(index)
@@ -199,9 +201,10 @@ PanelKeyCatcher {
     else if (trust >= 0) {
       root.trustRequested(repos[trust], true)
       lfsNotePath = ""
-      // stay on that repository once its LFS button goes; by index, not
-      // hover(), so Enter keeps the keys' cursor and a click the pointer's
+      // stay on that repository once its LFS button goes, with the look of
+      // what acted: the keys' cursor after Enter, the pointer's after a click
       cursor.index = stops.rows[trust]
+      cursor.byKeys = byKeys === true
     } else if (stops.rows.indexOf(index) >= 0)
       root.repositoryRequested(repos[stops.rows.indexOf(index)])
     else if (index === refreshStop) {
@@ -334,6 +337,7 @@ PanelKeyCatcher {
         title: FoamyI18n.t("GitHub")
         meta: root.displayTitle
         settingsHasCursor: cursor.at(root.settingsStop)
+        cursorByKeys: cursor.byKeys
         onSettingsClicked: root.settingsRequested()
         onSettingsHovered: function (hovered) {
           if (hovered)
@@ -458,6 +462,7 @@ PanelKeyCatcher {
         refreshEnabled: !root.busy
         refreshTooltip: root.service && root.service.syncing ? FoamyI18n.t("Fetching repositories…") : FoamyI18n.t("Fetch remotes and refresh")
         refreshHasCursor: cursor.at(root.refreshStop)
+        cursorByKeys: cursor.byKeys
         onRefreshHovered: function (hovered) {
           if (hovered)
             cursor.hover(root.refreshStop)
@@ -927,9 +932,10 @@ PanelKeyCatcher {
         text: FoamyI18n.t("Trust this repository")
         iconName: "check"
         hasCursor: cursor.at(repoRow.trustStop)
+        cursorByKeys: cursor.byKeys
         onHoveredChanged: if (hovered)
           cursor.hover(repoRow.trustStop)
-        onClicked: root.activate(repoRow.trustStop)
+        onClicked: root.activate(repoRow.trustStop, false)
       }
     }
   }
