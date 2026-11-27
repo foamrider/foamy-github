@@ -1,4 +1,4 @@
-// foamy-kit 0.15.2 c6ce6d6eb211e88f92802fead8ff9e18507616c382f361343c63b99ab173233d — do not edit; change foamy-kit and run sync
+// foamy-kit 0.16.0 3c8589427db724d6a550d8b3918f4aae9e7beb2b604256bfd8e6d18a7ef91ac5 — do not edit; change foamy-kit and run sync
 import QtQuick
 import qs.Commons as Commons
 import qs.Ui
@@ -25,6 +25,9 @@ import "FoamyText.js" as FoamyText
 // and, if `statusTooltip` is set, shows that short hint on hover.
 // `statusClickable` makes it a link (statusClicked). The refresh button
 // spins while `refreshing` and is inert then; `showRefresh: false` hides it.
+// `cursorByKeys: cursor.byKeys` gives it the keys' accent border while it
+// has the cursor, also while inert (FoamyAction's `cursorByKeys`; set a
+// leading action's own).
 // No horizontal padding of its own: place it in the padded body, or set
 // `horizontalPadding` when the body runs edge to edge. The row sits
 // `spacing` under the hairline and `spacing` above the footer's bottom, so it
@@ -41,6 +44,8 @@ Column {
   property bool refreshing: false
   property bool refreshEnabled: true
   property bool refreshHasCursor: false
+  // The keys moved the cursor (FoamyCursor.byKeys): the refresh button's.
+  property bool cursorByKeys: false
   property string refreshTooltip: refreshing ? FoamyI18n.t("Refreshing…") : FoamyI18n.t("Refresh")
   property bool divider: true
   property real horizontalPadding: 0
@@ -148,6 +153,7 @@ Column {
       actionEnabled: root.refreshEnabled && !root.refreshing
       spinning: root.refreshing
       hasCursor: root.refreshHasCursor
+      cursorByKeys: root.cursorByKeys
       onClicked: root.refreshClicked()
       onHoveredChanged: root.refreshHovered(hovered)
     }

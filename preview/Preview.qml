@@ -181,8 +181,8 @@ Item {
     }
   }
 
-  // Open the first row's Git LFS note, with the keyboard cursor on its LFS
-  // button; "fetching": the cursor on the footer's spinning Refresh;
+  // Open the first row's Git LFS note, with the pointer's cursor on its LFS
+  // button; "fetching": that cursor on the footer's spinning Refresh;
   // Settings: the folder rows of this state's settings, which the page
   // loads only as it opens (restarted on every state: the body is kept
   // between states).
