@@ -8,7 +8,8 @@ Four clones of one local remote are two commits behind it: alpha, beta,
 delta and gamma, which also has two changed files; beta's origin points at
 a path that does not exist. The bar shows how many repositories are behind
 and changed, which differs from the commit and file counts. The keys walk
-the rows, Pull all, Settings and Refresh. Then delta loses its upstream
+the rows, Pull all, Settings and Refresh, and Pull all draws the keys'
+border. Then delta loses its upstream
 (after the status the panel shows), and Enter on Pull all pulls the three
 clean clones one after the other: beta fails with Git's error, the helper
 refuses delta with a text that names it, the queue goes on, the count and
@@ -162,6 +163,7 @@ ShellRoot {
       } else if (phase === 2) {
         if (!unsetUpstream.done) return
         check(cursorAt(view) === "pull all" && named(view, "pullAllAction").actionEnabled, "Up twice: back on Pull all, which can run")
+        check(named(view, "pullAllAction").border.width > 0, "Up twice: Pull all draws the keys' border")
         view.activateRequested()
         check(service.pullingAll && service.repositoryActionRunning, "Enter on Pull all starts it")
         // P while it runs starts nothing more (the clones' heads show it).

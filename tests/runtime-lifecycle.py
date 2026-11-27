@@ -28,7 +28,9 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
 - folders: a check that a folder change overtook is never shown; the new
   folders are checked instead.
 - lfs: the row's LFS button, its note and "Trust this repository", with
-  the keys: the identity is checked again and the trust saved.
+  the keys: the identity is checked again and the trust saved. The row and
+  the LFS button the keys reach draw the keys' accent border, the row
+  again after Enter on Trust; on open and after the pointer, none does.
 - chooser: a folder picked in the folder chooser fills the row and is saved.
 - errors: a failed push and a failed fetch stay on the warning line through
   the status refresh that follows them; the next fetch clears the failure,
@@ -46,7 +48,8 @@ Scenes, one shell, each step waiting on an event (a timeout fails the run):
 - ink: in that theme, a repository whose last fetch failed shows its red
   "failed" count readable on the hero band, and its state bar and error
   text readable on its row under the cursor, in one red at rest and under
-  the cursor, and its LFS chip's text readable on the chip there. A second
+  the cursor, and its LFS chip's text readable on the chip there. The
+  keys' border on that row leaves the red as it is. A second
   run repeats this scene alone in the kit's light theme, which darkens the
   chip's green.
 - ipc: `qs ipc call foamy.github refresh` answers "ok" when a fetch
@@ -276,6 +279,16 @@ ShellRoot {
     return found
   }
   function named(item, name) { return collect(item, function(i) { return i.objectName === name })[0] }
+  // What draws the keys' accent border, as a JSON list: a row (by label)
+  // or an action (by objectName).
+  function keysBorders(view) {
+    var accent = Kit.FoamyPalette.accent
+    return JSON.stringify(collect(view, function(i) {
+      if (i.byKeys !== undefined && i.borderSpec !== undefined)
+        return i.hasCursor && i.borderTop > 0 && Qt.colorEqual(i.borderSpec.color, accent)
+      return i.cursorByKeys !== undefined && i.border !== undefined && i.border.width > 0
+    }).map(function(i) { return i.repo ? "row " + i.repo.label : i.objectName }))
+  }
   // The view's first repository row. The harness's popup has no window, so
   // its list never runs its own layout pass: run it, as a shown window would.
   function firstRow(view) {
@@ -487,10 +500,13 @@ ShellRoot {
       var view = panel.popup.bodyItem
       var row = firstRow(view)
       var lfs = named(view, "githubLfsButton")
+      check(keysBorders(view) === "[]", "lfs: no keys' border on open: " + keysBorders(view))
       view.moveRequested(0, 1)
       check(row && row.hasCursor, "lfs: Down: the row")
+      check(keysBorders(view) === '["row repo"]', "lfs: Down: the keys' border on the row: " + keysBorders(view))
       view.moveRequested(0, 1)
       check(lfs && lfs.hasCursor, "lfs: Down: its LFS button")
+      check(keysBorders(view) === '["githubLfsButton"]', "lfs: Down: the keys' border on the LFS button: " + keysBorders(view))
       view.activateRequested()
       check(view.lfsNotePath === "@REPO@", "lfs: Enter opens the note: " + view.lfsNotePath)
       view.moveRequested(0, 1)
@@ -505,6 +521,9 @@ ShellRoot {
         check(JSON.stringify(last) === JSON.stringify(trustRepo), "lfs: the repository is trusted with its identity: " + JSON.stringify(last))
         check(view.lfsNotePath === "", "lfs: the note closes")
         check(firstRow(view).hasCursor, "lfs: the cursor is back on the row")
+        check(keysBorders(view) === '["row repo"]', "lfs: Enter on Trust: the keys' border back on the row: " + keysBorders(view))
+        firstRow(view).hovered()
+        check(keysBorders(view) === "[]", "lfs: the pointer on the row: no keys' border: " + keysBorders(view))
         panel.close()
         panel.settings = settingsWith(trustRepo)
         until(function() { return !panel.opened && !service.busy && service.repos[0].trusted === true }, "lfs: the popup closes", next)
@@ -776,6 +795,11 @@ ShellRoot {
           "ink: the fetch error reads under the cursor: " + (error && error.color) + " at " + (error && ratio(error.color, under)) + ":1")
         check(bar && error && Qt.colorEqual(bar.color, error.color) && Qt.colorEqual(bar.color, restBar) && Qt.colorEqual(error.color, restError),
           "ink: one red in the row, at rest and under the cursor: " + restBar + " " + restError + " " + (bar && bar.color) + " " + (error && error.color))
+        // ↑ on the first row gives the keys the cursor: the accent border
+        // leaves the row's fill, so the red keeps its colour.
+        view.moveRequested(0, -1)
+        check(keysBorders(view) === '["row repo"]' && bar && error && Qt.colorEqual(bar.color, restBar) && Qt.colorEqual(error.color, restError),
+          "ink: the keys' border on the row, the red as at rest: " + keysBorders(view) + " " + (bar && bar.color) + " " + (error && error.color))
         // The chip's green tint over the row under the cursor, in 8 bits.
         var chipUnder = chip ? Qt.color(String(Qt.tint(under, chip.color))) : under
         if (palette.lightTheme)

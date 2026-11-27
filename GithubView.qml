@@ -199,8 +199,9 @@ PanelKeyCatcher {
     else if (trust >= 0) {
       root.trustRequested(repos[trust], true)
       lfsNotePath = ""
-      // stay on that repository once its LFS button goes
-      cursor.hover(stops.rows[trust])
+      // stay on that repository once its LFS button goes; by index, not
+      // hover(), so Enter keeps the keys' cursor and a click the pointer's
+      cursor.index = stops.rows[trust]
     } else if (stops.rows.indexOf(index) >= 0)
       root.repositoryRequested(repos[stops.rows.indexOf(index)])
     else if (index === refreshStop) {
@@ -346,6 +347,7 @@ PanelKeyCatcher {
             tooltipText: (root.pullableCount > 0 ? FoamyI18n.tn("Pull %1 repositories", root.pullableCount) : FoamyI18n.t("Nothing to pull")) + " · P"
             actionEnabled: !root.busy && root.pullableCount > 0
             hasCursor: cursor.at(root.pullAllStop)
+            cursorByKeys: cursor.byKeys
             foreground: FoamyPalette.secondaryText
             onHoveredChanged: if (hovered)
               cursor.hover(root.pullAllStop)
@@ -720,6 +722,7 @@ PanelKeyCatcher {
     }
     Component.onCompleted: lfsNote.expanded = noteWanted
     hasCursor: cursor.at(rowStop)
+    byKeys: cursor.byKeys
     onHovered: cursor.hover(rowStop)
     Accessible.role: Accessible.ListItem
     Accessible.name: repo ? String(repo.label) : ""
@@ -832,6 +835,7 @@ PanelKeyCatcher {
               foreground: repoRow.noteWanted ? FoamyPalette.text : FoamyPalette.secondaryText
               color: active && (repoRow.noteWanted || hasCursor || hovered) ? FoamyPalette.hoverFill : "transparent"
               hasCursor: cursor.at(repoRow.infoStop)
+              cursorByKeys: cursor.byKeys
               Accessible.name: FoamyI18n.t("This repository uses Git LFS")
               Accessible.checkable: true
               Accessible.checked: repoRow.noteWanted
