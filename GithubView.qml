@@ -51,7 +51,7 @@ PanelKeyCatcher {
   // What status colours on the hero band are measured on: an opaque bound
   // of its strongest tint, the wash's start under the full glow
   // (FoamyHeroBand paints the glow over the wash).
-  readonly property color bandInk: Qt.tint(FoamyPalette.bandFill, FoamyPalette.bandGlow)
+  readonly property color bandSurface: Qt.tint(FoamyPalette.bandFill, FoamyPalette.bandGlow)
   // Cursor stops: each row, then its "LFS" button when the repository uses
   // Git LFS and is untrusted, then (note open, trust available) its "Trust
   // this repository" button; then Settings (header) and Refresh (footer),
@@ -352,7 +352,7 @@ PanelKeyCatcher {
             onClicked: root.pullAll()
           }
         ]
-        // On the hero band: the counts are measured on root.bandInk.
+        // On the hero band: the counts are measured on root.bandSurface.
         Flow {
           Layout.fillWidth: true
           spacing: FoamyStyle.padding
@@ -360,19 +360,19 @@ PanelKeyCatcher {
             value: root.totals.aheadRepos
             label: FoamyI18n.t("ahead")
             symbol: "↑"
-            tint: FoamyPalette.onSurface(FoamyPalette.success, root.bandInk)
+            tint: FoamyPalette.onSurface(FoamyPalette.success, root.bandSurface)
           }
           SummaryCount {
             value: root.totals.behindRepos
             label: FoamyI18n.t("behind")
             symbol: "↓"
-            tint: FoamyPalette.onSurface(FoamyPalette.info, root.bandInk)
+            tint: FoamyPalette.onSurface(FoamyPalette.info, root.bandSurface)
           }
           SummaryCount {
             value: root.totals.dirtyRepos
             label: FoamyI18n.t("changed")
             symbol: "•"
-            tint: FoamyPalette.onSurface(FoamyPalette.warning, root.bandInk)
+            tint: FoamyPalette.onSurface(FoamyPalette.warning, root.bandSurface)
           }
           SummaryCount {
             objectName: "githubFailedCount"
@@ -380,7 +380,7 @@ PanelKeyCatcher {
             value: root.totals.failedRepos
             label: FoamyI18n.t("failed")
             symbol: "!"
-            tint: FoamyPalette.onSurface(FoamyPalette.error, root.bandInk)
+            tint: FoamyPalette.onSurface(FoamyPalette.error, root.bandSurface)
           }
         }
       }
@@ -798,6 +798,7 @@ PanelKeyCatcher {
             height: repoRow.trusted ? chip.height : lfsButton.height
             Rectangle {
               id: chip
+              objectName: "githubLfsChip"
               visible: repoRow.trusted
               x: FoamyStyle.gapSmall
               width: chipText.implicitWidth + FoamyStyle.gap * 2
@@ -808,6 +809,7 @@ PanelKeyCatcher {
               Accessible.name: FoamyI18n.t("Git LFS, trusted")
               Text {
                 id: chipText
+                objectName: "githubLfsChipText"
                 anchors.centerIn: parent
                 text: FoamyI18n.t("LFS")
                 textFormat: Text.PlainText
